@@ -774,9 +774,10 @@ function renderSources(){
   if(!srcs.length){$('sources-list').innerHTML='<div class="empty">无来源数据</div>';return}
   const curTarget=targets.find(t=>t.is_current);
   const installedNames=new Set(skills.map(s=>s.name));
-  let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+  let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
     <h3 style="font-size:14px;font-weight:600">📚 技能库来源</h3>
     <span style="font-size:11px;color:var(--text-muted)">${srcs.length} 个库 · 当前目标: ${curTarget?curTarget.name:'-'}</span>
+    <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()" style="margin-left:auto">＋ 添加来源</button>
   </div>`;
   srcs.forEach((s,i)=>{
     const isCurrent=curTarget&&s.path&&s.path.replace(/\$HOME|\${HOME}/g,'')===curTarget.rel.replace(/^~\//,'');
@@ -934,6 +935,56 @@ async function syncSelected(){
   sourceSyncSelections.clear();
   await loadData();
   $('modal').classList.add('hidden');
+}
+
+/* ── Custom Sources ── */
+function showAddSourceDialog(){
+  $('modal-title').textContent='添加技能库来源';
+  $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+    <div style="margin-bottom:12px;color:var(--text-muted)">输入包含 skills/ 子目录的路径</div>
+    <input id="add-source-path" type="text" placeholder="/Users/yang/.custom/skills 或 ~/my-skills" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:12px">
+    <div id="add-source-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+      <button class="btn btn-primary" id="add-source-btn" onclick="addCustomSource()">添加</button>
+    </div>
+  </div>`;
+  $('modal').classList.remove('hidden');
+}
+async function addCustomSource(){
+  const btn=$('add-source-btn');const result=$('add-source-result');
+  const path=$('add-source-path').value.trim();
+  if(!path){toast('请输入路径','error');return}
+  btn.disabled=true;btn.textContent='添加中...';
+  result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
+  result.textContent='验证路径...';
+  try{
+    const r=await fetch('/api/custom-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+    const d=await r.json();
+    if(d.ok){
+      result.style.background='var(--green-bg)';result.style.color='var(--green)';
+      result.textContent='✅ 添加成功';
+      toast('来源已添加');
+      await loadData();
+      setTimeout(()=>$('modal').classList.add('hidden'),800);
+    }else{
+      result.style.background='var(--red-bg)';result.style.color='var(--red)';
+      result.textContent='❌ '+(d.error||'添加失败');
+    }
+  }catch(e){
+    result.style.background='var(--red-bg)';result.style.color='var(--red)';
+    result.textContent='❌ '+e.message;
+  }
+  btn.disabled=false;btn.textContent='添加';
+}
+async function removeCustomSource(path){
+  if(!confirm(`确认移除来源 "${path}"？`))return;
+  try{
+    const r=await fetch('/api/custom-sources?path='+encodeURIComponent(path),{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){toast('来源已移除');await loadData()}
+    else toast(d.error||'移除失败','error');
+  }catch(e){toast('移除失败','error')}
 }
 
 /* ── Modal ── */

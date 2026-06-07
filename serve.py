@@ -274,6 +274,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._openapi()
         elif path == "/api/source/skills":
             self._list_source_skills()
+        elif path == "/api/custom-sources":
+            self._get_custom_sources()
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = path.split("/")[3]
             self._serve_skill_content(name)
@@ -288,6 +290,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._diagnose()
         elif path == "/api/steal":
             self._steal_skill()
+        elif path == "/api/custom-sources":
+            self._add_custom_source()
         else:
             self.send_error(404)
 
@@ -296,6 +300,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if path.startswith("/api/skill/"):
             name = path.split("/")[3]
             self._delete_skill(name)
+        elif path == "/api/custom-sources":
+            self._remove_custom_source()
         else:
             self.send_error(404)
 
@@ -420,6 +426,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not source_path:
             self._json_response({"error": "missing path param"}, status=400)
             return
+        # Normalize path placeholders
+        home = str(Path.home())
+        source_path = source_path.replace("${HOME}", home).replace("$HOME", home)
         if source_path.startswith("~"):
             source_path = str(Path.home() / source_path[2:])
         source_dir = Path(source_path)
@@ -457,6 +466,54 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "skills": result,
             "count": len(result),
         })
+
+    def _get_custom_sources(self):
+        """Return user-defined custom source paths."""
+        self._json_response(self._load_custom_sources())
+
+    def _add_custom_source(self):
+        """Add a custom source path."""
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+        new_path = data.get("path", "").strip()
+        if not new_path:
+            self._json_response({"error": "missing path"}, status=400)
+            return
+        # Expand ~
+        if new_path.startswith("~"):
+            new_path = str(Path.home() / new_path[2:])
+        p = Path(new_path)
+        if not p.exists():
+            self._json_response({"error": f"path does not exist: {new_path}"}, status=400)
+            return
+        # Must have skills/ subdir or be a skills dir itself
+        skills_dir = p / "skills" if p.name != "skills" else p
+        if not skills_dir.is_dir():
+            self._json_response({"error": f"no skills/ subdir found in {new_path}"}, status=400)
+            return
+        paths = self._load_custom_sources()
+        if new_path not in paths:
+            paths.append(new_path)
+            self._save_custom_sources(paths)
+        self._json_response({"ok": True, "path": new_path, "paths": paths})
+
+    def _remove_custom_source(self):
+        """Remove a custom source path."""
+        from urllib.parse import parse_qs
+        query = parse_qs(urlparse(self.path).query)
+        rm_path = query.get("path", [""])[0]
+        if not rm_path:
+            self._json_response({"error": "missing path"}, status=400)
+            return
+        paths = self._load_custom_sources()
+        if rm_path in paths:
+            paths.remove(rm_path)
+            self._save_custom_sources(paths)
+        self._json_response({"ok": True, "paths": paths})
 
     def _fast_scan(self):
         """Direct Python directory scan — milliseconds instead of bash subprocess."""
@@ -650,10 +707,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         self._json_response({"status": "idle"})
 
+    def _load_custom_sources(self):
+        """Load user-defined custom source paths."""
+        try:
+            cf = STATE_DIR / "custom-sources.json"
+            if cf.exists():
+                return json.loads(cf.read_text())
+        except Exception:
+            pass
+        return []
+
+    def _save_custom_sources(self, paths):
+        """Save user-defined custom source paths."""
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        cf = STATE_DIR / "custom-sources.json"
+        cf.write_text(json.dumps(paths, ensure_ascii=False, indent=2), encoding="utf-8")
+
     def _list_targets(self):
-        """Scan common locations for skill directories and return list."""
+        """Scan common locations + custom sources for skill directories."""
         home = Path.home()
-        # Known skill root prefixes
         prefixes = [
             home / ".claude",
             home / ".agents",
@@ -667,53 +739,46 @@ class DashboardHandler(BaseHTTPRequestHandler):
             home / "Downloads",
             home / "hyperframes",
         ]
-        # Also scan ~/projects for any with skills/ subdir
         projects_dir = home / "projects"
         if projects_dir.exists():
             for p in projects_dir.iterdir():
                 if p.is_dir():
                     prefixes.append(p)
+        # Add custom sources
+        for cs in self._load_custom_sources():
+            p = Path(cs)
+            if p.is_dir() and p not in prefixes:
+                prefixes.append(p)
 
         targets = []
         seen = set()
         current = self._current_target()
         for prefix in prefixes:
-            skills_dir = prefix / "skills"
+            skills_dir = prefix / "skills" if prefix.name != "skills" else prefix
             if skills_dir.is_dir() and str(skills_dir) not in seen:
                 seen.add(str(skills_dir))
-                # Count skills
                 count = sum(1 for d in skills_dir.iterdir()
                            if d.is_dir() and (d / "SKILL.md").exists())
                 if count == 0:
                     continue
-                # Determine scope label
                 rel = str(skills_dir).replace(str(home), "~")
                 name = skills_dir.parent.name
-                # Classify scope
                 if "claude" in rel:
-                    scope = "global"
-                    agent = "Claude Code"
+                    scope, agent = "global", "Claude Code"
                 elif "codex" in rel:
-                    scope = "global"
-                    agent = "Codex"
+                    scope, agent = "global", "Codex"
                 elif "agents" in rel:
-                    scope = "global"
-                    agent = "通用 Agents"
+                    scope, agent = "global", "通用 Agents"
                 elif "alice" in rel:
-                    scope = "global"
-                    agent = "Alice"
+                    scope, agent = "global", "Alice"
                 elif "cc-switch" in rel:
-                    scope = "global"
-                    agent = "CC-Switch"
+                    scope, agent = "global", "CC-Switch"
                 elif "workbuddy" in rel:
-                    scope = "global"
-                    agent = "WorkBuddy"
+                    scope, agent = "global", "WorkBuddy"
                 elif "projects" in rel:
-                    scope = "project"
-                    agent = name
+                    scope, agent = "project", name
                 else:
-                    scope = "global"
-                    agent = name
+                    scope, agent = "global", name
                 targets.append({
                     "path": str(skills_dir),
                     "rel": rel,
@@ -726,7 +791,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response(targets)
 
     def _current_target(self):
-        """Read current target from state file, fallback to ~/.claude/skills."""
+        """Read current target from dedicated state file, fallback to latest-scan.json, fallback to ~/.claude/skills."""
+        # 1) Dedicated state file (most reliable)
+        try:
+            ct = json.loads((STATE_DIR / "current-target.json").read_text())
+            tp = ct.get("path", "")
+            if tp.startswith("~"):
+                tp = str(Path.home() / tp[2:])
+            if tp and Path(tp).is_dir():
+                return tp
+        except Exception:
+            pass
+        # 2) Legacy: latest-scan.json from skill-mgr
         try:
             scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
             tp = scan.get("target", {}).get("path", "")
@@ -734,7 +810,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 tp = str(Path.home() / tp[2:])
             return tp
         except Exception:
-            return str(Path.home() / ".claude/skills")
+            pass
+        # 3) Fallback
+        return str(Path.home() / ".claude/skills")
 
     def _set_target(self):
         """Switch target — fast scan directly, no bash subprocess."""
@@ -754,9 +832,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"error": f"not a directory: {target_path}"}, status=400)
             return
 
-        # Write to state so _current_target picks it up
+        # Write to dedicated state file so _current_target picks it up
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        # Update latest-scan.json target field
+        home = Path.home()
+        rel = str(target_path).replace(str(home), "~")
+        ct_file = STATE_DIR / "current-target.json"
+        ct_file.write_text(json.dumps({"path": rel, "label": Path(target_path).parent.name}, ensure_ascii=False, indent=2), encoding="utf-8")
+        # Also update legacy latest-scan.json for compatibility
         scan_file = STATE_DIR / "latest-scan.json"
         scan_data = {}
         if scan_file.exists():
@@ -764,8 +846,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 scan_data = json.loads(scan_file.read_text("utf-8"))
             except Exception:
                 pass
-        home = Path.home()
-        rel = str(target_path).replace(str(home), "~")
         scan_data["target"] = {
             "path": rel,
             "label": Path(target_path).parent.name,
