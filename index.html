@@ -1074,6 +1074,17 @@ async function switchTarget(path){
     skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
     render();
     toast(`已切换 (${d.duration_ms}ms)`);
+    // Fallback: load targets as sources if scan.sources is empty
+    if(!scan?.sources?.length){
+      try{
+        const ts=await fetch('/api/targets').then(r=>r.json());
+        if(ts?.length){
+          scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
+          renderSources();
+          $('badge-sources').textContent=ts.length;
+        }
+      }catch(e){}
+    }
     // Quick-check the new target
     const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
     if(qc&&!qc.error){health=qc;renderHealth();renderIssues();updateDiagBadges();}

@@ -1067,9 +1067,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
         cf.write_text(json.dumps(paths, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _list_targets(self):
-        """Scan common locations + custom sources for skill directories."""
+        """Scan common locations + nested subdirs + custom sources for skill directories.
+        Mirrors skill-mgr scan breadth: standard paths, deep subdirs, project nests.
+        """
         home = Path.home()
-        prefixes = [
+
+        # Phase 1: Collect candidate directories
+        candidates = []
+        seen_paths = set()
+
+        def add_dir(d):
+            if d.is_dir() and str(d) not in seen_paths:
+                seen_paths.add(str(d))
+                candidates.append(d)
+
+        # 1A) Standard agent prefixes — scan prefix/skills AND one level of subdirs
+        standard_prefixes = [
             home / ".claude",
             home / ".agents",
             home / ".alice",
@@ -1079,57 +1092,118 @@ class DashboardHandler(BaseHTTPRequestHandler):
             home / ".openclaw",
             home / ".qclaw",
             home / ".workbuddy",
+            home / ".codebuddy",
+            home / ".cursor",
+            home / ".cola",
             home / "Downloads",
             home / "hyperframes",
+            home / "AI-Skills",
+            home / ".config" / "opencode",
+            home / "Documents",
         ]
+        for prefix in standard_prefixes:
+            if not prefix.exists():
+                continue
+            # Direct skills/ dir
+            add_dir(prefix / "skills")
+            # One-level subdirs under skills/ (e.g. skills/gstack, skills/openclaw-imports)
+            skills_dir = prefix / "skills"
+            if skills_dir.is_dir():
+                for sub in skills_dir.iterdir():
+                    if sub.is_dir():
+                        add_dir(sub)
+            # Special nested patterns (e.g. hermes/hermes-agent/skills)
+            for deep in ["hermes-agent", "skills-marketplace", "connectors-marketplace",
+                         "extensions", "workspaces", "backups", "skill-backups"]:
+                deep_dir = prefix / deep
+                if deep_dir.is_dir():
+                    for sub in deep_dir.iterdir():
+                        if sub.is_dir():
+                            add_dir(sub)
+                            # One more level for hermes-agent/skills/xxx
+                            for sub2 in sub.iterdir():
+                                if sub2.is_dir():
+                                    add_dir(sub2)
+
+        # 1B) Projects — scan projects/*/.claude/skills etc.
         projects_dir = home / "projects"
         if projects_dir.exists():
             for p in projects_dir.iterdir():
-                if p.is_dir():
-                    prefixes.append(p)
-        # Add custom sources
+                if not p.is_dir():
+                    continue
+                add_dir(p / ".claude" / "skills")
+                add_dir(p / "skills")
+                # Also scan project root as a prefix
+                add_dir(p / ".agents" / "skills")
+                add_dir(p / ".codex" / "skills")
+
+        # 1C) Downloads — scan for .claude/skills nests
+        downloads = home / "Downloads"
+        if downloads.is_dir():
+            for d in downloads.iterdir():
+                if d.is_dir():
+                    add_dir(d / ".claude" / "skills")
+                    add_dir(d / "skills")
+
+        # 1D) Custom sources
         for cs in self._load_custom_sources():
             p = Path(cs)
-            if p.is_dir() and p not in prefixes:
-                prefixes.append(p)
+            if p.is_dir():
+                add_dir(p)
 
+        # Phase 2: Filter to actual skill directories
         targets = []
-        seen = set()
         current = self._current_target()
-        for prefix in prefixes:
-            skills_dir = prefix / "skills" if prefix.name != "skills" else prefix
-            if skills_dir.is_dir() and str(skills_dir) not in seen:
-                seen.add(str(skills_dir))
-                count = sum(1 for d in skills_dir.iterdir()
-                           if d.is_dir() and (d / "SKILL.md").exists())
-                if count == 0:
-                    continue
-                rel = str(skills_dir).replace(str(home), "~")
-                name = skills_dir.parent.name
-                if "claude" in rel:
-                    scope, agent = "global", "Claude Code"
-                elif "codex" in rel:
-                    scope, agent = "global", "Codex"
-                elif "agents" in rel:
-                    scope, agent = "global", "通用 Agents"
-                elif "alice" in rel:
-                    scope, agent = "global", "Alice"
-                elif "cc-switch" in rel:
-                    scope, agent = "global", "CC-Switch"
-                elif "workbuddy" in rel:
-                    scope, agent = "global", "WorkBuddy"
-                elif "projects" in rel:
-                    scope, agent = "project", name
-                else:
-                    scope, agent = "global", name
-                targets.append({
-                    "path": str(skills_dir),
-                    "rel": rel,
-                    "name": agent,
-                    "scope": scope,
-                    "count": count,
-                    "is_current": str(skills_dir) == current,
-                })
+        for skills_dir in candidates:
+            count = sum(1 for d in skills_dir.iterdir()
+                       if d.is_dir() and (d / "SKILL.md").exists())
+            if count == 0:
+                continue
+            rel = str(skills_dir).replace(str(home), "~")
+            name = skills_dir.name if skills_dir.name != "skills" else skills_dir.parent.name
+            # Agent label detection
+            rel_lower = rel.lower()
+            if "claude" in rel_lower and ".claude" in rel_lower:
+                agent = "Claude Code"
+            elif "codex" in rel_lower:
+                agent = "Codex"
+            elif "agents" in rel_lower:
+                agent = "通用 Agents"
+            elif "alice" in rel_lower:
+                agent = "Alice"
+            elif "cc-switch" in rel_lower:
+                agent = "CC-Switch"
+            elif "workbuddy" in rel_lower:
+                agent = "WorkBuddy"
+            elif "codebuddy" in rel_lower:
+                agent = "CodeBuddy"
+            elif "hermes" in rel_lower:
+                agent = "Hermes"
+            elif "cursor" in rel_lower:
+                agent = "Cursor"
+            elif "openclaw" in rel_lower:
+                agent = "OpenClaw"
+            elif "qclaw" in rel_lower:
+                agent = "QClaw"
+            elif "cola" in rel_lower:
+                agent = "Cola"
+            elif "downloads" in rel_lower:
+                agent = "Downloads"
+            elif "projects" in rel_lower:
+                agent = "项目: " + skills_dir.parent.name
+            elif "hyperframes" in rel_lower:
+                agent = "HyperFrames"
+            else:
+                agent = name
+            scope = "project" if "projects/" in rel else "global"
+            targets.append({
+                "path": str(skills_dir),
+                "rel": rel,
+                "name": agent,
+                "scope": scope,
+                "count": count,
+                "is_current": str(skills_dir) == current,
+            })
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
         self._json_response(targets)
 
