@@ -156,10 +156,11 @@ tbody tr:hover{background:var(--bg-hover)}
 .search:focus{outline:none;border-color:var(--indigo)}
 .search-wrap{position:relative;margin-bottom:12px}
 .search-wrap::before{content:'⌕';position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px}
-.skill-row{display:grid;grid-template-columns:1fr 90px 60px;gap:8px;padding:7px 12px;border-radius:6px;align-items:center;cursor:pointer;transition:background .1s;font-size:12px}
+.skill-row{display:grid;grid-template-columns:22px 1fr 90px 60px;gap:8px;padding:7px 12px;border-radius:6px;align-items:center;cursor:pointer;transition:background .1s;font-size:12px}
 .skill-row:hover{background:var(--bg-hover)}
 .skill-row .name{font-weight:600;color:var(--indigo)}
 .skill-row .agent{color:var(--text-muted);font-size:11px}
+.skill-check{cursor:pointer;width:14px;height:14px}
 .kind{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
 .k-entity{background:var(--bg-hover);color:var(--text-muted)}
 .k-symlink{background:var(--amber-bg);color:var(--amber)}
@@ -307,9 +308,19 @@ tbody tr:hover{background:var(--bg-hover)}
 
       <!-- Skills -->
       <div class="view" id="view-skills">
-        <div style="display:flex;gap:8px;margin-bottom:12px">
-          <div class="search-wrap" style="flex:1"><input class="search" id="search" placeholder="搜索 skill..." oninput="filterSkills()"></div>
-          <button class="btn btn-primary" onclick="showStealDialog()">＋ 安装 Skill</button>
+        <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
+          <div class="search-wrap" style="flex:1;min-width:200px"><input class="search" id="search" placeholder="搜索 skill..." oninput="filterSkills()"></div>
+          <button class="btn btn-primary" onclick="showStealDialog()">＋ 安装</button>
+          <button class="btn" onclick="exportSkills()">⬇ 导出</button>
+          <button class="btn" onclick="showImportDialog()">⬆ 导入</button>
+        </div>
+        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+          <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px;cursor:pointer">
+            <input type="checkbox" id="select-all" onchange="toggleSelectAll()" style="cursor:pointer">
+            全选
+          </label>
+          <button class="btn btn-sm btn-danger" id="batch-delete-btn" onclick="batchDelete()" disabled>批量删除</button>
+          <span id="batch-count" style="font-size:11px;color:var(--text-muted)">已选 0 个</span>
         </div>
         <div id="skills-list"></div>
       </div>
@@ -333,6 +344,18 @@ tbody tr:hover{background:var(--bg-hover)}
 let scan=null,health=null,skills=[],diagState='idle';
 const $=id=>document.getElementById(id);
 let diagPollTimer=null;
+let categoryOverrides={};
+function loadCategoryOverrides(){
+  try{categoryOverrides=JSON.parse(localStorage.getItem('sd-category-overrides')||'{}')}catch(e){categoryOverrides={}}
+}
+function saveCategoryOverrides(){localStorage.setItem('sd-category-overrides',JSON.stringify(categoryOverrides))}
+function setCategory(name,cat){
+  if(!cat||cat==='other'){delete categoryOverrides[name]}else{categoryOverrides[name]=cat}
+  saveCategoryOverrides();
+  skills.forEach(s=>{if(s.name===name){s.category=cat||classifySkillJS(name);s.categorySource=cat?'user':'keyword'}});
+  render();toast(`已设置 "${name}" 分类为 ${cat||'其他'}`);
+}
+let selectedSkills=new Set();
 
 /* ── Theme ── */
 function getTheme(){return localStorage.getItem('sd-theme')||'light'}
@@ -368,7 +391,13 @@ async function loadData(){
   // Layer 0: fast-scan (instant skill list + classification)
   const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
   scan=sr;skills=sr?.installed||[];
-  skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+  loadCategoryOverrides();
+  skills.forEach(s=>{
+    if(!s.category||s.category===''){
+      if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
+      else{s.category=classifySkillJS(s.name);s.categorySource='keyword'}
+    }else{s.categorySource='frontmatter'}
+  });
   render();
   // Layer 1: Python quick-check (structure issues + health score, ~10ms)
   const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
@@ -516,10 +545,101 @@ function renderSkillsList(){
   else{sortedCats.forEach(([cat,sk])=>{
     html+=`<div class="skill-group">
       <div class="skill-group-head" onclick="toggleGroup(this)"><span class="arrow">▶</span> ${CAT_NAMES[cat]||cat} <span style="font-weight:400;color:var(--text-muted);font-size:12px">(${sk.length})</span></div>
-      <div class="skill-group-body">${sk.map(s=>`<div class="skill-row" onclick="showSkill('${s.name}')"><div class="name">${s.name}</div><div class="agent">${s.agent||''}</div><div><span class="kind ${s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'k-entity'}">${s.kind||'entity'}</span></div></div>`).join('')}</div>
+      <div class="skill-group-body">${sk.map(s=>`<div class="skill-row" onclick="if(event.target.type!=='checkbox')showSkill('${s.name}')">
+        <input type="checkbox" class="skill-check" ${selectedSkills.has(s.name)?'checked':''} onchange="toggleSkillSelect('${s.name}')">
+        <div class="name">${s.name}</div>
+        <div class="agent">${s.categorySource==='frontmatter'?'📋':s.categorySource==='user'?'🏷️':''} ${s.agent||''}</div>
+        <div><span class="kind ${s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'k-entity'}">${s.kind||'entity'}</span></div>
+      </div>`).join('')}</div>
     </div>`;
   })}
   $('skills-list').innerHTML=html;
+  updateBatchUI();
+}
+
+function toggleSkillSelect(name){
+  if(selectedSkills.has(name))selectedSkills.delete(name);else selectedSkills.add(name);
+  updateBatchUI();
+}
+function toggleSelectAll(){
+  const checked=$('select-all').checked;
+  const q=($('search').value||'').toLowerCase();
+  const visible=skills.filter(s=>!q||s.name.toLowerCase().includes(q)).map(s=>s.name);
+  if(checked){visible.forEach(n=>selectedSkills.add(n))}else{visible.forEach(n=>selectedSkills.delete(n))}
+  renderSkillsList();
+}
+function updateBatchUI(){
+  const count=selectedSkills.size;
+  $('batch-count').textContent=`已选 ${count} 个`;
+  $('batch-delete-btn').disabled=count===0;
+  $('select-all').checked=count>0&&count===skills.length;
+}
+async function batchDelete(){
+  const names=[...selectedSkills];
+  if(!names.length)return;
+  if(!confirm(`确认删除 ${names.length} 个 skill？\n\n${names.join(', ')}`))return;
+  let ok=0,fail=0;
+  for(const name of names){
+    try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}
+    catch{fail++}
+  }
+  selectedSkills.clear();
+  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  await loadData();
+}
+
+/* ── Export / Import ── */
+function exportSkills(){
+  const data={
+    exported_at:new Date().toISOString(),
+    target:scan?.target?.path||'',
+    skills:skills.map(s=>({name:s.name,category:s.category||'other',description:s.description||'',kind:s.kind||'entity'}))
+  };
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=`skills-${Date.now()}.json`;a.click();
+  URL.revokeObjectURL(url);
+  toast(`已导出 ${data.skills.length} 个 skill`);
+}
+function showImportDialog(){
+  $('modal-title').textContent='导入 Skills';
+  $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+    <div style="margin-bottom:12px;color:var(--text-muted)">粘贴 JSON 清单，支持批量安装</div>
+    <textarea id="import-json" placeholder='[{&quot;name&quot;:&quot;...&quot;,&quot;source&quot;:&quot;github.com/user/repo&quot;}]' style="width:100%;height:140px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;font-family:'SF Mono',monospace;resize:vertical;margin-bottom:12px"></textarea>
+    <div id="import-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+      <button class="btn btn-primary" id="import-btn" onclick="doImport()">导入</button>
+    </div>
+  </div>`;
+  $('modal').classList.remove('hidden');
+}
+async function doImport(){
+  const btn=$('import-btn');const result=$('import-result');
+  let data;
+  try{data=JSON.parse($('import-json').value.trim())}
+  catch(e){toast('JSON 格式错误','error');return}
+  const items=Array.isArray(data)?data:(data.skills||[]);
+  if(!items.length){toast('清单为空','error');return}
+  btn.disabled=true;btn.textContent='安装中...';
+  result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
+  let ok=0,fail=0,logs=[];
+  for(const item of items){
+    const source=item.source||item.repo||'';
+    if(!source){logs.push(`⏭ ${item.name||'?'}: 无来源`);continue}
+    try{
+      const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
+      const d=await r.json();
+      d.ok?(ok++):(fail++);logs.push(`${d.ok?'✅':'❌'} ${item.name||source}`);
+      result.textContent=logs.slice(-5).join('\n');
+    }catch(e){fail++;logs.push(`❌ ${item.name||source}: ${e.message}`)}
+  }
+  result.style.background=fail===0?'var(--green-bg)':'var(--red-bg)';
+  result.style.color=fail===0?'var(--green)':'var(--red)';
+  result.textContent=`完成: ${ok} 成功${fail?`, ${fail} 失败`:''}\n`+logs.join('\n');
+  btn.disabled=false;btn.textContent='导入';
+  toast(`导入完成: ${ok} 成功${fail?`, ${fail} 失败`:''}`);
+  await loadData();
 }
 
 function toggleGroup(el){el.classList.toggle('open');el.nextElementSibling.classList.toggle('open')}
@@ -645,10 +765,32 @@ function renderSources(){
 }
 
 /* ── Modal ── */
+const ALL_CATS=['code-dev','content','image-gen','video-audio','data','web-search','social','doc','comms','design','translate','sysadmin','persona','finance','other'];
 async function showSkill(name){
-  try{const r=await fetch(`/api/skill/${name}/content`);const d=await r.json();$('modal-title').textContent=name;$('modal-body').textContent=d.content||d.error||'(无内容)';$('modal').classList.remove('hidden')}
+  try{
+    const r=await fetch(`/api/skill/${name}/content`);const d=await r.json();
+    const sk=skills.find(s=>s.name===name);
+    const cat=sk?.category||'other';
+    const catSrc=sk?.categorySource||'';
+    const catLabel=catSrc==='frontmatter'?'📋 frontmatter':catSrc==='user'?'🏷️ 用户覆盖':'🔤 关键词';
+    $('modal-title').textContent=name;
+    $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;color:var(--text);margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--text-muted)">分类: <strong style="color:var(--indigo)">${CAT_NAMES[cat]||cat}</strong></span>
+        <span style="font-size:11px;color:var(--text-muted)">(${catLabel})</span>
+        <select id="cat-edit" style="font-size:12px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);cursor:pointer"
+          onchange="setCategory('${name}',this.value);$('modal').classList.add('hidden')">
+          <option value="" ${!categoryOverrides[name]?'selected':''}>自动分类</option>
+          ${ALL_CATS.map(c=>`<option value="${c}" ${categoryOverrides[name]===c?'selected':''}>${CAT_NAMES[c]||c}</option>`).join('')}
+        </select>
+      </div>
+      <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-dim);background:var(--bg-card-alt);padding:12px;border-radius:8px;border:1px solid var(--border);max-height:50vh;overflow-y:auto">${escapeHtml(d.content||d.error||'(无内容)')}</pre>
+    </div>`;
+    $('modal').classList.remove('hidden')
+  }
   catch(e){$('modal-title').textContent=name;$('modal-body').textContent='加载失败';$('modal').classList.remove('hidden')}
 }
+function escapeHtml(t){return t.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 
 /* ── Refresh ── */
 async function refreshData(){

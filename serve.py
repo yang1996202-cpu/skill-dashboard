@@ -268,6 +268,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._quick_check()
         elif path == "/api/diagnosis-status":
             self._diagnosis_status()
+        elif path == "/api/export":
+            self._export_skills()
+        elif path == "/api/openapi":
+            self._openapi()
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = path.split("/")[3]
             self._serve_skill_content(name)
@@ -346,6 +350,65 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"name": name, "content": content, "path": str(skill_md)})
                 return
         self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+
+    def _export_skills(self):
+        """Export current target's skills as JSON."""
+        target = self._current_target()
+        target_dir = Path(target)
+        result = []
+        if target_dir.is_dir():
+            for d in sorted(target_dir.iterdir()):
+                if not d.is_dir():
+                    continue
+                skill_md = d / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                name = d.name
+                description = ""
+                category = ""
+                try:
+                    text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end > 0:
+                            fm = text[3:end]
+                            for line in fm.splitlines():
+                                line = line.strip()
+                                if line.startswith("description:"):
+                                    description = line.split(":", 1)[1].strip().strip("'\"")
+                                elif line.startswith("category:"):
+                                    category = line.split(":", 1)[1].strip().strip("'\"")
+                except Exception:
+                    pass
+                result.append({
+                    "name": name,
+                    "category": category,
+                    "description": description,
+                })
+        self._json_response({
+            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "target": target,
+            "skills": result,
+        })
+
+    def _openapi(self):
+        """Return simple API documentation."""
+        self._json_response({
+            "title": "Skill Dashboard API",
+            "version": "1.0",
+            "endpoints": [
+                {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
+                {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
+                {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
+                {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
+                {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
+                {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
+                {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (needs skill-mgr)"},
+                {"method": "POST", "path": "/api/steal", "desc": "Install skill from GitHub URL"},
+                {"method": "DELETE", "path": "/api/skill/{name}", "desc": "Delete a skill"},
+                {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
+            ],
+        })
 
     def _fast_scan(self):
         """Direct Python directory scan — milliseconds instead of bash subprocess."""
