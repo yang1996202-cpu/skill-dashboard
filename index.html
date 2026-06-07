@@ -1,0 +1,808 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Skill Dashboard</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+/* ── Theme tokens ── */
+[data-theme="light"]{
+  --bg:#f8fafc;--bg-nav:#fff;--bg-card:#fff;--bg-card-alt:#f1f5f9;--bg-hover:#e2e8f0;
+  --border:#e2e8f0;--border-focus:#6366f1;
+  --text:#1e293b;--text-dim:#475569;--text-muted:#94a3b8;
+  --indigo:#6366f1;--indigo-dim:#4f46e5;--indigo-bg:rgba(99,102,241,.08);
+  --amber:#f59e0b;--amber-bg:rgba(245,158,11,.08);
+  --green:#10b981;--green-bg:rgba(16,185,129,.08);
+  --red:#ef4444;--red-bg:rgba(239,68,68,.06);
+  --purple:#8b5cf6;--purple-bg:rgba(139,92,246,.07);
+  --cyan:#06b6d4;--cyan-bg:rgba(6,182,212,.07);
+  --shadow:0 1px 3px rgba(0,0,0,.06);--ring-track:#e2e8f0;
+}
+[data-theme="dark"]{
+  --bg:#0f1117;--bg-nav:#161922;--bg-card:#1a1d28;--bg-card-alt:#21242f;--bg-hover:#282c3a;
+  --border:#2a2e3a;--border-focus:#818cf8;
+  --text:#e2e8f0;--text-dim:#94a3b8;--text-muted:#64748b;
+  --indigo:#818cf8;--indigo-dim:#6366f1;--indigo-bg:rgba(129,140,248,.1);
+  --amber:#fbbf24;--amber-bg:rgba(251,191,36,.1);
+  --green:#34d399;--green-bg:rgba(52,211,153,.1);
+  --red:#fb7185;--red-bg:rgba(251,113,133,.1);
+  --purple:#c084fc;--purple-bg:rgba(192,132,252,.1);
+  --cyan:#22d3ee;--cyan-bg:rgba(34,211,238,.08);
+  --shadow:0 1px 4px rgba(0,0,0,.25);--ring-track:#2a2e3a;
+}
+
+html{scroll-behavior:smooth}
+body{font-family:-apple-system,'SF Pro Text','Helvetica Neue','PingFang SC',sans-serif;background:var(--bg);color:var(--text);line-height:1.6;overflow-x:hidden;transition:background .2s,color .2s}
+
+/* ── Layout ── */
+.app{display:flex;min-height:100vh}
+.sidebar{width:224px;background:var(--bg-nav);border-right:1px solid var(--border);position:fixed;top:0;left:0;bottom:0;z-index:30;display:flex;flex-direction:column;padding:20px 0;transition:transform .2s,background .2s}
+.sidebar-logo{padding:0 20px 18px;border-bottom:1px solid var(--border);margin-bottom:6px}
+.sidebar-logo h1{font-size:15px;font-weight:700;display:flex;align-items:center;gap:7px}
+.sidebar-logo h1 em{font-style:normal;font-size:18px}
+.sidebar-logo p{font-size:11px;color:var(--text-muted);margin-top:2px}
+.nav-group{padding:10px 12px 2px}
+.nav-group-label{font-size:10px;text-transform:uppercase;letter-spacing:1.2px;color:var(--text-muted);padding:0 8px;margin-bottom:4px;font-weight:600}
+.nav-item{display:flex;align-items:center;gap:9px;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px;color:var(--text-dim);transition:all .15s;margin:1px 0}
+.nav-item:hover{background:var(--bg-hover);color:var(--text)}
+.nav-item.active{background:var(--indigo-bg);color:var(--indigo);font-weight:600}
+.nav-item .badge{margin-left:auto;background:var(--bg-hover);color:var(--text-muted);font-size:10px;padding:1px 7px;border-radius:10px;font-weight:500}
+.nav-item.active .badge{background:rgba(99,102,241,.15);color:var(--indigo)}
+
+.main{margin-left:224px;flex:1;min-width:0;transition:margin .2s}
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg-nav) 88%,transparent);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);border-bottom:1px solid var(--border);padding:12px 24px;display:flex;align-items:center;justify-content:space-between;transition:background .2s}
+.topbar-left{display:flex;align-items:center;gap:12px}
+.topbar-left h2{font-size:14px;font-weight:600}
+.topbar-left .meta{font-size:11px;color:var(--text-muted)}
+.topbar-right{display:flex;align-items:center;gap:8px}
+
+.content{padding:20px 24px;max-width:1200px}
+
+/* ── Buttons ── */
+.btn{padding:6px 13px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text-dim);cursor:pointer;font-size:12px;display:inline-flex;align-items:center;gap:4px;transition:all .15s;font-family:inherit}
+.btn:hover{background:var(--bg-hover);color:var(--text);border-color:var(--indigo)}
+.btn-primary{background:var(--indigo);border-color:var(--indigo);color:#fff}
+.btn-primary:hover{filter:brightness(1.1)}
+.btn-danger{color:var(--red);border-color:var(--red-bg)}
+.btn-danger:hover{background:var(--red-bg);border-color:var(--red)}
+.btn-sm{padding:4px 10px;font-size:11px;border-radius:6px}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+
+/* ── Stats ── */
+.stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:20px}
+.stat{background:var(--bg-card);border:1px solid var(--border);border-radius:10px;padding:14px 16px;position:relative;overflow:hidden;box-shadow:var(--shadow);transition:background .2s}
+.stat::after{content:'';position:absolute;top:0;left:0;right:0;height:2px}
+.stat.s-total::after{background:var(--indigo)}
+.stat.s-pool::after{background:var(--cyan)}
+.stat.s-sources::after{background:var(--purple)}
+.stat.s-issues::after{background:var(--red)}
+.stat.s-ready::after{background:var(--green)}
+.stat.s-health::after{background:var(--amber)}
+.stat .val{font-size:22px;font-weight:800;line-height:1.2}
+.stat .lbl{font-size:11px;color:var(--text-muted);margin-top:2px}
+
+/* ── Cards ── */
+.card{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin-bottom:14px;box-shadow:var(--shadow);transition:background .2s}
+.card-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
+.card-head h3{font-size:14px;font-weight:600;display:flex;align-items:center;gap:7px}
+.card-head .sub{font-size:12px;color:var(--text-muted);font-weight:400}
+
+/* ── Health ── */
+.health-row{display:flex;gap:24px;align-items:center}
+.ring-wrap{width:120px;height:120px;position:relative;flex-shrink:0}
+.ring-wrap svg{transform:rotate(-90deg)}
+.ring-label{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center}
+.ring-label .num{font-size:30px;font-weight:800;line-height:1}
+.ring-label .unit{font-size:10px;color:var(--text-muted)}
+.health-level{display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:600;padding:3px 10px;border-radius:6px;margin-bottom:8px}
+.health-meta{font-size:12px;color:var(--text-dim);margin-bottom:12px}
+
+/* ── Diagnostics ── */
+.diag{padding:8px 12px;border-radius:8px;margin-bottom:5px;cursor:pointer;transition:background .12s;display:flex;gap:9px;align-items:flex-start}
+.diag:hover{background:var(--bg-hover)}
+.diag-dot{width:7px;height:7px;border-radius:50%;margin-top:7px;flex-shrink:0}
+.diag-dot.danger{background:var(--red)}.diag-dot.warn{background:var(--amber)}.diag-dot.info{background:var(--cyan)}
+.diag-body{flex:1;min-width:0}
+.diag-title{font-size:12px;font-weight:500}
+.diag-desc{font-size:11px;color:var(--text-muted);margin-top:1px}
+.diag-skills{font-size:11px;color:var(--text-dim);margin-top:4px;display:none}
+.diag.open .diag-skills{display:block}
+.diag-action{margin-top:4px}
+
+/* ── Categories ── */
+.cat-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:6px}
+.cat-row{display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:8px;background:var(--bg-card-alt);transition:background .15s}
+.cat-row:hover{background:var(--bg-hover)}
+.cat-icon{font-size:14px;width:22px;text-align:center}
+.cat-name{font-size:12px;color:var(--text-dim);min-width:72px}
+.cat-bar-wrap{flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden}
+.cat-bar{height:100%;border-radius:2px;transition:width .4s}
+.cat-num{font-size:12px;font-weight:600;min-width:20px;text-align:right}
+
+/* ── Skill groups in list view ── */
+.skill-group{margin-bottom:16px}
+.skill-group-head{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;cursor:pointer;transition:background .12s;font-size:13px;font-weight:600}
+.skill-group-head:hover{background:var(--bg-hover)}
+.skill-group-head .arrow{font-size:10px;color:var(--text-muted);transition:transform .15s}
+.skill-group-head.open .arrow{transform:rotate(90deg)}
+.skill-group-body{display:none;padding:2px 0 0 28px}
+.skill-group-body.open{display:block}
+
+/* ── Similarity ── */
+.sim-card{border:1px solid var(--border);border-radius:10px;padding:12px 14px;margin-bottom:8px;background:var(--bg-card-alt)}
+.sim-head{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.sim-pct{font-size:12px;font-weight:700;padding:2px 8px;border-radius:5px}
+.sim-pct.high{background:var(--red-bg);color:var(--red)}
+.sim-pct.med{background:var(--amber-bg);color:var(--amber)}
+.sim-names{font-size:12px}
+.sim-tokens{display:flex;flex-wrap:wrap;gap:3px;margin-top:4px}
+.sim-tok{font-size:10px;padding:1px 6px;border-radius:4px;background:var(--purple-bg);color:var(--purple);font-family:'SF Mono',monospace}
+
+/* ── Table ── */
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:9px 12px;border-bottom:1px solid var(--border);color:var(--text-muted);font-size:11px;font-weight:500}
+td{padding:9px 12px;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)}
+tbody tr{transition:background .1s}
+tbody tr:hover{background:var(--bg-hover)}
+.badge{padding:2px 8px;border-radius:5px;font-size:10px;font-weight:600;display:inline-flex;align-items:center;gap:3px}
+.badge-green{background:var(--green-bg);color:var(--green)}
+.badge-red{background:var(--red-bg);color:var(--red)}
+.badge-muted{background:var(--bg-hover);color:var(--text-muted)}
+
+/* ── Skills list ── */
+.search{width:100%;max-width:340px;padding:8px 12px 8px 34px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:inherit;transition:border-color .15s,background .2s}
+.search:focus{outline:none;border-color:var(--indigo)}
+.search-wrap{position:relative;margin-bottom:12px}
+.search-wrap::before{content:'⌕';position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px}
+.skill-row{display:grid;grid-template-columns:1fr 90px 60px;gap:8px;padding:7px 12px;border-radius:6px;align-items:center;cursor:pointer;transition:background .1s;font-size:12px}
+.skill-row:hover{background:var(--bg-hover)}
+.skill-row .name{font-weight:600;color:var(--indigo)}
+.skill-row .agent{color:var(--text-muted);font-size:11px}
+.kind{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
+.k-entity{background:var(--bg-hover);color:var(--text-muted)}
+.k-symlink{background:var(--amber-bg);color:var(--amber)}
+.k-broken{background:var(--red-bg);color:var(--red)}
+
+/* ── Sources ── */
+.src-row{display:flex;align-items:center;gap:10px;padding:7px 12px;border-radius:6px;transition:background .12s}
+.src-row:hover{background:var(--bg-hover)}
+
+/* ── Empty ── */
+.empty{text-align:center;padding:36px 20px;color:var(--text-muted);font-size:13px}
+
+/* ── Modal ── */
+.overlay{position:fixed;inset:0;background:rgba(15,17,23,.5);z-index:50;display:flex;align-items:center;justify-content:center}
+.overlay.hidden{display:none}
+.modal{background:var(--bg-card);border:1px solid var(--border);border-radius:12px;width:92%;max-width:660px;max-height:78vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.15)}
+.modal-head{padding:12px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between}
+.modal-head h3{font-size:13px}
+.modal-x{background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:16px;padding:4px}
+.modal-body{padding:14px 18px;overflow-y:auto;font-family:'SF Mono','Fira Code',monospace;font-size:11px;white-space:pre-wrap;line-height:1.6;color:var(--text-dim)}
+
+/* ── Loading ── */
+.loader{position:fixed;inset:0;background:color-mix(in srgb,var(--bg) 80%,transparent);z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px}
+.loader.hidden{display:none}
+.spin{width:28px;height:28px;border:3px solid var(--border);border-top-color:var(--indigo);border-radius:50%;animation:sp .7s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* ── Views ── */
+.view{display:none}.view.active{display:block}
+
+/* ── Theme toggle ── */
+.theme-toggle{width:44px;height:24px;border-radius:12px;background:var(--border);border:none;cursor:pointer;position:relative;transition:background .2s}
+.theme-toggle::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--indigo);transition:transform .2s}
+[data-theme="dark"] .theme-toggle::after{transform:translateX(20px)}
+.theme-icon{font-size:14px}
+
+/* ── Toast ── */
+.toast{position:fixed;bottom:20px;right:20px;padding:10px 18px;border-radius:10px;background:var(--bg-card);border:1px solid var(--border);box-shadow:0 4px 16px rgba(0,0,0,.12);font-size:12px;z-index:70;opacity:0;transform:translateY(10px);transition:all .2s;pointer-events:none}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.success{border-color:var(--green);color:var(--green)}
+.toast.error{border-color:var(--red);color:var(--red)}
+
+/* ── Target switcher in sidebar ── */
+.target-bar{padding:12px 16px;border-bottom:1px solid var(--border);margin-bottom:6px}
+.target-label{font-size:10px;text-transform:uppercase;letter-spacing:1px;color:var(--text-muted);font-weight:600;margin-bottom:8px}
+.target-current{display:flex;align-items:center;gap:6px;padding:8px 10px;border-radius:8px;background:var(--indigo-bg);border:1px solid color-mix(in srgb,var(--indigo) 20%,transparent);cursor:pointer;transition:all .15s}
+.target-current:hover{border-color:var(--indigo)}
+.target-current .t-icon{font-size:16px}
+.target-current .t-info{flex:1;min-width:0}
+.target-current .t-name{font-size:13px;font-weight:600;color:var(--indigo);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.target-current .t-meta{font-size:10px;color:var(--text-muted);display:flex;gap:6px;align-items:center}
+.target-current .t-arrow{font-size:10px;color:var(--text-muted)}
+.target-dropdown{display:none;margin-top:4px;max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);box-shadow:var(--shadow)}
+.target-dropdown.open{display:block}
+.target-opt{display:flex;align-items:center;gap:8px;padding:7px 10px;cursor:pointer;font-size:12px;transition:background .1s;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent)}
+.target-opt:last-child{border-bottom:none}
+.target-opt:hover{background:var(--bg-hover)}
+.target-opt.active{background:var(--indigo-bg);color:var(--indigo);font-weight:600}
+.target-opt .to-scope{font-size:9px;padding:1px 5px;border-radius:4px;font-weight:500}
+.to-global{background:var(--indigo-bg);color:var(--indigo)}
+.to-project{background:var(--amber-bg);color:var(--amber)}
+.target-opt .to-count{margin-left:auto;color:var(--text-muted);font-size:11px}
+
+/* ── Diagnose button ── */
+.diag-btn{display:flex;align-items:center;gap:6px;width:100%;padding:7px 12px;border-radius:8px;border:1px solid var(--indigo);background:var(--indigo);color:#fff;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s;margin-bottom:8px}
+.diag-btn:hover{filter:brightness(1.1)}
+.diag-btn:disabled{opacity:.5;cursor:not-allowed}
+.diag-btn.running{border-color:var(--amber);background:var(--amber);color:#000;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+
+/* ── Mobile ── */
+.menu-btn{display:none;background:none;border:none;color:var(--text);font-size:18px;cursor:pointer;padding:4px}
+@media(max-width:768px){
+  .sidebar{transform:translateX(-100%)}
+  .sidebar.open{transform:translateX(0)}
+  .main{margin-left:0}
+  .menu-btn{display:block}
+  .stats-row{grid-template-columns:repeat(3,1fr)}
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-logo">
+      <h1><em>📊</em> Skill Dashboard</h1>
+    </div>
+    <!-- Target switcher — below logo -->
+    <div class="target-bar">
+      <div class="target-label">目标库</div>
+      <div class="target-current" id="target-btn" onclick="toggleTargetDropdown()">
+        <span class="t-icon" id="t-icon">🌐</span>
+        <div class="t-info">
+          <div class="t-name" id="t-name">loading...</div>
+          <div class="t-meta"><span id="t-scope">全局</span> · <span id="t-count">-</span> skills</div>
+        </div>
+        <span class="t-arrow">▼</span>
+      </div>
+      <div class="target-dropdown" id="target-dropdown"></div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">概览</div>
+      <div class="nav-item active" onclick="switchView('dashboard',this)"><span>🏠</span> 仪表盘 <span class="badge" id="badge-health">-</span></div>
+      <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 全部 Skills <span class="badge" id="badge-skills">-</span></div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">诊断</div>
+      <button class="diag-btn" id="diag-btn" onclick="runDiagnosis()">🔧 一键诊断</button>
+      <div class="nav-item" onclick="switchView('similar',this)"><span>🔍</span> 相似度 <span class="badge" id="badge-similar">-</span></div>
+      <div class="nav-item" onclick="switchView('upstream',this)"><span>🔗</span> 上游追踪 <span class="badge" id="badge-upstream">-</span></div>
+      <div class="nav-item" onclick="switchView('issues',this)"><span>⚠️</span> 问题修复 <span class="badge" id="badge-issues">-</span></div>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-label">来源</div>
+      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 技能库 <span class="badge" id="badge-sources">-</span></div>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="topbar">
+      <div class="topbar-left">
+        <button class="menu-btn" onclick="$('sidebar').classList.toggle('open')">☰</button>
+        <h2 id="view-title">仪表盘</h2>
+        <span class="meta" id="last-update"></span>
+      </div>
+      <div class="topbar-right">
+        <span class="theme-icon" id="theme-icon">☀️</span>
+        <button class="theme-toggle" onclick="toggleTheme()" title="切换主题"></button>
+        <button class="btn btn-primary" id="refresh-btn" onclick="refreshData()">↻ 刷新</button>
+      </div>
+    </div>
+
+    <div class="content">
+      <div class="loader hidden" id="loading"><div class="spin"></div><div style="font-size:12px;color:var(--text-dim)">刷新中...</div></div>
+      <div class="overlay hidden" id="modal" onclick="if(event.target===this)this.classList.add('hidden')"><div class="modal"><div class="modal-head"><h3 id="modal-title"></h3><button class="modal-x" onclick="$('modal').classList.add('hidden')">×</button></div><div class="modal-body" id="modal-body"></div></div></div>
+      <div class="toast" id="toast"></div>
+
+      <!-- Dashboard -->
+      <div class="view active" id="view-dashboard">
+        <div class="stats-row" id="stats-row"></div>
+        <div id="health-card"></div>
+        <div id="cat-card"></div>
+      </div>
+
+      <!-- Skills -->
+      <div class="view" id="view-skills">
+        <div style="display:flex;gap:8px;margin-bottom:12px">
+          <div class="search-wrap" style="flex:1"><input class="search" id="search" placeholder="搜索 skill..." oninput="filterSkills()"></div>
+          <button class="btn btn-primary" onclick="showStealDialog()">＋ 安装 Skill</button>
+        </div>
+        <div id="skills-list"></div>
+      </div>
+
+      <!-- Similarity -->
+      <div class="view" id="view-similar"><div id="sim-list"></div></div>
+
+      <!-- Upstream -->
+      <div class="view" id="view-upstream"><div class="card" id="upstream-card"></div></div>
+
+      <!-- Issues (with fix actions) -->
+      <div class="view" id="view-issues"><div id="issues-list"></div></div>
+
+      <!-- Sources -->
+      <div class="view" id="view-sources"><div id="sources-list"></div></div>
+    </div>
+  </div>
+</div>
+
+<script>
+let scan=null,health=null,skills=[],diagState='idle';
+const $=id=>document.getElementById(id);
+let diagPollTimer=null;
+
+/* ── Theme ── */
+function getTheme(){return localStorage.getItem('sd-theme')||'light'}
+function applyTheme(t){
+  document.documentElement.setAttribute('data-theme',t);
+  localStorage.setItem('sd-theme',t);
+  $('theme-icon').textContent=t==='dark'?'🌙':'☀️';
+}
+function toggleTheme(){applyTheme(getTheme()==='light'?'dark':'light')}
+applyTheme(getTheme());
+
+/* ── Toast ── */
+let toastTimer;
+function toast(msg,type='success'){
+  clearTimeout(toastTimer);
+  const el=$('toast');el.textContent=msg;el.className='toast show '+type;
+  toastTimer=setTimeout(()=>el.classList.remove('show'),3000);
+}
+
+/* ── View switching ── */
+function switchView(v,el){
+  document.querySelectorAll('.view').forEach(e=>e.classList.remove('active'));
+  $('view-'+v).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
+  if(el)el.classList.add('active');
+  const titles={dashboard:'仪表盘',skills:'全部 Skills',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'技能库'};
+  $('view-title').textContent=titles[v]||v;
+  $('sidebar').classList.remove('open');
+}
+
+/* ── Data ── */
+async function loadData(){
+  // Layer 0: fast-scan (instant skill list + classification)
+  const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
+  scan=sr;skills=sr?.installed||[];
+  skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+  render();
+  // Layer 1: Python quick-check (structure issues + health score, ~10ms)
+  const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
+  if(qc&&!qc.error){
+    health=qc;renderHealth();renderIssues();
+  }
+  // Check if there's cached full diagnosis
+  checkCachedDiagnosis();
+}
+
+// JS-side keyword classification (mirrors nlp.sh taxonomy)
+const CAT_KW={
+  'code-dev':['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit','pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm','bun','代码','dev','ios','qa','fix','clean','review','deploy','benchmark','test','plan','eng','devex','guard','spec','code','ios-','sync','qa-only'],
+  'content':['write','article','blog','copywriting','seo','newsletter','文章','写作','创作','选题','大纲','稿件','essay','writer','content','khazix','title'],
+  'image-gen':['image','picture','photo','cover','banner','illustration','封面','配图','dalle','midjourney','flux','logo','image','glm-image','seedream','illustrator','picgo'],
+  'video-audio':['video','audio','ffmpeg','remotion','mp4','podcast','subtitle','srt','tts','voice','视频','音频','字幕'],
+  'data':['data','analytics','chart','csv','excel','dashboard','visualization','stats','metrics','sql','报告','报表','统计','analysis'],
+  'web-search':['search','web','browse','scrape','crawl','spider','搜索','抓取','爬虫','google','bing','perplexity','web-access','gstack','browse','scrape'],
+  'social':['小红书','xhs','twitter','weibo','公众号','wechat','instagram','tiktok','抖音','微博','linkedin','threads','youtube','bilibili','wechat-styler'],
+  'doc':['pdf','docx','pptx','xlsx','notion','confluence','文档','readme','spec','make-pdf','document','pptx'],
+  'comms':['email','mail','slack','feishu','lark','dingtalk','telegram','discord','飞书','邮件','钉钉'],
+  'design':['figma','canvas','theme','brand','sketch','wireframe','prototype','tailwind','css','设计','design','design-html'],
+  'translate':['translate','translation','i18n','l10n','locale','翻译','多语言'],
+  'sysadmin':['server','docker','k8s','kubernetes','devops','ssh','linux','nginx','infra','terraform','aws','gcp','azure','运维','部署','deploy','setup'],
+  'persona':['personality','persona','mbti','sbti','character','role','人格','角色','蒸馏','elon','feynman'],
+  'finance':['finance','invoice','receipt','stock','trade','accounting','发票','财务','金融']
+};
+function classifySkillJS(name){
+  const low=name.toLowerCase();let best='other',bestScore=0;
+  for(const[cat,kws]of Object.entries(CAT_KW)){
+    const score=kws.filter(kw=>low.includes(kw)).length;
+    if(score>bestScore){bestScore=score;best=cat}
+  }
+  return bestScore>0?best:'other';
+}
+
+function render(){
+  renderTarget();renderStats();renderHealth();renderCategories();
+  renderSimilarity();renderUpstream();renderIssues();renderSources();renderSkillsList();
+  updateTargetSelector();
+  $('badge-skills').textContent=skills.length;
+  $('badge-sources').textContent=scan?.sources?.length||0;
+  updateDiagBadges();
+}
+
+function updateDiagBadges(){
+  const h=health;
+  if(!h||h.source==='python-quick-check'){
+    // Quick-check only: show basic badges
+    $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
+    $('badge-similar').textContent='—';
+    $('badge-upstream').textContent='—';
+    const issues=h?.structure_issues?.length||0;
+    $('badge-issues').textContent=issues||'—';
+    return;
+  }
+  // Full diagnosis available
+  $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
+  $('badge-similar').textContent=h?.overlap_groups?.length||0;
+  $('badge-upstream').textContent=h?.upstream_sources?.filter(s=>s.status==='outdated').length||0;
+  $('badge-issues').textContent=(h?.structure_issues?.length||0)+(h?.cleanup_candidates?.length||0);
+  $('badge-sources').textContent=h?.sources?.length||scan?.sources?.length||0;
+}
+
+function renderTarget(){
+  const t=scan?.target;
+  const ts=scan?.generated_at||health?.generated_at;
+  if(ts)$('last-update').textContent=new Date(ts).toLocaleString('zh-CN');
+}
+
+/* ── Stats ── */
+function renderStats(){
+  const h=health,hs=h?.health_score;
+  const hc=hs?.level==='green'?'var(--green)':hs?.level==='yellow'?'var(--amber)':'var(--red)';
+  $('stats-row').innerHTML=`
+    <div class="stat s-total"><div class="val">${skills.length}</div><div class="lbl">Skills</div></div>
+    <div class="stat s-pool"><div class="val">${scan?.totals?.skills||0}</div><div class="lbl">技能池</div></div>
+    <div class="stat s-sources"><div class="val">${scan?.sources?.length||0}</div><div class="lbl">来源库</div></div>
+    <div class="stat s-issues"><div class="val" style="color:${(h?.summary?.structure_issues||0)>0?'var(--red)':'var(--green)'}">${h?.summary?.structure_issues||0}</div><div class="lbl">结构问题</div></div>
+    <div class="stat s-ready"><div class="val" style="color:var(--green)">${h?.summary?.runtime_ready||0}</div><div class="lbl">可用</div></div>
+    <div class="stat s-health"><div class="val" style="color:${hc}">${hs?.score??'-'}</div><div class="lbl">Health</div></div>`;
+}
+
+/* ── Health ── */
+function renderHealth(){
+  const hs=health?.health_score;if(!hs){$('health-card').innerHTML='';return}
+  const c=hs.level==='green'?'var(--green)':hs.level==='yellow'?'var(--amber)':'var(--red)';
+  const lab=hs.level==='green'?'健康':hs.level==='yellow'?'需关注':'需优化';
+  const C=2*Math.PI*48,off=C-(hs.score/100)*C;
+  const diags=buildDiags();
+  $('health-card').innerHTML=`<div class="card"><div class="card-head"><h3>🏥 健康评分</h3><span class="sub">准确率 ~${hs.accuracy_estimate??'-'}%</span></div>
+    <div class="health-row">
+      <div class="ring-wrap"><svg width="120" height="120"><circle cx="60" cy="60" r="48" fill="none" stroke="var(--ring-track)" stroke-width="7"/><circle cx="60" cy="60" r="48" fill="none" stroke="${c}" stroke-width="7" stroke-dasharray="${C}" stroke-dashoffset="${off}" stroke-linecap="round"/></svg>
+        <div class="ring-label"><div class="num" style="color:${c}">${hs.score}</div><div class="unit">/ 100</div></div>
+      </div>
+      <div style="flex:1;min-width:0">
+        <div class="health-level" style="background:${c}18;color:${c}"><span style="width:7px;height:7px;border-radius:50%;background:${c};display:inline-block"></span> ${lab}</div>
+        <div class="health-meta">准确率 ~${hs.accuracy_estimate??'-'}% · ${diags.length} 条诊断</div>
+        ${diags.map(d=>`<div class="diag" onclick="this.classList.toggle('open')"><div class="diag-dot ${d.sev}"></div><div class="diag-body"><div class="diag-title">${d.title}</div>${d.desc?`<div class="diag-desc">${d.desc}</div>`:''}
+          <div class="diag-skills">${(d.affected||[]).slice(0,10).join(', ')}${d.affected?.length>10?' ...':''}</div></div></div>`).join('')}
+      </div>
+    </div></div>`;
+}
+
+function buildDiags(){
+  const d=[],total=skills.length;
+  if(total>50)d.push({sev:'danger',title:`Skill 总量 ${total}，远超 50 上限`,desc:'准确率急剧下降',affected:[]});
+  else if(total>20)d.push({sev:'warn',title:`Skill 数量 ${total}，偏多`,desc:'建议精简',affected:[]});
+  (health?.overlap_groups||[]).forEach(g=>d.push({sev:'warn',title:`语义重叠: ${g.skills?.join(' ↔ ')}`,desc:`${g.count} 个相似`,affected:g.skills}));
+  (health?.structure_issues||[]).forEach(s=>d.push({sev:'warn',title:`${s.name}: ${s.note}`,desc:'',affected:[s.name]}));
+  return d;
+}
+
+/* ── Categories ── */
+const CAT_NAMES={'code-dev':'💻 代码开发','content':'✍️ 内容创作','image-gen':'🎨 图片生成','video-audio':'🎬 视频/音频','data':'📊 数据分析','web-search':'🔍 搜索','social':'📱 社交','doc':'📄 文档','comms':'💬 通讯','design':'🖌️ 设计','translate':'🌐 翻译','sysadmin':'🖥️ 系统','persona':'🎭 人格','finance':'💰 财务','other':'📦 其他','':'📦 未分类'};
+const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#f472b6','other':'var(--text-muted)','':'var(--text-muted)'};
+
+function renderCategories(){
+  const cm={};skills.forEach(s=>{const c=s.category||'other';cm[c]=(cm[c]||0)+1});
+  const cats=Object.entries(cm).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
+  $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 分类分布</h3><span class="sub">${cats.length} 类</span></div>
+    <div class="cat-grid">${cats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/mx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
+}
+
+/* ── Skills list with category groups ── */
+function renderSkillsList(){
+  const q=($('search').value||'').toLowerCase();
+  const filtered=skills.filter(s=>!q||s.name.toLowerCase().includes(q));
+  // Group by category
+  const groups={};filtered.forEach(s=>{const c=s.category||'other';if(!groups[c])groups[c]=[];groups[c].push(s)});
+  const sortedCats=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
+  let html='';
+  if(sortedCats.length===0){html='<div class="empty">无匹配结果</div>'}
+  else{sortedCats.forEach(([cat,sk])=>{
+    html+=`<div class="skill-group">
+      <div class="skill-group-head" onclick="toggleGroup(this)"><span class="arrow">▶</span> ${CAT_NAMES[cat]||cat} <span style="font-weight:400;color:var(--text-muted);font-size:12px">(${sk.length})</span></div>
+      <div class="skill-group-body">${sk.map(s=>`<div class="skill-row" onclick="showSkill('${s.name}')"><div class="name">${s.name}</div><div class="agent">${s.agent||''}</div><div><span class="kind ${s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'k-entity'}">${s.kind||'entity'}</span></div></div>`).join('')}</div>
+    </div>`;
+  })}
+  $('skills-list').innerHTML=html;
+}
+
+function toggleGroup(el){el.classList.toggle('open');el.nextElementSibling.classList.toggle('open')}
+
+/* ── Similarity ── */
+function renderSimilarity(){
+  const gs=health?.overlap_groups||[];
+  if(!gs.length){$('sim-list').innerHTML='<div class="empty">✨ 无语义冲突</div>';return}
+  $('sim-list').innerHTML=gs.map(g=>`<div class="sim-card"><div class="sim-head"><span class="sim-pct med">重叠</span><span class="sim-names">${g.skills?.join(', ')}</span></div></div>`).join('');
+}
+
+/* ── Upstream with update button ── */
+function renderUpstream(){
+  const srcs=health?.upstream_sources||[];
+  if(!srcs.length){$('upstream-card').innerHTML='<div class="empty">无上游追踪数据</div>';return}
+  $('upstream-card').innerHTML=`<div class="card-head"><h3>🔗 上游追踪</h3><span class="sub">${srcs.filter(s=>s.status==='outdated').length} 个过时</span></div>
+    <table><thead><tr><th>Skill</th><th>状态</th><th>仓库</th><th></th></tr></thead><tbody>
+    ${srcs.map(s=>`<tr><td style="cursor:pointer;color:var(--indigo);font-weight:600" onclick="showSkill('${s.name}')">${s.name}</td>
+      <td><span class="badge ${s.status==='current'?'badge-green':s.status==='outdated'?'badge-red':'badge-muted'}">${s.status==='current'?'✓ 最新':s.status==='outdated'?'⚠ 过时':'? 未知'}</span></td>
+      <td style="font-size:11px;color:var(--text-muted)">${s.repo}${s.subdir?'/'+s.subdir:''}</td>
+      <td>${s.status==='outdated'?`<button class="btn btn-sm" onclick="updateUpstream('${s.name}',event)">更新</button>`:''}</td></tr>`).join('')}</tbody></table>`;
+}
+
+async function updateUpstream(name,ev){
+  const btn=ev.target;btn.disabled=true;btn.textContent='更新中...';
+  try{const r=await fetch(`/api/skill/${name}/update`,{method:'PATCH'});const d=await r.json();
+    if(d.ok){toast(`${name} 已更新`);await loadData()}else toast(d.error||'更新失败','error')}
+  catch(e){toast('更新失败: '+e.message,'error')}
+  finally{btn.disabled=false;btn.textContent='更新'}
+}
+
+/* ── Issues with fix actions ── */
+function renderIssues(){
+  const issues=health?.structure_issues||[];
+  const cleanups=health?.cleanup_candidates||[];
+  if(!issues.length&&!cleanups.length){$('issues-list').innerHTML='<div class="empty">✅ 无结构问题</div>';return}
+  let h='';
+  if(issues.length){
+    h+=`<div class="card"><div class="card-head"><h3>⚠️ 结构问题</h3><span class="sub">${issues.length} 个</span></div>`;
+    issues.forEach(i=>{h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+      <div style="flex:1"><div style="font-size:13px;font-weight:500">${i.name}</div><div style="font-size:11px;color:var(--text-muted)">${i.note}</div></div>
+      <button class="btn btn-sm btn-danger" onclick="deleteSkill('${i.name}',this)">删除</button></div>`});
+    h+=`</div>`;
+  }
+  if(cleanups.length){
+    h+=`<div class="card"><div class="card-head"><h3>🧹 清理候选</h3><span class="sub">${cleanups.length} 个</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px">${cleanups.map(c=>`<div style="display:flex;align-items:center;gap:6px;padding:4px 10px;border-radius:6px;background:var(--bg-card-alt)"><span style="font-size:12px">${c}</span><button class="btn btn-sm btn-danger" onclick="deleteSkill('${c}',this)">删</button></div>`).join('')}</div>
+      <button class="btn" onclick="cleanupAll()">一键清理全部</button></div>`;
+  }
+  $('issues-list').innerHTML=h;
+}
+
+async function deleteSkill(name,btn){
+  if(!confirm(`确认删除 skill "${name}"？`))return;
+  btn.disabled=true;btn.textContent='删除中...';
+  try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();
+    if(d.ok){toast(`已删除 ${name}`);await loadData()}else toast(d.error||'删除失败','error')}
+  catch(e){toast('删除失败','error')}finally{btn.disabled=false;btn.textContent='删除'}
+}
+
+async function cleanupAll(){
+  const cleanups=health?.cleanup_candidates||[];
+  if(!cleanups.length)return;
+  if(!confirm(`确认删除 ${cleanups.length} 个清理候选？`))return;
+  let ok=0,fail=0;
+  for(const name of cleanups){
+    try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}
+    catch{fail++}
+  }
+  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);await loadData();
+}
+
+/* ── Sources ── */
+function renderSources(){
+  const srcs=scan?.sources||[];
+  if(!srcs.length){$('sources-list').innerHTML='<div class="empty">无来源数据</div>';return}
+  const curTarget=targets.find(t=>t.is_current);
+  const top=srcs.slice(0,40);
+  let h=`<div class="card"><div class="card-head"><h3>📚 技能库</h3><span class="sub">${srcs.length} 个库 · 当前: ${curTarget?curTarget.name:'-'}</span></div>`;
+  top.forEach((s,i)=>{
+    const isCurrent=curTarget&&s.path&&s.path.replace(/\$HOME|\${HOME}/g,'')===curTarget.rel.replace(/^~\//,'');
+    const scopeTag=s.is_target?'<span style="font-size:9px;padding:1px 5px;border-radius:4px;background:var(--indigo-bg);color:var(--indigo);font-weight:600">当前</span>':'';
+    h+=`<div class="src-row" style="${s.is_target?'background:var(--indigo-bg);border-radius:8px':''}">
+      <span style="font-size:11px;color:var(--text-muted);min-width:22px">${i+1}</span>
+      <div style="flex:1;min-width:0"><div style="font-size:12px;display:flex;align-items:center;gap:5px">${s.display_name||s.name} ${scopeTag}</div>
+      <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.path}</div></div>
+      <span style="font-size:12px;font-weight:600">${s.count}</span></div>`;
+  });
+  if(srcs.length>40)h+=`<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">... 还有 ${srcs.length-40} 个</div>`;
+  h+='</div>';$('sources-list').innerHTML=h;
+}
+
+/* ── Modal ── */
+async function showSkill(name){
+  try{const r=await fetch(`/api/skill/${name}/content`);const d=await r.json();$('modal-title').textContent=name;$('modal-body').textContent=d.content||d.error||'(无内容)';$('modal').classList.remove('hidden')}
+  catch(e){$('modal-title').textContent=name;$('modal-body').textContent='加载失败';$('modal').classList.remove('hidden')}
+}
+
+/* ── Refresh ── */
+async function refreshData(){
+  $('refresh-btn').disabled=true;
+  try{
+    // Quick refresh: reload fast-scan + quick-check
+    const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
+    if(sr){
+      scan=sr;skills=sr?.installed||[];
+      skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+      render();
+    }
+    const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
+    if(qc&&!qc.error){health=qc;renderHealth();renderIssues();updateDiagBadges();}
+    await loadSourcesFallback();
+    toast('已刷新');
+  }catch(e){toast('刷新失败','error')}
+  finally{$('refresh-btn').disabled=false}
+}
+
+/* ── Target selector (custom dropdown) ── */
+let targets=[];
+function toggleTargetDropdown(){
+  $('target-dropdown').classList.toggle('open');
+}
+document.addEventListener('click',e=>{
+  if(!e.target.closest('.target-bar'))$('target-dropdown').classList.remove('open');
+});
+
+async function updateTargetSelector(){
+  try{targets=await fetch('/api/targets').then(r=>r.json())}catch{return}
+  const cur=targets.find(t=>t.is_current)||targets[0];
+  if(cur){
+    $('t-icon').textContent=cur.scope==='global'?'🌐':'📁';
+    $('t-name').textContent=cur.name;
+    $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
+    $('t-count').textContent=cur.count;
+  }
+  $('target-dropdown').innerHTML=targets.map(t=>{
+    const scopeClass=t.scope==='global'?'to-global':'to-project';
+    return `<div class="target-opt${t.is_current?' active':''}" onclick="switchTarget('${t.path}')">
+      <span class="to-scope ${scopeClass}">${t.scope==='global'?'🌐':'📁'}</span>
+      <span>${t.name}</span>
+      <span class="to-count">${t.count}</span>
+    </div>`;
+  }).join('');
+}
+
+async function switchTarget(path){
+  $('target-dropdown').classList.remove('open');
+  if(!path)return;
+  $('refresh-btn').disabled=true;
+  try{
+    const r=await fetch('/api/target',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:path})});
+    const d=await r.json();
+    if(d.error){toast(d.error,'error');return}
+    scan=d;skills=d?.installed||[];
+    skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+    render();
+    toast(`已切换 (${d.duration_ms}ms)`);
+    // Quick-check the new target
+    const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
+    if(qc&&!qc.error){health=qc;renderHealth();renderIssues();updateDiagBadges();}
+    // Check for cached full diagnosis
+    checkCachedDiagnosis();
+  }catch(e){toast('切换失败: '+e.message,'error')}
+  finally{$('refresh-btn').disabled=false}
+}
+
+/* ── Diagnosis ── */
+async function checkCachedDiagnosis(){
+  const r=await fetch('/api/diagnosis-status').then(r=>r.json()).catch(()=>null);
+  if(!r)return;
+  if((r.status==='cached'||r.status==='done')&&r.health_score){
+    applyFullDiagnosis(r);
+  }
+  // Also load sources from full scan if available
+  if(!scan.sources?.length){
+    loadSourcesFallback();
+  }
+}
+
+async function loadSourcesFallback(){
+  // Load sources from full scan JSON as fallback
+  const fullScan=await fetch('/api/scan').then(r=>r.json()).catch(()=>null);
+  if(fullScan?.sources?.length){
+    scan.sources=fullScan.sources;
+    scan.totals=fullScan.totals||scan.totals;
+    renderSources();
+    $('badge-sources').textContent=fullScan.sources.length;
+  }
+}
+
+function applyFullDiagnosis(d){
+  health=d;
+  scan.sources=d.sources||scan.sources||[];
+  scan.totals=d.totals||scan.totals||{};
+  renderHealth();renderSimilarity();renderUpstream();renderIssues();renderSources();
+  updateDiagBadges();
+  const btn=$('diag-btn');
+  btn.textContent='🔧 一键诊断';btn.disabled=false;btn.classList.remove('running');
+}
+
+async function runDiagnosis(){
+  const curTarget=targets.find(t=>t.is_current)||targets[0];
+  const name=curTarget?curTarget.name:'当前目标库';
+  if(!confirm(`确认对「${name}」运行完整诊断？\n\n将检测：相似度、上游追踪、结构问题\n预计耗时 5-15 秒`))return;
+  const btn=$('diag-btn');
+  btn.textContent='⏳ 启动中...';btn.disabled=true;btn.classList.add('running');
+  diagState='running';
+  try{
+    const r=await fetch('/api/diagnose',{method:'POST'}).then(r=>r.json());
+    if(r.status==='running'){
+      // Already running from before, start polling
+      pollDiagnosis();
+    }else if(r.status==='started'){
+      pollDiagnosis();
+    }else if(r.error){
+      toast(r.error,'error');
+      btn.textContent='🔧 一键诊断';btn.disabled=false;btn.classList.remove('running');
+    }
+  }catch(e){
+    toast('诊断失败: '+e.message,'error');
+    btn.textContent='🔧 一键诊断';btn.disabled=false;btn.classList.remove('running');
+  }
+}
+
+function pollDiagnosis(){
+  clearInterval(diagPollTimer);
+  const btn=$('diag-btn');
+  diagPollTimer=setInterval(async()=>{
+    const r=await fetch('/api/diagnosis-status').then(r=>r.json()).catch(()=>null);
+    if(!r)return;
+    if(r.status==='done'&&r.health_score){
+      clearInterval(diagPollTimer);
+      applyFullDiagnosis(r);
+      toast(`诊断完成 (${(r.duration_ms/1000).toFixed(1)}s)`);
+      diagState='done';
+    }else if(r.status==='error'){
+      clearInterval(diagPollTimer);
+      toast('诊断出错: '+(r.error||'未知'),'error');
+      btn.textContent='🔧 一键诊断';btn.disabled=false;btn.classList.remove('running');
+      diagState='error';
+    }else if(r.status==='running'){
+      const phase=r.phase==='check'?'相似度分析':'扫描来源';
+      btn.textContent=`⏳ ${phase}... ${(r.elapsed_ms/1000).toFixed(0)}s`;
+    }
+  },1500);
+}
+
+/* ── Install Skill (steal) ── */
+function showStealDialog(){
+  const curTarget=targets.find(t=>t.is_current)||targets[0];
+  const name=curTarget?curTarget.name:'当前库';
+  $('modal-title').textContent='安装 Skill';
+  $('modal-body').innerHTML=`
+    <div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+      <div style="margin-bottom:12px;color:var(--text-muted)">安装到: <strong style="color:var(--indigo)">${name}</strong></div>
+      <label style="display:block;margin-bottom:6px;font-weight:500">来源 (GitHub URL 或 skill 名称)</label>
+      <input id="steal-source" type="text" placeholder="https://github.com/user/repo 或 skill名称" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:12px">
+      <div id="steal-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+        <button class="btn btn-primary" id="steal-btn" onclick="doSteal()">安装</button>
+      </div>
+    </div>`;
+  $('modal').classList.remove('hidden');
+}
+
+async function doSteal(){
+  const source=$('steal-source').value.trim();
+  if(!source){toast('请输入来源','error');return}
+  const btn=$('steal-btn');
+  const result=$('steal-result');
+  btn.disabled=true;btn.textContent='安装中...';
+  result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
+  result.textContent='正在安装...';
+  try{
+    const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
+    const d=await r.json();
+    if(d.ok){
+      result.style.background='var(--green-bg)';result.style.color='var(--green)';
+      result.textContent='✅ 安装成功';
+      toast('Skill 已安装');
+      await loadData();
+    }else{
+      result.style.background='var(--red-bg)';result.style.color='var(--red)';
+      result.textContent='❌ '+(d.error||'安装失败');
+    }
+  }catch(e){
+    result.style.background='var(--red-bg)';result.style.color='var(--red)';
+    result.textContent='❌ '+e.message;
+  }
+  btn.disabled=false;btn.textContent='安装';
+}
+
+loadData();
+</script>
+</body>
+</html>

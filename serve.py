@@ -1,0 +1,801 @@
+#!/usr/bin/env python3
+"""Skill Dashboard — 可视化 skill-manager 数据的轻量 WebUI
+零依赖，只用 Python 3 标准库。
+"""
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+import webbrowser
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import urlparse
+
+PORT = 3457
+STATE_DIR = Path.home() / ".skill-manager" / "state"
+SKILL_MGR = Path.home() / ".claude/skills/skill-manager/scripts/skill-mgr.sh"
+HTML_FILE = Path(__file__).parent / "index.html"
+CACHE_DIR = Path(__file__).parent / ".cache"
+DIAG_LOG = Path(__file__).parent / ".cache" / "diag.log"
+
+
+def _cache_path(target_path):
+    """Get cache file path for a target."""
+    # Use a safe filename from the target path
+    safe = re.sub(r'[^\w]', '_', target_path)
+    return CACHE_DIR / f"{safe}.json"
+
+
+def load_cached_diagnosis(target_path):
+    """Load cached diagnosis for a target, or None."""
+    cp = _cache_path(target_path)
+    if cp.exists():
+        try:
+            return json.loads(cp.read_text("utf-8"))
+        except Exception:
+            pass
+    return None
+
+
+def save_cached_diagnosis(target_path, data):
+    """Save diagnosis result to cache."""
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cp = _cache_path(target_path)
+    cp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def python_quick_check(target_path):
+    """Python-only structure check — no bash, no skill-mgr.
+    Returns: health_score, structure_issues, summary."""
+    target_dir = Path(target_path)
+    if not target_dir.is_dir():
+        return None
+
+    skills = []
+    structure_issues = []
+    no_desc = 0
+    broken = 0
+    symlinks = 0
+    entities = 0
+
+    for d in sorted(target_dir.iterdir()):
+        if not d.is_dir() and not d.is_symlink():
+            continue
+        skill_md = d / "SKILL.md"
+        name = d.name
+
+        # Kind detection
+        if d.is_symlink():
+            if d.resolve().exists():
+                kind = "symlink"
+                symlinks += 1
+            else:
+                kind = "broken_symlink"
+                broken += 1
+                structure_issues.append({"name": name, "note": "broken symlink", "kind": "broken_symlink"})
+        else:
+            if not skill_md.exists():
+                continue
+            kind = "entity"
+            entities += 1
+
+        # Parse frontmatter
+        description = ""
+        has_fm = False
+        oversized = False
+        try:
+            text = skill_md.read_text("utf-8", errors="ignore")
+            if len(text.splitlines()) > 500:
+                oversized = True
+            if text.startswith("---"):
+                has_fm = True
+                end = text.find("---", 3)
+                if end > 0:
+                    fm = text[3:end]
+                    for line in fm.splitlines():
+                        line = line.strip()
+                        if line.startswith("description:"):
+                            description = line.split(":", 1)[1].strip().strip("'\"")
+            else:
+                structure_issues.append({"name": name, "note": "missing frontmatter", "kind": "no_frontmatter"})
+        except Exception:
+            structure_issues.append({"name": name, "note": "read error", "kind": "read_error"})
+
+        if not description:
+            no_desc += 1
+
+        skills.append({
+            "name": name,
+            "description": description,
+            "kind": kind,
+            "has_frontmatter": has_fm,
+            "oversized": oversized,
+        })
+
+    total = len(skills)
+
+    # Health score (mirrors skill-mgr check.sh formula)
+    score = 100
+    # Quantity penalty: >20, -2 per extra (max -60)
+    if total > 20:
+        penalty = min((total - 20) * 2, 60)
+        score -= penalty
+    # Structure issue penalty: -3 each
+    score -= len(structure_issues) * 3
+    # Missing description: proportional, max -15
+    if total > 0:
+        desc_penalty = min(no_desc * 15 // total, 15)
+        score -= desc_penalty
+    # Oversized: -2 each
+    oversized_count = sum(1 for s in skills if s.get("oversized"))
+    score -= oversized_count * 2
+    # Clamp
+    score = max(0, min(100, score))
+
+    # Accuracy estimate (mirrors skill-mgr)
+    if total <= 5:
+        accuracy = 96
+    elif total <= 20:
+        accuracy = 96 - (total - 5)
+    else:
+        accuracy = max(15, int(96 * (2.71828 ** (-0.005 * (total - 5) ** 1.3))))
+
+    # Level
+    if score >= 80:
+        level = "green"
+    elif score >= 50:
+        level = "yellow"
+    else:
+        level = "red"
+
+    return {
+        "health_score": {
+            "score": score,
+            "level": level,
+            "accuracy_estimate": accuracy,
+        },
+        "structure_issues": structure_issues,
+        "summary": {
+            "total": total,
+            "entities": entities,
+            "symlinks": symlinks,
+            "broken_symlinks": broken,
+            "no_description": no_desc,
+            "structure_issues": len(structure_issues),
+            "oversized": oversized_count,
+            "runtime_ready": entities - len(structure_issues),
+        },
+        "source": "python-quick-check",
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
+class DashboardHandler(BaseHTTPRequestHandler):
+    """Serve index.html and API endpoints."""
+
+    def do_GET(self):
+        path = urlparse(self.path).path
+
+        if path == "/" or path == "/index.html":
+            self._serve_file(HTML_FILE, "text/html; charset=utf-8")
+        elif path == "/api/scan":
+            self._serve_json(STATE_DIR / "latest-scan.json")
+        elif path == "/api/health":
+            self._serve_json(STATE_DIR / "latest-health.json")
+        elif path == "/api/history":
+            self._serve_history()
+        elif path == "/api/targets":
+            self._list_targets()
+        elif path == "/api/fast-scan":
+            self._fast_scan()
+        elif path == "/api/quick-check":
+            self._quick_check()
+        elif path == "/api/diagnosis-status":
+            self._diagnosis_status()
+        elif path.startswith("/api/skill/") and path.endswith("/content"):
+            name = path.split("/")[3]
+            self._serve_skill_content(name)
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        path = urlparse(self.path).path
+        if path == "/api/refresh":
+            self._refresh()
+        elif path == "/api/target":
+            self._set_target()
+        elif path == "/api/diagnose":
+            self._diagnose()
+        elif path == "/api/steal":
+            self._steal_skill()
+        else:
+            self.send_error(404)
+
+    def do_DELETE(self):
+        path = urlparse(self.path).path
+        if path.startswith("/api/skill/"):
+            name = path.split("/")[3]
+            self._delete_skill(name)
+        else:
+            self.send_error(404)
+
+    # ── API implementations ──
+
+    def _serve_file(self, filepath, content_type):
+        try:
+            data = filepath.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except FileNotFoundError:
+            self.send_error(404, f"File not found: {filepath}")
+
+    def _serve_json(self, filepath):
+        try:
+            data = filepath.read_text(encoding="utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data.encode("utf-8"))
+        except FileNotFoundError:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"error": "state file not found, run skill-mgr scan first"}')
+
+    def _serve_history(self):
+        hist_file = STATE_DIR / "history.jsonl"
+        try:
+            lines = hist_file.read_text(encoding="utf-8").strip().split("\n")
+            entries = []
+            for line in lines[-50:]:
+                line = line.strip()
+                if line:
+                    try:
+                        entries.append(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+            self._json_response(entries)
+        except FileNotFoundError:
+            self._json_response([])
+
+    def _serve_skill_content(self, name):
+        """Return SKILL.md content for a named skill."""
+        target = self._current_target()
+        candidates = [Path(target) / name / "SKILL.md"]
+        for skill_md in candidates:
+            if skill_md.exists():
+                content = skill_md.read_text(encoding="utf-8")
+                self._json_response({"name": name, "content": content, "path": str(skill_md)})
+                return
+        self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+
+    def _fast_scan(self):
+        """Direct Python directory scan — milliseconds instead of bash subprocess."""
+        target = self._current_target()
+        target_dir = Path(target)
+        if not target_dir.is_dir():
+            self._json_response({"error": f"not a dir: {target}"}, status=400)
+            return
+
+        start = time.time()
+        skills = []
+        for d in sorted(target_dir.iterdir()):
+            if not d.is_dir():
+                continue
+            skill_md = d / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            name = d.name
+            description = ""
+            category = ""
+            kind = "entity"
+            # Quick frontmatter parse
+            try:
+                text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                if text.startswith("---"):
+                    end = text.find("---", 3)
+                    if end > 0:
+                        fm = text[3:end]
+                        for line in fm.splitlines():
+                            line = line.strip()
+                            if line.startswith("description:"):
+                                description = line.split(":", 1)[1].strip().strip("'\"")
+                            elif line.startswith("category:"):
+                                category = line.split(":", 1)[1].strip().strip("'\"")
+            except Exception:
+                pass
+            # Check if symlink
+            if d.is_symlink():
+                kind = "symlink" if d.resolve().exists() else "broken_symlink"
+            skills.append({
+                "name": name,
+                "description": description,
+                "category": category,
+                "kind": kind,
+                "agent": "",
+            })
+
+        # Build scan-like response
+        home = Path.home()
+        rel = str(target_dir).replace(str(home), "~")
+        result = {
+            "target": {
+                "path": rel,
+                "label": target_dir.parent.name,
+                "total": len(skills),
+                "entities": len([s for s in skills if s["kind"] == "entity"]),
+                "symlinks": len([s for s in skills if s["kind"] == "symlink"]),
+                "broken_symlinks": len([s for s in skills if s["kind"] == "broken_symlink"]),
+            },
+            "installed": skills,
+            "totals": {"skills": len(skills)},
+            "sources": [],
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "scan_mode": "fast",
+            "duration_ms": int((time.time() - start) * 1000),
+        }
+        self._json_response(result)
+
+    def _quick_check(self):
+        """Python-only structure check — instant, no bash."""
+        target = self._current_target()
+        result = python_quick_check(target)
+        if result is None:
+            self._json_response({"error": "target not found"}, status=400)
+            return
+        self._json_response(result)
+
+    # ── Diagnosis state (background bash process) ──
+    _diag_process = None
+    _diag_target = ""
+    _diag_start = 0
+    _diag_phase = ""  # "scan" or "check"
+
+    def _diagnose(self):
+        """Trigger skill-mgr scan+check in background. Returns immediately."""
+        target = self._current_target()
+
+        # Check if already running
+        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
+            elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
+            if elapsed > 120000:
+                DashboardHandler._diag_process.kill()
+                DashboardHandler._diag_process = None
+                self._json_response({"status": "error", "error": "诊断超时 (120s)，请重试"})
+                return
+            phase = DashboardHandler._diag_phase or "scan"
+            self._json_response({"status": "running", "target": DashboardHandler._diag_target,
+                                 "elapsed_ms": elapsed, "phase": phase})
+            return
+
+        env = os.environ.copy()
+        env["SKILL_MANAGER_TARGET"] = target
+        try:
+            # Write output to log file instead of PIPE (avoids buffer deadlock)
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            log_f = open(DIAG_LOG, "w")
+            DashboardHandler._diag_process = subprocess.Popen(
+                ["bash", "-c",
+                 f"echo '=== SCAN START ===' && "
+                 f"SKILL_MANAGER_TARGET='{target}' bash '{SKILL_MGR}' scan && "
+                 f"echo '=== CHECK START ===' && "
+                 f"SKILL_MANAGER_TARGET='{target}' bash '{SKILL_MGR}' check && "
+                 f"echo '=== DONE ==='"],
+                stdout=log_f, stderr=subprocess.STDOUT, env=env,
+            )
+            DashboardHandler._diag_target = target
+            DashboardHandler._diag_start = time.time()
+            DashboardHandler._diag_phase = "scan"
+            self._json_response({"status": "started", "target": target})
+        except Exception as e:
+            self._json_response({"status": "error", "error": str(e)})
+
+    def _diagnosis_status(self):
+        """Poll diagnosis progress. If done, cache and return results."""
+        target = self._current_target()
+
+        # If process is running, check if it just finished
+        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is not None:
+            rc = DashboardHandler._diag_process.returncode
+            DashboardHandler._diag_process = None
+
+            if rc == 0:
+                try:
+                    health = json.loads((STATE_DIR / "latest-health.json").read_text())
+                    scan_data = json.loads((STATE_DIR / "latest-scan.json").read_text())
+                    cached = {
+                        "health_score": health.get("health_score"),
+                        "structure_issues": health.get("structure_issues", []),
+                        "overlap_groups": health.get("overlap_groups", []),
+                        "upstream_sources": health.get("upstream_sources", []),
+                        "cleanup_candidates": health.get("cleanup_candidates", []),
+                        "summary": health.get("summary", {}),
+                        "sources": scan_data.get("sources", []),
+                        "totals": scan_data.get("totals", {}),
+                        "source": "skill-mgr",
+                        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    }
+                    save_cached_diagnosis(target, cached)
+                    cached["status"] = "done"
+                    cached["duration_ms"] = int((time.time() - DashboardHandler._diag_start) * 1000)
+                    self._json_response(cached)
+                    return
+                except Exception as e:
+                    self._json_response({"status": "error", "error": f"解析失败: {e}"})
+                    return
+            else:
+                # Read last few lines of log for error info
+                err_hint = ""
+                try:
+                    err_hint = DIAG_LOG.read_text()[-500:]
+                except Exception:
+                    pass
+                self._json_response({"status": "error", "error": f"skill-mgr 退出码 {rc}", "log": err_hint})
+                return
+
+        # Process still running — detect phase from log
+        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
+            elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
+            # Detect phase from log
+            phase = "scan"
+            try:
+                log_text = DIAG_LOG.read_text()
+                if "CHECK START" in log_text:
+                    phase = "check"
+                    DashboardHandler._diag_phase = "check"
+            except Exception:
+                pass
+            self._json_response({"status": "running", "target": DashboardHandler._diag_target,
+                                 "elapsed_ms": elapsed, "phase": phase})
+            return
+
+        # No process — check cache
+        cached = load_cached_diagnosis(target)
+        if cached:
+            cached["status"] = "cached"
+            self._json_response(cached)
+            return
+
+        self._json_response({"status": "idle"})
+
+    def _list_targets(self):
+        """Scan common locations for skill directories and return list."""
+        home = Path.home()
+        # Known skill root prefixes
+        prefixes = [
+            home / ".claude",
+            home / ".agents",
+            home / ".alice",
+            home / ".cc-switch",
+            home / ".codex",
+            home / ".hermes",
+            home / ".openclaw",
+            home / ".qclaw",
+            home / ".workbuddy",
+            home / "Downloads",
+            home / "hyperframes",
+        ]
+        # Also scan ~/projects for any with skills/ subdir
+        projects_dir = home / "projects"
+        if projects_dir.exists():
+            for p in projects_dir.iterdir():
+                if p.is_dir():
+                    prefixes.append(p)
+
+        targets = []
+        seen = set()
+        current = self._current_target()
+        for prefix in prefixes:
+            skills_dir = prefix / "skills"
+            if skills_dir.is_dir() and str(skills_dir) not in seen:
+                seen.add(str(skills_dir))
+                # Count skills
+                count = sum(1 for d in skills_dir.iterdir()
+                           if d.is_dir() and (d / "SKILL.md").exists())
+                if count == 0:
+                    continue
+                # Determine scope label
+                rel = str(skills_dir).replace(str(home), "~")
+                name = skills_dir.parent.name
+                # Classify scope
+                if "claude" in rel:
+                    scope = "global"
+                    agent = "Claude Code"
+                elif "codex" in rel:
+                    scope = "global"
+                    agent = "Codex"
+                elif "agents" in rel:
+                    scope = "global"
+                    agent = "通用 Agents"
+                elif "alice" in rel:
+                    scope = "global"
+                    agent = "Alice"
+                elif "cc-switch" in rel:
+                    scope = "global"
+                    agent = "CC-Switch"
+                elif "workbuddy" in rel:
+                    scope = "global"
+                    agent = "WorkBuddy"
+                elif "projects" in rel:
+                    scope = "project"
+                    agent = name
+                else:
+                    scope = "global"
+                    agent = name
+                targets.append({
+                    "path": str(skills_dir),
+                    "rel": rel,
+                    "name": agent,
+                    "scope": scope,
+                    "count": count,
+                    "is_current": str(skills_dir) == current,
+                })
+        targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
+        self._json_response(targets)
+
+    def _current_target(self):
+        """Read current target from state file, fallback to ~/.claude/skills."""
+        try:
+            scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
+            tp = scan.get("target", {}).get("path", "")
+            if tp.startswith("~"):
+                tp = str(Path.home() / tp[2:])
+            return tp
+        except Exception:
+            return str(Path.home() / ".claude/skills")
+
+    def _set_target(self):
+        """Switch target — fast scan directly, no bash subprocess."""
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+        target_path = data.get("target", "")
+        if not target_path:
+            self._json_response({"error": "missing target"}, status=400)
+            return
+        if target_path.startswith("~"):
+            target_path = str(Path.home() / target_path[2:])
+        if not Path(target_path).is_dir():
+            self._json_response({"error": f"not a directory: {target_path}"}, status=400)
+            return
+
+        # Write to state so _current_target picks it up
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        # Update latest-scan.json target field
+        scan_file = STATE_DIR / "latest-scan.json"
+        scan_data = {}
+        if scan_file.exists():
+            try:
+                scan_data = json.loads(scan_file.read_text("utf-8"))
+            except Exception:
+                pass
+        home = Path.home()
+        rel = str(target_path).replace(str(home), "~")
+        scan_data["target"] = {
+            "path": rel,
+            "label": Path(target_path).parent.name,
+        }
+        scan_file.write_text(json.dumps(scan_data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # Now do fast scan
+        self._fast_scan()
+
+    def _refresh(self):
+        """Run skill-mgr scan + check, then return success."""
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Transfer-Encoding", "chunked")
+        self.end_headers()
+
+        import time
+        start = time.time()
+        results = {}
+
+        try:
+            env = os.environ.copy()
+            target = self._current_target()
+            env["SKILL_MANAGER_TARGET"] = target
+
+            r1 = subprocess.run(
+                ["bash", str(SKILL_MGR), "scan"],
+                capture_output=True, text=True, timeout=120, env=env,
+            )
+            results["scan_ok"] = r1.returncode == 0
+
+            r2 = subprocess.run(
+                ["bash", str(SKILL_MGR), "check"],
+                capture_output=True, text=True, timeout=120, env=env,
+            )
+            results["check_ok"] = r2.returncode == 0
+        except Exception as e:
+            results["error"] = str(e)
+
+        results["duration_ms"] = int((time.time() - start) * 1000)
+        data = json.dumps(results).encode("utf-8")
+        self.wfile.write(f"{len(data):x}\r\n".encode())
+        self.wfile.write(data + b"\r\n")
+        self.wfile.write(b"0\r\n\r\n")
+
+    def _delete_skill(self, name):
+        """Delete a skill directory."""
+        import shutil
+        # Resolve skill path from scan data
+        skill_dir = self._resolve_skill_dir(name)
+        if not skill_dir:
+            self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+            return
+        try:
+            shutil.rmtree(skill_dir)
+            self._json_response({"ok": True, "name": name, "removed": str(skill_dir)})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
+
+    def _resolve_skill_dir(self, name):
+        """Find skill directory on disk."""
+        candidates = [Path.home() / ".claude/skills" / name]
+        try:
+            scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
+            tp = scan.get("target", {}).get("path", "")
+            if tp.startswith("~"):
+                tp = str(Path.home() / tp[2:])
+            candidates.insert(0, Path(tp) / name)
+        except Exception:
+            pass
+        for d in candidates:
+            if d.exists():
+                return d
+        return None
+
+    def do_PATCH(self):
+        """Handle skill update actions."""
+        path = urlparse(self.path).path
+        # Read body
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+
+        if path.startswith("/api/skill/") and path.endswith("/update"):
+            name = path.split("/")[3]
+            self._update_upstream(name)
+        elif path.startswith("/api/skill/") and path.endswith("/fix"):
+            name = path.split("/")[3]
+            action = data.get("action", "")
+            self._fix_skill(name, action)
+        else:
+            self.send_error(404)
+
+    def _steal_skill(self):
+        """Install a skill via skill-mgr steal."""
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+        source = data.get("source", "").strip()
+        skill_name = data.get("name", "").strip()
+        if not source:
+            self._json_response({"error": "missing source URL"}, status=400)
+            return
+
+        target = self._current_target()
+        env = os.environ.copy()
+        env["SKILL_MANAGER_TARGET"] = target
+        try:
+            cmd = ["bash", str(SKILL_MGR), "steal", source, "--yes"]
+            if skill_name:
+                cmd.append(skill_name)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+            ok = r.returncode == 0
+            result = {"ok": ok, "source": source}
+            if ok:
+                result["output"] = r.stdout[-500:] if r.stdout else "installed"
+                # Re-scan after install
+                python_quick_check(target)
+            else:
+                result["error"] = r.stderr[-500:] if r.stderr else r.stdout[-500:] or "steal failed"
+            self._json_response(result)
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
+
+    def _update_upstream(self, name):
+        """Trigger skill-mgr steal to update from upstream."""
+        try:
+            env = os.environ.copy()
+            env["SKILL_MANAGER_TARGET"] = str(Path.home() / ".claude/skills")
+            # Find source metadata
+            skill_dir = self._resolve_skill_dir(name)
+            meta_file = skill_dir / ".skill-manager-source.env" if skill_dir else None
+            source_url = ""
+            if meta_file and meta_file.exists():
+                for line in meta_file.read_text().splitlines():
+                    if line.startswith("SKILL_SOURCE_URL="):
+                        source_url = line.split("=", 1)[1].strip('"').strip("'")
+            if not source_url:
+                self._json_response({"error": "No upstream source tracked"}, status=400)
+                return
+            r = subprocess.run(
+                ["bash", str(SKILL_MGR), "steal", source_url, "--yes"],
+                capture_output=True, text=True, timeout=120, env=env,
+            )
+            self._json_response({"ok": r.returncode == 0, "name": name, "output": r.stdout[-500:] if r.stdout else ""})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
+
+    def _fix_skill(self, name, action):
+        """Fix a skill issue."""
+        if action == "delete":
+            self._delete_skill(name)
+            return
+        elif action == "add_frontmatter":
+            skill_dir = self._resolve_skill_dir(name)
+            if not skill_dir:
+                self._json_response({"error": "not found"}, status=404)
+                return
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                self._json_response({"error": "no SKILL.md"}, status=400)
+                return
+            content = skill_md.read_text("utf-8")
+            if not content.startswith("---"):
+                skill_md.write_text(f"---\nname: {name}\ndescription: ''\n---\n\n{content}", encoding="utf-8")
+                self._json_response({"ok": True, "name": name, "fixed": "added frontmatter"})
+            else:
+                self._json_response({"ok": False, "error": "already has frontmatter"})
+            return
+        self._json_response({"error": f"unknown action: {action}"}, status=400)
+
+    def _json_response(self, data, status=200):
+        body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        """Quieter logging — only show API calls, not static file requests."""
+        msg = fmt % args
+        if "/api/" in msg or "POST" in msg or "DELETE" in msg:
+            sys.stderr.write(f"  {msg}\n")
+
+
+def main():
+    if not STATE_DIR.exists():
+        print(f"⚠ State dir not found: {STATE_DIR}")
+        print("  Run 'skill-mgr scan' first to generate data.")
+        print(f"  Creating {STATE_DIR}...")
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+    server = HTTPServer(("127.0.0.1", PORT), DashboardHandler)
+    url = f"http://localhost:{PORT}"
+    print(f"🚀 Skill Dashboard running at {url}")
+    print(f"   Data source: {STATE_DIR}")
+    print(f"   Press Ctrl+C to stop")
+    print()
+
+    # Auto-open browser
+    webbrowser.open(url)
+
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n👋 Stopped.")
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()
