@@ -399,6 +399,17 @@ async function loadData(){
     }else{s.categorySource='frontmatter'}
   });
   render();
+  // Fallback: load targets as sources if skill-mgr not available
+  if(!scan?.sources?.length){
+    try{
+      const ts=await fetch('/api/targets').then(r=>r.json());
+      if(ts?.length){
+        scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
+        renderSources();
+        $('badge-sources').textContent=ts.length;
+      }
+    }catch(e){}
+  }
   // Layer 1: Python quick-check (structure issues + health score, ~10ms)
   const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
   if(qc&&!qc.error){
