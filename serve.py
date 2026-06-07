@@ -117,6 +117,76 @@ def python_quick_check(target_path):
 
     total = len(skills)
 
+    # ── Independent upstream detection (no skill-mgr) ──
+    upstream_sources = []
+    for s in skills:
+        skill_dir = target_dir / s["name"]
+        repo = ""
+        detected = False
+
+        # 1) Try .git remote
+        git_dir = skill_dir / ".git"
+        if git_dir.exists():
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(skill_dir), "remote", "get-url", "origin"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0:
+                    url = r.stdout.strip()
+                    if "github.com" in url:
+                        if url.startswith("git@github.com:"):
+                            repo = url.replace("git@github.com:", "").replace(".git", "")
+                        elif "github.com/" in url:
+                            parts = url.split("github.com/")
+                            if len(parts) > 1:
+                                repo = parts[1].replace(".git", "")
+                    upstream_sources.append({
+                        "name": s["name"],
+                        "repo": repo or url,
+                        "status": "unknown",
+                        "source": "git-remote",
+                    })
+                    detected = True
+            except Exception:
+                pass
+
+        # 2) Fallback: skill-mgr source metadata (steal installs)
+        if not detected:
+            meta_file = skill_dir / ".skill-manager-source.env"
+            if meta_file.exists():
+                try:
+                    for line in meta_file.read_text().splitlines():
+                        if line.startswith("SKILL_SOURCE_URL="):
+                            url = line.split("=", 1)[1].strip().strip('"').strip("'")
+                            repo = ""
+                            if "github.com" in url:
+                                # Normalize github.com URLs to user/repo
+                                clean = url.replace("https://", "").replace("http://", "").replace("github.com/", "")
+                                repo = clean.split("/")[0] + "/" + clean.split("/")[1].split("?")[0].split("#")[0] if "/" in clean else clean
+                            upstream_sources.append({
+                                "name": s["name"],
+                                "repo": repo or url,
+                                "status": "unknown",
+                                "source": "steal-meta",
+                            })
+                            detected = True
+                            break
+                except Exception:
+                    pass
+
+    # ── Cleanup candidates (independent rules) ──
+    cleanup_candidates = []
+    for s in skills:
+        if s["kind"] == "broken_symlink":
+            cleanup_candidates.append(s["name"])
+        elif not s["has_frontmatter"]:
+            cleanup_candidates.append(s["name"])
+        elif not s["description"]:
+            cleanup_candidates.append(s["name"])
+        elif s.get("oversized"):
+            cleanup_candidates.append(s["name"])
+
     # Health score (mirrors skill-mgr check.sh formula)
     score = 100
     # Quantity penalty: >20, -2 per extra (max -60)
@@ -158,6 +228,9 @@ def python_quick_check(target_path):
             "accuracy_estimate": accuracy,
         },
         "structure_issues": structure_issues,
+        "overlap_groups": [],  # populated by frontend fallback
+        "upstream_sources": upstream_sources,
+        "cleanup_candidates": list(dict.fromkeys(cleanup_candidates)),  # dedup, preserve order
         "summary": {
             "total": total,
             "entities": entities,
@@ -203,9 +276,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path == "/api/refresh":
-            self._refresh()
-        elif path == "/api/target":
+        if path == "/api/target":
             self._set_target()
         elif path == "/api/diagnose":
             self._diagnose()
@@ -360,6 +431,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _diagnose(self):
         """Trigger skill-mgr scan+check in background. Returns immediately."""
+        if not SKILL_MGR.exists():
+            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
+            return
         target = self._current_target()
 
         # Check if already running
@@ -590,42 +664,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Now do fast scan
         self._fast_scan()
 
-    def _refresh(self):
-        """Run skill-mgr scan + check, then return success."""
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Transfer-Encoding", "chunked")
-        self.end_headers()
-
-        import time
-        start = time.time()
-        results = {}
-
-        try:
-            env = os.environ.copy()
-            target = self._current_target()
-            env["SKILL_MANAGER_TARGET"] = target
-
-            r1 = subprocess.run(
-                ["bash", str(SKILL_MGR), "scan"],
-                capture_output=True, text=True, timeout=120, env=env,
-            )
-            results["scan_ok"] = r1.returncode == 0
-
-            r2 = subprocess.run(
-                ["bash", str(SKILL_MGR), "check"],
-                capture_output=True, text=True, timeout=120, env=env,
-            )
-            results["check_ok"] = r2.returncode == 0
-        except Exception as e:
-            results["error"] = str(e)
-
-        results["duration_ms"] = int((time.time() - start) * 1000)
-        data = json.dumps(results).encode("utf-8")
-        self.wfile.write(f"{len(data):x}\r\n".encode())
-        self.wfile.write(data + b"\r\n")
-        self.wfile.write(b"0\r\n\r\n")
-
     def _delete_skill(self, name):
         """Delete a skill directory."""
         import shutil
@@ -679,6 +717,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _steal_skill(self):
         """Install a skill via skill-mgr steal."""
+        if not SKILL_MGR.exists():
+            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
+            return
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else '{}'
         try:
@@ -713,9 +754,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _update_upstream(self, name):
         """Trigger skill-mgr steal to update from upstream."""
+        if not SKILL_MGR.exists():
+            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
+            return
         try:
             env = os.environ.copy()
-            env["SKILL_MANAGER_TARGET"] = str(Path.home() / ".claude/skills")
+            env["SKILL_MANAGER_TARGET"] = self._current_target()
             # Find source metadata
             skill_dir = self._resolve_skill_dir(name)
             meta_file = skill_dir / ".skill-manager-source.env" if skill_dir else None

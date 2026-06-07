@@ -381,14 +381,14 @@ async function loadData(){
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
 const CAT_KW={
-  'code-dev':['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit','pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm','bun','代码','dev','ios','qa','fix','clean','review','deploy','benchmark','test','plan','eng','devex','guard','spec','code','ios-','sync','qa-only'],
+  'code-dev':['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit','pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm','bun','代码','dev','ios','qa','fix','clean','deploy','benchmark','test','plan','eng','devex','guard','spec','code','ios-','sync','qa-only'],
   'content':['write','article','blog','copywriting','seo','newsletter','文章','写作','创作','选题','大纲','稿件','essay','writer','content','khazix','title'],
-  'image-gen':['image','picture','photo','cover','banner','illustration','封面','配图','dalle','midjourney','flux','logo','image','glm-image','seedream','illustrator','picgo'],
+  'image-gen':['image','picture','photo','cover','banner','illustration','封面','配图','dalle','midjourney','flux','logo','glm-image','seedream','illustrator','picgo'],
   'video-audio':['video','audio','ffmpeg','remotion','mp4','podcast','subtitle','srt','tts','voice','视频','音频','字幕'],
   'data':['data','analytics','chart','csv','excel','dashboard','visualization','stats','metrics','sql','报告','报表','统计','analysis'],
-  'web-search':['search','web','browse','scrape','crawl','spider','搜索','抓取','爬虫','google','bing','perplexity','web-access','gstack','browse','scrape'],
+  'web-search':['search','web','browse','scrape','crawl','spider','搜索','抓取','爬虫','google','bing','perplexity','web-access','gstack'],
   'social':['小红书','xhs','twitter','weibo','公众号','wechat','instagram','tiktok','抖音','微博','linkedin','threads','youtube','bilibili','wechat-styler'],
-  'doc':['pdf','docx','pptx','xlsx','notion','confluence','文档','readme','spec','make-pdf','document','pptx'],
+  'doc':['pdf','docx','pptx','xlsx','notion','confluence','文档','readme','spec','make-pdf','document'],
   'comms':['email','mail','slack','feishu','lark','dingtalk','telegram','discord','飞书','邮件','钉钉'],
   'design':['figma','canvas','theme','brand','sketch','wireframe','prototype','tailwind','css','设计','design','design-html'],
   'translate':['translate','translation','i18n','l10n','locale','翻译','多语言'],
@@ -477,8 +477,19 @@ function buildDiags(){
   const d=[],total=skills.length;
   if(total>50)d.push({sev:'danger',title:`Skill 总量 ${total}，远超 50 上限`,desc:'准确率急剧下降',affected:[]});
   else if(total>20)d.push({sev:'warn',title:`Skill 数量 ${total}，偏多`,desc:'建议精简',affected:[]});
+  // Overlap from skill-mgr or JS fallback
   (health?.overlap_groups||[]).forEach(g=>d.push({sev:'warn',title:`语义重叠: ${g.skills?.join(' ↔ ')}`,desc:`${g.count} 个相似`,affected:g.skills}));
   (health?.structure_issues||[]).forEach(s=>d.push({sev:'warn',title:`${s.name}: ${s.note}`,desc:'',affected:[s.name]}));
+  // Cleanup candidates
+  const cleanups=health?.cleanup_candidates||[];
+  if(cleanups.length>0){
+    d.push({sev:'info',title:`${cleanups.length} 个清理候选`,desc:'建议检查无用或低质量 skill',affected:cleanups});
+  }
+  // Upstream tracking
+  const upstreams=health?.upstream_sources||[];
+  if(upstreams.length>0){
+    d.push({sev:'info',title:`${upstreams.length} 个 skill 追踪到上游仓库`,desc:'',affected:upstreams.map(u=>u.name)});
+  }
   return d;
 }
 
@@ -515,9 +526,41 @@ function toggleGroup(el){el.classList.toggle('open');el.nextElementSibling.class
 
 /* ── Similarity ── */
 function renderSimilarity(){
-  const gs=health?.overlap_groups||[];
+  let gs=health?.overlap_groups||[];
+  // Fallback: lightweight Jaccard similarity when skill-mgr not available
+  if(!gs.length && skills.length>1 && health?.source==='python-quick-check'){
+    gs=computeSimilarity(skills);
+  }
   if(!gs.length){$('sim-list').innerHTML='<div class="empty">✨ 无语义冲突</div>';return}
-  $('sim-list').innerHTML=gs.map(g=>`<div class="sim-card"><div class="sim-head"><span class="sim-pct med">重叠</span><span class="sim-names">${g.skills?.join(', ')}</span></div></div>`).join('');
+  $('sim-list').innerHTML=gs.map(g=>`<div class="sim-card"><div class="sim-head"><span class="sim-pct ${g.source==='js-fallback'?'med':'high'}">${g.source==='js-fallback'?'轻量':'重叠'}</span><span class="sim-names">${g.skills?.join(', ')}</span></div></div>`).join('');
+}
+
+function computeSimilarity(skills){
+  const STOP=new Set(['the','and','for','with','you','can','use','skill','skills','from','your','this','that','are','how','what','when','where','why','who','all','any','but','not','has','have','had','was','were','been','being','will','would','could','should','may','might','must','shall','into','onto','upon','over','under','above','below','between','among','through','during','before','after','since','until','while','because','although','though','unless','whether','either','neither','both','each','every','some','many','much','more','most','other','another','such','only','own','same','so','than','too','very','just','now','then','here','there','thus','hence','also','well','even','still','yet','already','once','twice','again','back','down','off','out','up','way','about','across','around','at','by','in','of','on','to','via','using','based','help','make','take','get','put','set','run','add','create','delete','remove','update','install','manage','list','check','find','search','view','show','open','close','start','stop','enable','disable','配置','使用','功能','工具','管理','帮助','创建','删除','更新','安装','搜索','查看','打开','关闭','开始','停止','启用','禁用','一个','进行','通过','根据','提供','用于','实现','支持','生成','处理','需要','可以','能够']);
+  function tokenize(s){
+    return new Set((s.name+' '+(s.description||'')).toLowerCase().split(/\W+/).filter(w=>w.length>2&&!STOP.has(w)));
+  }
+  const toks=skills.map(s=>({name:s.name,tokens:tokenize(s)}));
+  const groups=[],visited=new Set();
+  for(let i=0;i<toks.length;i++){
+    if(visited.has(toks[i].name))continue;
+    const group=[toks[i].name];
+    for(let j=i+1;j<toks.length;j++){
+      if(visited.has(toks[j].name))continue;
+      const a=toks[i].tokens,b=toks[j].tokens;
+      const inter=[...a].filter(x=>b.has(x)).length;
+      const union=new Set([...a,...b]).size;
+      const sim=union>0?inter/union:0;
+      if(sim>0.22){
+        group.push(toks[j].name);visited.add(toks[j].name);
+      }
+    }
+    if(group.length>1){
+      groups.push({skills:group,count:group.length,source:'js-fallback'});
+      group.forEach(n=>visited.add(n));
+    }
+  }
+  return groups;
 }
 
 /* ── Upstream with update button ── */
