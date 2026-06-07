@@ -742,14 +742,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"error": str(e)}, status=500)
 
     def _resolve_skill_dir(self, name):
-        """Find skill directory on disk."""
-        candidates = [Path.home() / ".claude/skills" / name]
+        """Find skill directory on disk. Uses current target first."""
+        # 1) Current target (always check first)
+        target = self._current_target()
+        candidates = [Path(target) / name]
+        # 2) Fallback: ~/.claude/skills
+        candidates.append(Path.home() / ".claude/skills" / name)
+        # 3) Fallback: from latest-scan.json if different
         try:
             scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
             tp = scan.get("target", {}).get("path", "")
             if tp.startswith("~"):
                 tp = str(Path.home() / tp[2:])
-            candidates.insert(0, Path(tp) / name)
+            p = Path(tp) / name
+            if str(p) != str(candidates[0]):
+                candidates.append(p)
         except Exception:
             pass
         for d in candidates:

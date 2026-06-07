@@ -265,7 +265,7 @@ tbody tr:hover{background:var(--bg-hover)}
     <div class="nav-group">
       <div class="nav-group-label">概览</div>
       <div class="nav-item active" onclick="switchView('dashboard',this)"><span>🏠</span> 仪表盘 <span class="badge" id="badge-health">-</span></div>
-      <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 全部 Skills <span class="badge" id="badge-skills">-</span></div>
+      <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 当前目标库 <span class="badge" id="badge-skills">-</span></div>
     </div>
     <div class="nav-group">
       <div class="nav-group-label">诊断</div>
@@ -381,7 +381,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'全部 Skills',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'技能库'};
+  const titles={dashboard:'仪表盘',skills:'当前目标库',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'技能库'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
@@ -590,22 +590,37 @@ async function batchDelete(){
 
 /* ── Export / Import ── */
 function exportSkills(){
-  const data={
-    exported_at:new Date().toISOString(),
-    target:scan?.target?.path||'',
-    skills:skills.map(s=>({name:s.name,category:s.category||'other',description:s.description||'',kind:s.kind||'entity'}))
-  };
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const target=scan?.target?.path||'unknown';
+  const lines=[
+    '# Skill Dashboard Export',
+    `# Target: ${target}`,
+    `# Date: ${new Date().toLocaleString('zh-CN')}`,
+    `# Count: ${skills.length}`,
+    '',
+    '## Installed Skills',
+    ...skills.map(s=>`- ${s.name}${s.description?': '+s.description:''}`),
+    '',
+    '## GitHub Sources (paste these to import)',
+    ...skills.map(s=>{
+      const u=(health?.upstream_sources||[]).find(x=>x.name===s.name);
+      return u?`- ${u.repo}`:`# ${s.name}: no source tracked`;
+    }).filter(l=>!l.startsWith('#')),
+    '',
+    '## Import format (one per line)',
+    '# https://github.com/user/repo',
+    '# https://github.com/user/repo/tree/main/subdir',
+  ];
+  const blob=new Blob([lines.join('\n')],{type:'text/plain'});
   const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download=`skills-${Date.now()}.json`;a.click();
+  const a=document.createElement('a');a.href=url;a.download=`skills-${Date.now()}.txt`;a.click();
   URL.revokeObjectURL(url);
-  toast(`已导出 ${data.skills.length} 个 skill`);
+  toast(`已导出 ${skills.length} 个 skill`);
 }
 function showImportDialog(){
   $('modal-title').textContent='导入 Skills';
   $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
-    <div style="margin-bottom:12px;color:var(--text-muted)">粘贴 JSON 清单，支持批量安装</div>
-    <textarea id="import-json" placeholder='[{&quot;name&quot;:&quot;...&quot;,&quot;source&quot;:&quot;github.com/user/repo&quot;}]' style="width:100%;height:140px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;font-family:'SF Mono',monospace;resize:vertical;margin-bottom:12px"></textarea>
+    <div style="margin-bottom:12px;color:var(--text-muted)">粘贴 GitHub URL 列表，每行一个</div>
+    <textarea id="import-text" placeholder='https://github.com/user/repo\nhttps://github.com/user/repo/tree/main/subdir' style="width:100%;height:140px;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:12px;font-family:'SF Mono',monospace;resize:vertical;margin-bottom:12px"></textarea>
     <div id="import-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
@@ -616,23 +631,20 @@ function showImportDialog(){
 }
 async function doImport(){
   const btn=$('import-btn');const result=$('import-result');
-  let data;
-  try{data=JSON.parse($('import-json').value.trim())}
-  catch(e){toast('JSON 格式错误','error');return}
-  const items=Array.isArray(data)?data:(data.skills||[]);
-  if(!items.length){toast('清单为空','error');return}
+  const text=$('import-text').value.trim();
+  if(!text){toast('请输入内容','error');return}
+  const sources=text.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('#'));
+  if(!sources.length){toast('未找到有效的 URL','error');return}
   btn.disabled=true;btn.textContent='安装中...';
   result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
   let ok=0,fail=0,logs=[];
-  for(const item of items){
-    const source=item.source||item.repo||'';
-    if(!source){logs.push(`⏭ ${item.name||'?'}: 无来源`);continue}
+  for(const source of sources){
     try{
       const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
       const d=await r.json();
-      d.ok?(ok++):(fail++);logs.push(`${d.ok?'✅':'❌'} ${item.name||source}`);
+      d.ok?(ok++):(fail++);logs.push(`${d.ok?'✅':'❌'} ${source.slice(0,50)}`);
       result.textContent=logs.slice(-5).join('\n');
-    }catch(e){fail++;logs.push(`❌ ${item.name||source}: ${e.message}`)}
+    }catch(e){fail++;logs.push(`❌ ${source.slice(0,50)}: ${e.message}`)}
   }
   result.style.background=fail===0?'var(--green-bg)':'var(--red-bg)';
   result.style.color=fail===0?'var(--green)':'var(--red)';
@@ -652,7 +664,7 @@ function renderSimilarity(){
     gs=computeSimilarity(skills);
   }
   if(!gs.length){$('sim-list').innerHTML='<div class="empty">✨ 无语义冲突</div>';return}
-  $('sim-list').innerHTML=gs.map(g=>`<div class="sim-card"><div class="sim-head"><span class="sim-pct ${g.source==='js-fallback'?'med':'high'}">${g.source==='js-fallback'?'轻量':'重叠'}</span><span class="sim-names">${g.skills?.join(', ')}</span></div></div>`).join('');
+  $('sim-list').innerHTML=gs.map(g=>`<div class="sim-card"><div class="sim-head"><span class="sim-pct ${g.source==='js-fallback'?'med':'high'}">${g.source==='js-fallback'?'轻量':'重叠'}</span><span class="sim-names">${g.skills?.map(n=>`<span style="cursor:pointer;color:var(--indigo);text-decoration:underline" onclick="showSkill('${n}')">${n}</span>`).join(' ↔ ')}</span></div></div>`).join('');
 }
 
 function computeSimilarity(skills){
