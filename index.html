@@ -756,24 +756,173 @@ async function cleanupAll(){
   toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);await loadData();
 }
 
-/* ── Sources ── */
+/* ── Sources (穿透浏览 + 批量同步) ── */
+let sourceSkillsCache={};
 function renderSources(){
   const srcs=scan?.sources||[];
   if(!srcs.length){$('sources-list').innerHTML='<div class="empty">无来源数据</div>';return}
   const curTarget=targets.find(t=>t.is_current);
-  const top=srcs.slice(0,40);
-  let h=`<div class="card"><div class="card-head"><h3>📚 技能库</h3><span class="sub">${srcs.length} 个库 · 当前: ${curTarget?curTarget.name:'-'}</span></div>`;
-  top.forEach((s,i)=>{
+  const installedNames=new Set(skills.map(s=>s.name));
+  let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+    <h3 style="font-size:14px;font-weight:600">📚 技能库来源</h3>
+    <span style="font-size:11px;color:var(--text-muted)">${srcs.length} 个库 · 当前目标: ${curTarget?curTarget.name:'-'}</span>
+  </div>`;
+  srcs.forEach((s,i)=>{
     const isCurrent=curTarget&&s.path&&s.path.replace(/\$HOME|\${HOME}/g,'')===curTarget.rel.replace(/^~\//,'');
-    const scopeTag=s.is_target?'<span style="font-size:9px;padding:1px 5px;border-radius:4px;background:var(--indigo-bg);color:var(--indigo);font-weight:600">当前</span>':'';
-    h+=`<div class="src-row" style="${s.is_target?'background:var(--indigo-bg);border-radius:8px':''}">
-      <span style="font-size:11px;color:var(--text-muted);min-width:22px">${i+1}</span>
-      <div style="flex:1;min-width:0"><div style="font-size:12px;display:flex;align-items:center;gap:5px">${s.display_name||s.name} ${scopeTag}</div>
-      <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.path}</div></div>
-      <span style="font-size:12px;font-weight:600">${s.count}</span></div>`;
+    const scopeTag=isCurrent?'<span class="to-scope to-global" style="font-size:9px">当前目标</span>':'';
+    h+=`<div class="src-card" style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--bg-card);overflow:hidden">
+      <div class="src-card-head" onclick="toggleSourceCard('${s.path}',this)" style="display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer;transition:background .12s">
+        <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s">▶</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">${s.display_name||s.name} ${scopeTag}</div>
+          <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.path}</div>
+        </div>
+        <span style="font-size:12px;color:var(--text-muted)">${s.count} skills</span>
+        <button class="btn btn-sm" onclick="event.stopPropagation();showSourceSkills('${s.path}','${s.display_name||s.name}')" style="margin-left:4px">查看</button>
+      </div>
+      <div class="src-card-body" style="display:none;border-top:1px solid var(--border)">
+        <div style="padding:8px 14px;font-size:11px;color:var(--text-muted)" id="src-body-${btoa(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}">加载中...</div>
+      </div>
+    </div>`;
   });
-  if(srcs.length>40)h+=`<div style="text-align:center;padding:8px;font-size:11px;color:var(--text-muted)">... 还有 ${srcs.length-40} 个</div>`;
-  h+='</div>';$('sources-list').innerHTML=h;
+  $('sources-list').innerHTML=h;
+}
+
+function toggleSourceCard(path,head){
+  const body=head.nextElementSibling;
+  const arrow=head.querySelector('.src-arrow');
+  const isOpen=body.style.display==='block';
+  if(isOpen){body.style.display='none';arrow.style.transform='';return}
+  body.style.display='block';arrow.style.transform='rotate(90deg)';
+  const safeId='src-body-'+btoa(path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
+  const container=$(safeId);
+  if(!container)return;
+  // Load skills
+  loadAndRenderSourceSkills(path,container);
+}
+
+async function loadAndRenderSourceSkills(path,container){
+  if(sourceSkillsCache[path]){
+    renderSourceSkillList(path,sourceSkillsCache[path],container);
+    return;
+  }
+  container.innerHTML='<div style="padding:10px;color:var(--text-muted)">加载中...</div>';
+  try{
+    const r=await fetch('/api/source/skills?path='+encodeURIComponent(path));
+    const d=await r.json();
+    if(d.error){container.innerHTML='<div style="padding:10px;color:var(--red)">'+d.error+'</div>';return}
+    sourceSkillsCache[path]=d.skills||[];
+    renderSourceSkillList(path,d.skills||[],container);
+  }catch(e){
+    container.innerHTML='<div style="padding:10px;color:var(--red)">加载失败</div>';
+  }
+}
+
+function renderSourceSkillList(path,sourceSkills,container){
+  const installedNames=new Set(skills.map(s=>s.name));
+  const safePath=path.replace(/'/g,"\\'");
+  if(!sourceSkills.length){container.innerHTML='<div style="padding:10px;color:var(--text-muted)">无 skills</div>';return}
+  let h='<div style="max-height:300px;overflow-y:auto">';
+  sourceSkills.forEach(sk=>{
+    const isInstalled=installedNames.has(sk.name);
+    h+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent)">
+      <span style="font-size:11px;${isInstalled?'color:var(--green)':'color:var(--text-muted)'};min-width:60px">${isInstalled?'✓ 已安装':'○ 未安装'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;font-weight:500;cursor:pointer;color:var(--indigo)" onclick="showSkill('${sk.name}')">${sk.name}</div>
+        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sk.description||''}</div>
+      </div>
+    </div>`;
+  });
+  h+='</div>';
+  container.innerHTML=h;
+}
+
+let sourceSyncSelections=new Set();
+function showSourceSkills(path,name){
+  sourceSyncSelections.clear();
+  $('modal-title').textContent=name+' — Skills';
+  $('modal-body').innerHTML='<div style="padding:20px;text-align:center;color:var(--text-muted)">加载中...</div>';
+  $('modal').classList.remove('hidden');
+  loadSourceSkillsForSync(path);
+}
+
+async function loadSourceSkillsForSync(path){
+  try{
+    const r=await fetch('/api/source/skills?path='+encodeURIComponent(path));
+    const d=await r.json();
+    if(d.error){$('modal-body').innerHTML='<div style="color:var(--red)">'+d.error+'</div>';return}
+    const installedNames=new Set(skills.map(s=>s.name));
+    const sourceSkills=d.skills||[];
+    if(!sourceSkills.length){$('modal-body').innerHTML='<div class="empty">无 skills</div>';return}
+
+    let h=`<div style="font-family:-apple-system,sans-serif;font-size:13px">
+      <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
+        <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" id="sync-select-all" onchange="toggleSyncSelectAll()" style="cursor:pointer">
+          全选未安装
+        </label>
+        <button class="btn btn-sm btn-primary" id="sync-btn" onclick="syncSelected()" disabled>同步到目标库</button>
+        <span id="sync-count" style="font-size:11px;color:var(--text-muted)">已选 0 个</span>
+      </div>
+      <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">`;
+    sourceSkills.forEach(sk=>{
+      const isInstalled=installedNames.has(sk.name);
+      h+=`<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent);${isInstalled?'opacity:.5':''}">
+        <input type="checkbox" class="sync-check" data-name="${sk.name}" ${isInstalled?'disabled':''} onchange="toggleSyncSkill('${sk.name}')">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;font-weight:500">${sk.name} ${isInstalled?'<span style="font-size:10px;color:var(--green)">(已安装)</span>':''}</div>
+          <div style="font-size:10px;color:var(--text-muted)">${sk.description||''}</div>
+        </div>
+      </div>`;
+    });
+    h+='</div></div>';
+    $('modal-body').innerHTML=h;
+    updateSyncUI();
+  }catch(e){$('modal-body').innerHTML='<div style="color:var(--red)">加载失败</div>'}
+}
+
+function toggleSyncSkill(name){
+  if(sourceSyncSelections.has(name))sourceSyncSelections.delete(name);else sourceSyncSelections.add(name);
+  updateSyncUI();
+}
+function toggleSyncSelectAll(){
+  const checked=$('sync-select-all').checked;
+  document.querySelectorAll('.sync-check:not(:disabled)').forEach(cb=>{
+    cb.checked=checked;
+    const name=cb.dataset.name;
+    checked?sourceSyncSelections.add(name):sourceSyncSelections.delete(name);
+  });
+  updateSyncUI();
+}
+function updateSyncUI(){
+  const count=sourceSyncSelections.size;
+  $('sync-count').textContent=`已选 ${count} 个`;
+  const btn=$('sync-btn');if(btn)btn.disabled=count===0;
+}
+
+async function syncSelected(){
+  const names=[...sourceSyncSelections];
+  if(!names.length)return;
+  if(!confirm(`确认同步 ${names.length} 个 skill 到目标库？`))return;
+  // We need source URLs. For skills without upstream, we can't sync.
+  // Try to find upstream for each, or use name as search key
+  let ok=0,fail=0;
+  const btn=$('sync-btn');if(btn){btn.disabled=true;btn.textContent='同步中...'}
+  for(const name of names){
+    // Try to find GitHub source from upstream_sources
+    const upstream=(health?.upstream_sources||[]).find(u=>u.name===name);
+    const source=upstream?`https://github.com/${upstream.repo}`:name;
+    try{
+      const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
+      const d=await r.json();
+      d.ok?ok++:fail++;
+    }catch{fail++}
+  }
+  if(btn){btn.disabled=false;btn.textContent='同步到目标库'}
+  toast(`同步完成: ${ok} 成功${fail?`, ${fail} 失败`:''}`);
+  sourceSyncSelections.clear();
+  await loadData();
+  $('modal').classList.add('hidden');
 }
 
 /* ── Modal ── */

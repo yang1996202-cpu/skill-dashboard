@@ -272,6 +272,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._export_skills()
         elif path == "/api/openapi":
             self._openapi()
+        elif path == "/api/source/skills":
+            self._list_source_skills()
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = path.split("/")[3]
             self._serve_skill_content(name)
@@ -408,6 +410,52 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "DELETE", "path": "/api/skill/{name}", "desc": "Delete a skill"},
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
             ],
+        })
+
+    def _list_source_skills(self):
+        """Return skills in a given source directory (for穿透 browsing)."""
+        from urllib.parse import parse_qs
+        query = parse_qs(urlparse(self.path).query)
+        source_path = query.get("path", [""])[0]
+        if not source_path:
+            self._json_response({"error": "missing path param"}, status=400)
+            return
+        if source_path.startswith("~"):
+            source_path = str(Path.home() / source_path[2:])
+        source_dir = Path(source_path)
+        if not source_dir.is_dir():
+            self._json_response({"error": f"not a dir: {source_path}"}, status=400)
+            return
+
+        result = []
+        for d in sorted(source_dir.iterdir()):
+            if not d.is_dir() and not d.is_symlink():
+                continue
+            skill_md = d / "SKILL.md"
+            if not skill_md.exists():
+                continue
+            name = d.name
+            description = ""
+            try:
+                text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                if text.startswith("---"):
+                    end = text.find("---", 3)
+                    if end > 0:
+                        fm = text[3:end]
+                        for line in fm.splitlines():
+                            line = line.strip()
+                            if line.startswith("description:"):
+                                description = line.split(":", 1)[1].strip().strip("'\"")
+            except Exception:
+                pass
+            result.append({
+                "name": name,
+                "description": description,
+            })
+        self._json_response({
+            "source": str(source_dir).replace(str(Path.home()), "~"),
+            "skills": result,
+            "count": len(result),
         })
 
     def _fast_scan(self):
