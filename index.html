@@ -793,7 +793,7 @@ function renderSources(){
         <button class="btn btn-sm" onclick="event.stopPropagation();showSourceSkills('${s.path}','${s.display_name||s.name}')" style="margin-left:4px">查看</button>
       </div>
       <div class="src-card-body" style="display:none;border-top:1px solid var(--border)">
-        <div style="padding:8px 14px;font-size:11px;color:var(--text-muted)" id="src-body-${btoa(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}">加载中...</div>
+        <div style="padding:8px 14px;font-size:11px;color:var(--text-muted)" id="src-body-${encodeURIComponent(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}">加载中...</div>
       </div>
     </div>`;
   });
@@ -806,7 +806,7 @@ function toggleSourceCard(path,head){
   const isOpen=body.style.display==='block';
   if(isOpen){body.style.display='none';arrow.style.transform='';return}
   body.style.display='block';arrow.style.transform='rotate(90deg)';
-  const safeId='src-body-'+btoa(path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
+  const safeId='src-body-'+encodeURIComponent(path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
   const container=$(safeId);
   if(!container)return;
   // Load skills
