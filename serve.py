@@ -16,7 +16,6 @@ from urllib.parse import urlparse
 
 PORT = 3457
 STATE_DIR = Path.home() / ".skill-manager" / "state"
-SKILL_MGR = Path.home() / ".claude/skills/skill-manager/scripts/skill-mgr.sh"
 HTML_FILE = Path(__file__).parent / "index.html"
 CACHE_DIR = Path(__file__).parent / ".cache"
 DIAG_LOG = Path(__file__).parent / ".cache" / "diag.log"
@@ -246,6 +245,355 @@ def python_quick_check(target_path):
     }
 
 
+# ── GitHub URL parsing ──
+GITHUB_HTTPS_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?"
+    r"(?:/tree/(?P<ref>[^/]+)(?:/(?P<subdir>.+))?)?"
+    r"/?$"
+)
+GITHUB_SSH_RE = re.compile(
+    r"^git@github\.com:(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?$"
+)
+
+
+def parse_github_url(url):
+    """Parse a GitHub URL into (owner, repo, ref, subdir, clean_url).
+    Supports https:// and git@ formats. Returns None if not valid.
+    """
+    url = url.strip()
+    m = GITHUB_HTTPS_RE.match(url)
+    if m:
+        owner = m.group("owner")
+        repo = m.group("repo")
+        ref = m.group("ref") or "main"
+        subdir = m.group("subdir") or ""
+        clean = f"https://github.com/{owner}/{repo}"
+        if subdir:
+            clean += f"/tree/{ref}/{subdir}"
+        return owner, repo, ref, subdir, clean
+    m = GITHUB_SSH_RE.match(url)
+    if m:
+        owner = m.group("owner")
+        repo = m.group("repo")
+        return owner, repo, "main", "", f"https://github.com/{owner}/{repo}"
+    return None
+
+
+# ── Source metadata I/O ──
+def write_source_metadata(skill_dir, repo, ref, subdir, url, commit):
+    """Write .skill-manager-source.env to record upstream info."""
+    meta_file = Path(skill_dir) / ".skill-manager-source.env"
+    lines = [
+        f"SKILL_SOURCE_PROVIDER=github",
+        f"SKILL_SOURCE_REPO={repo}",
+        f"SKILL_SOURCE_REF={ref}",
+        f"SKILL_SOURCE_SUBDIR={subdir}",
+        f"SKILL_SOURCE_URL={url}",
+        f"SKILL_SOURCE_INSTALLED_COMMIT={commit}",
+    ]
+    meta_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def read_source_metadata(skill_dir):
+    """Read .skill-manager-source.env. Returns dict or None.
+    Supports both skill-mgr format (repo=, ref=) and Dashboard format (SKILL_SOURCE_REPO=).
+    """
+    meta_file = Path(skill_dir) / ".skill-manager-source.env"
+    if not meta_file.exists():
+        return None
+    result = {}
+    for line in meta_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if "=" in line and not line.startswith("#"):
+            k, v = line.split("=", 1)
+            result[k] = v.strip('"').strip("'")
+    # Normalize: support both skill-mgr short keys and Dashboard long keys
+    normalized = {}
+    key_map = {
+        "SKILL_SOURCE_REPO": "repo",
+        "SKILL_SOURCE_REF": "ref",
+        "SKILL_SOURCE_SUBDIR": "subdir",
+        "SKILL_SOURCE_URL": "source_url",
+        "SKILL_SOURCE_INSTALLED_COMMIT": "installed_commit",
+        "SKILL_SOURCE_PROVIDER": "provider",
+    }
+    for long_key, short_key in key_map.items():
+        if long_key in result:
+            normalized[short_key] = result[long_key]
+        elif short_key in result:
+            normalized[short_key] = result[short_key]
+    # Also expose long keys for convenience
+    for long_key, short_key in key_map.items():
+        if short_key in normalized:
+            result[long_key] = normalized[short_key]
+    return result
+
+
+# ── Snapshot ──
+def create_snapshot(skill_dir):
+    """Create a timestamped backup of a skill directory."""
+    skill_dir = Path(skill_dir)
+    if not skill_dir.exists():
+        return None
+    import shutil
+    snap_dir = skill_dir.parent / ".snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    ts = time.strftime("%Y%m%d_%H%M%S")
+    snap_path = snap_dir / f"{skill_dir.name}_{ts}"
+    shutil.copytree(skill_dir, snap_path)
+    return str(snap_path)
+
+
+# ── Install skill from GitHub (pure Python) ──
+def install_skill(source_url, target_path, preferred_name=None):
+    """Install a skill from a GitHub URL. Pure Python, no skill-mgr.
+
+    Steps:
+      1. Parse GitHub URL (owner/repo/ref/subdir)
+      2. git clone --depth 1 to temp dir
+      3. Find SKILL.md (handle subdirectories)
+      4. If target exists, create snapshot
+      5. shutil.copytree to target
+      6. Write .skill-manager-source.env
+
+    Returns: {"ok": bool, "name": str, "output": str, "error": str, "snapshot": str}
+    """
+    import shutil
+    import tempfile
+
+    parsed = parse_github_url(source_url)
+    if not parsed:
+        return {"ok": False, "error": f"不是有效的 GitHub URL: {source_url}"}
+    owner, repo, ref, subdir, clean_url = parsed
+
+    # Check git availability
+    git_check = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    if git_check.returncode != 0:
+        return {"ok": False, "error": "当前环境缺少 git，无法从 GitHub 安装"}
+
+    tmp_root = tempfile.mkdtemp(prefix="skill_install_")
+    clone_dir = Path(tmp_root) / "repo"
+
+    try:
+        # Clone
+        clone_url = f"https://github.com/{owner}/{repo}.git"
+        branch_args = ["--branch", ref] if ref else []
+        clone_cmd = ["git", "clone", "--depth", "1"] + branch_args + [clone_url, str(clone_dir)]
+        clone_res = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=60)
+        if clone_res.returncode != 0:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return {"ok": False, "error": f"git clone 失败: {clone_res.stderr[-300:] or clone_res.stdout[-300:]}"}
+
+        # Find SKILL.md
+        search_dir = clone_dir / subdir if subdir else clone_dir
+        candidates = []
+        if subdir and (search_dir / "SKILL.md").exists():
+            candidates = [search_dir]
+        else:
+            for d in sorted(clone_dir.rglob("SKILL.md")):
+                candidates.append(d.parent)
+
+        if not candidates:
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return {"ok": False, "error": "仓库里没有找到 SKILL.md"}
+
+        # Select skill directory
+        if len(candidates) == 1:
+            selected_dir = candidates[0]
+        else:
+            # Multiple skills — try preferred_name match
+            if preferred_name:
+                for c in candidates:
+                    if c.name == preferred_name:
+                        selected_dir = c
+                        break
+                else:
+                    names = ", ".join(c.name for c in candidates[:5])
+                    shutil.rmtree(tmp_root, ignore_errors=True)
+                    return {"ok": False, "error": f"仓库里有多个 skill，请指定名称。找到: {names}"}
+            else:
+                names = ", ".join(c.name for c in candidates[:5])
+                shutil.rmtree(tmp_root, ignore_errors=True)
+                return {"ok": False, "error": f"仓库里有多个 skill，请指定名称。找到: {names}"}
+
+        selected_name = preferred_name or selected_dir.name
+        selected_rel = str(selected_dir.relative_to(clone_dir)) if selected_dir != clone_dir else ""
+
+        # Get installed commit
+        commit_res = subprocess.run(
+            ["git", "-C", str(clone_dir), "log", "-1", "--format=%H", "--", selected_rel],
+            capture_output=True, text=True, timeout=10,
+        )
+        installed_commit = commit_res.stdout.strip() or ""
+        if not installed_commit:
+            commit_res = subprocess.run(
+                ["git", "-C", str(clone_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            installed_commit = commit_res.stdout.strip()
+
+        target = Path(target_path)
+        dest_dir = target / selected_name
+
+        # Snapshot if exists
+        snapshot_path = None
+        if dest_dir.exists() or dest_dir.is_symlink():
+            snapshot_path = create_snapshot(dest_dir)
+
+        # Copy
+        if dest_dir.exists() or dest_dir.is_symlink():
+            if dest_dir.is_symlink():
+                dest_dir.unlink()
+            elif dest_dir.is_dir():
+                shutil.rmtree(dest_dir)
+            else:
+                dest_dir.unlink()
+        shutil.copytree(selected_dir, dest_dir)
+
+        # Write metadata
+        write_source_metadata(dest_dir, f"{owner}/{repo}", ref, selected_rel, clean_url, installed_commit)
+
+        output = f"安装到 {target_path}/{selected_name}\n来源: {owner}/{repo}@{ref}"
+        if selected_rel:
+            output += f"\n子目录: {selected_rel}"
+        output += f"\n提交: {installed_commit[:7]}"
+        if snapshot_path:
+            output += f"\n快照: {snapshot_path}"
+
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        return {
+            "ok": True,
+            "name": selected_name,
+            "output": output,
+            "snapshot": snapshot_path,
+        }
+
+    except Exception as e:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        return {"ok": False, "error": str(e)}
+
+
+# ── Check upstream status (pure Python, no gh CLI) ──
+def check_upstream_status(skill_dir):
+    """Check if a skill is behind its upstream GitHub source.
+    Returns: {"status": "current"|"outdated"|"unknown", "installed_commit": str, "latest_commit": str, "repo": str, "ahead_by": int, "error": str}
+    """
+    meta = read_source_metadata(skill_dir)
+    if not meta:
+        # Try .git remote
+        git_dir = Path(skill_dir) / ".git"
+        if git_dir.exists():
+            try:
+                r = subprocess.run(
+                    ["git", "-C", str(skill_dir), "remote", "get-url", "origin"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if r.returncode == 0:
+                    url = r.stdout.strip()
+                    parsed = parse_github_url(url)
+                    if parsed:
+                        owner, repo, ref, subdir, clean_url = parsed
+                        # Get local HEAD
+                        lr = subprocess.run(
+                            ["git", "-C", str(skill_dir), "rev-parse", "HEAD"],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        local_commit = lr.stdout.strip() if lr.returncode == 0 else ""
+                        # Query GitHub API for latest
+                        latest = _github_latest_commit(f"{owner}/{repo}", ref, subdir)
+                        if latest:
+                            if local_commit and latest == local_commit:
+                                return {"status": "current", "installed_commit": local_commit, "latest_commit": latest, "repo": f"{owner}/{repo}", "ahead_by": 0}
+                            else:
+                                return {"status": "outdated", "installed_commit": local_commit, "latest_commit": latest, "repo": f"{owner}/{repo}", "ahead_by": None}
+                        return {"status": "unknown", "installed_commit": local_commit, "latest_commit": "", "repo": f"{owner}/{repo}", "error": "无法查询 GitHub API"}
+            except Exception:
+                pass
+        return {"status": "unknown", "error": "没有来源记录"}
+
+    repo = meta.get("SKILL_SOURCE_REPO", "")
+    ref = meta.get("SKILL_SOURCE_REF", "main")
+    subdir = meta.get("SKILL_SOURCE_SUBDIR", "")
+    installed_commit = meta.get("SKILL_SOURCE_INSTALLED_COMMIT", "")
+    url = meta.get("SKILL_SOURCE_URL", "")
+
+    if not repo:
+        return {"status": "unknown", "error": "来源记录不完整"}
+
+    latest = _github_latest_commit(repo, ref, subdir)
+    if not latest:
+        return {"status": "unknown", "installed_commit": installed_commit, "latest_commit": "", "repo": repo, "error": "GitHub API 查询失败"}
+
+    if installed_commit and latest == installed_commit:
+        return {"status": "current", "installed_commit": installed_commit, "latest_commit": latest, "repo": repo, "ahead_by": 0}
+    else:
+        # Try to get ahead_by via compare API
+        ahead_by = _github_compare_ahead_by(repo, installed_commit, latest)
+        return {"status": "outdated", "installed_commit": installed_commit, "latest_commit": latest, "repo": repo, "ahead_by": ahead_by}
+
+
+def _github_latest_commit(repo, ref="main", subdir=""):
+    """Query GitHub API for latest commit on a ref/path. No auth needed (rate-limited)."""
+    import urllib.request
+    try:
+        if subdir:
+            url = f"https://api.github.com/repos/{repo}/commits?path={urllib.parse.quote(subdir)}&sha={urllib.parse.quote(ref)}&per_page=1"
+        else:
+            url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
+        req = urllib.request.Request(url, headers={"User-Agent": "skill-dashboard"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            if isinstance(data, list):
+                return data[0].get("sha", "") if data else ""
+            return data.get("sha", "")
+    except Exception:
+        return ""
+
+
+def _github_compare_ahead_by(repo, base, head):
+    """Query GitHub compare API for commits ahead. Returns int or None."""
+    import urllib.request
+    try:
+        url = f"https://api.github.com/repos/{repo}/compare/{base}...{head}"
+        req = urllib.request.Request(url, headers={"User-Agent": "skill-dashboard"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("ahead_by")
+    except Exception:
+        return None
+
+
+# ── Update skill from upstream ──
+def update_skill(skill_name, target_path):
+    """Update a skill by re-installing from its tracked upstream source.
+    Returns: {"ok": bool, "name": str, "output": str, "error": str}
+    """
+    skill_dir = Path(target_path) / skill_name
+    meta = read_source_metadata(skill_dir)
+    if meta:
+        url = meta.get("SKILL_SOURCE_URL", "")
+        if url:
+            return install_skill(url, target_path, preferred_name=skill_name)
+
+    # Fallback: try .git remote
+    git_dir = skill_dir / ".git"
+    if git_dir.exists():
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(skill_dir), "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                url = r.stdout.strip()
+                parsed = parse_github_url(url)
+                if parsed:
+                    return install_skill(url, target_path, preferred_name=skill_name)
+        except Exception:
+            pass
+
+    return {"ok": False, "error": "没有找到上游来源记录，无法更新"}
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serve index.html and API endpoints."""
 
@@ -279,6 +627,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = path.split("/")[3]
             self._serve_skill_content(name)
+        elif path.startswith("/api/skill/") and path.endswith("/upstream"):
+            name = path.split("/")[3]
+            self._check_skill_upstream(name)
         else:
             self.send_error(404)
 
@@ -330,7 +681,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b'{"error": "state file not found, run skill-mgr scan first"}')
+            self.wfile.write(b'{"error": "state file not found, switch target to generate data"}')
 
     def _serve_history(self):
         hist_file = STATE_DIR / "history.jsonl"
@@ -358,6 +709,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"name": name, "content": content, "path": str(skill_md)})
                 return
         self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+
+    def _check_skill_upstream(self, name):
+        """Check upstream status for a single skill."""
+        target = self._current_target()
+        skill_dir = Path(target) / name
+        if not skill_dir.exists():
+            self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+            return
+        result = check_upstream_status(skill_dir)
+        result["name"] = name
+        self._json_response(result)
 
     def _export_skills(self):
         """Export current target's skills as JSON."""
@@ -403,15 +765,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Return simple API documentation."""
         self._json_response({
             "title": "Skill Dashboard API",
-            "version": "1.0",
+            "version": "2.0",
             "endpoints": [
                 {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
                 {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
+                {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
                 {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
-                {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (needs skill-mgr)"},
+                {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (Python-only)"},
                 {"method": "POST", "path": "/api/steal", "desc": "Install skill from GitHub URL"},
                 {"method": "DELETE", "path": "/api/skill/{name}", "desc": "Delete a skill"},
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
@@ -598,43 +961,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
     _diag_phase = ""  # "scan" or "check"
 
     def _diagnose(self):
-        """Trigger skill-mgr scan+check in background. Returns immediately."""
-        if not SKILL_MGR.exists():
-            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
-            return
+        """Trigger Python-only diagnosis in background. No skill-mgr needed."""
         target = self._current_target()
 
         # Check if already running
         if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
             elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
-            if elapsed > 120000:
+            if elapsed > 60000:
                 DashboardHandler._diag_process.kill()
                 DashboardHandler._diag_process = None
-                self._json_response({"status": "error", "error": "诊断超时 (120s)，请重试"})
+                self._json_response({"status": "error", "error": "诊断超时 (60s)，请重试"})
                 return
-            phase = DashboardHandler._diag_phase or "scan"
             self._json_response({"status": "running", "target": DashboardHandler._diag_target,
-                                 "elapsed_ms": elapsed, "phase": phase})
+                                 "elapsed_ms": elapsed, "phase": "check"})
             return
 
-        env = os.environ.copy()
-        env["SKILL_MANAGER_TARGET"] = target
+        def _run_diagnosis():
+            """Run diagnosis in a subprocess to avoid blocking the server."""
+            result = python_quick_check(target)
+            if result:
+                # Also check upstream status for each skill with metadata
+                upstream = result.get("upstream_sources", [])
+                for u in upstream:
+                    skill_dir = Path(target) / u["name"]
+                    status = check_upstream_status(skill_dir)
+                    if status.get("status") in ("current", "outdated"):
+                        u["status"] = status["status"]
+                        u["installed_commit"] = status.get("installed_commit", "")
+                        u["latest_commit"] = status.get("latest_commit", "")
+                        u["ahead_by"] = status.get("ahead_by")
+                result["source"] = "python-diagnosis"
+                result["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
+                save_cached_diagnosis(target, result)
+
         try:
-            # Write output to log file instead of PIPE (avoids buffer deadlock)
             CACHE_DIR.mkdir(parents=True, exist_ok=True)
             log_f = open(DIAG_LOG, "w")
             DashboardHandler._diag_process = subprocess.Popen(
-                ["bash", "-c",
-                 f"echo '=== SCAN START ===' && "
-                 f"SKILL_MANAGER_TARGET='{target}' bash '{SKILL_MGR}' scan && "
-                 f"echo '=== CHECK START ===' && "
-                 f"SKILL_MANAGER_TARGET='{target}' bash '{SKILL_MGR}' check && "
-                 f"echo '=== DONE ==='"],
-                stdout=log_f, stderr=subprocess.STDOUT, env=env,
+                [sys.executable, "-c",
+                 "import sys; sys.path.insert(0, '" + str(Path(__file__).parent) + "'); "
+                 "from serve import python_quick_check, check_upstream_status, save_cached_diagnosis; "
+                 "import json, time; "
+                 "t = '" + target + "'; "
+                 "r = python_quick_check(t); "
+                 "[u.update({'status': s.get('status','unknown'), 'latest_commit': s.get('latest_commit',''), 'ahead_by': s.get('ahead_by')}) or None for u in r.get('upstream_sources',[]) if (s := check_upstream_status(__import__('pathlib').Path(t)/u['name']))]; "
+                 "r['source']='python-diagnosis'; r['generated_at']=time.strftime('%Y-%m-%dT%H:%M:%S'); "
+                 "save_cached_diagnosis(t, r); "
+                 "print('done')"],
+                stdout=log_f, stderr=subprocess.STDOUT,
             )
             DashboardHandler._diag_target = target
             DashboardHandler._diag_start = time.time()
-            DashboardHandler._diag_phase = "scan"
+            DashboardHandler._diag_phase = "check"
             self._json_response({"status": "started", "target": target})
         except Exception as e:
             self._json_response({"status": "error", "error": str(e)})
@@ -645,57 +1023,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # If process is running, check if it just finished
         if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is not None:
-            rc = DashboardHandler._diag_process.returncode
             DashboardHandler._diag_process = None
-
-            if rc == 0:
-                try:
-                    health = json.loads((STATE_DIR / "latest-health.json").read_text())
-                    scan_data = json.loads((STATE_DIR / "latest-scan.json").read_text())
-                    cached = {
-                        "health_score": health.get("health_score"),
-                        "structure_issues": health.get("structure_issues", []),
-                        "overlap_groups": health.get("overlap_groups", []),
-                        "upstream_sources": health.get("upstream_sources", []),
-                        "cleanup_candidates": health.get("cleanup_candidates", []),
-                        "summary": health.get("summary", {}),
-                        "sources": scan_data.get("sources", []),
-                        "totals": scan_data.get("totals", {}),
-                        "source": "skill-mgr",
-                        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                    }
-                    save_cached_diagnosis(target, cached)
-                    cached["status"] = "done"
-                    cached["duration_ms"] = int((time.time() - DashboardHandler._diag_start) * 1000)
-                    self._json_response(cached)
-                    return
-                except Exception as e:
-                    self._json_response({"status": "error", "error": f"解析失败: {e}"})
-                    return
+            cached = load_cached_diagnosis(target)
+            if cached:
+                cached["status"] = "done"
+                cached["duration_ms"] = int((time.time() - DashboardHandler._diag_start) * 1000)
+                self._json_response(cached)
+                return
             else:
-                # Read last few lines of log for error info
-                err_hint = ""
-                try:
-                    err_hint = DIAG_LOG.read_text()[-500:]
-                except Exception:
-                    pass
-                self._json_response({"status": "error", "error": f"skill-mgr 退出码 {rc}", "log": err_hint})
+                self._json_response({"status": "error", "error": "诊断完成但缓存未找到"})
                 return
 
-        # Process still running — detect phase from log
+        # Process still running
         if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
             elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
-            # Detect phase from log
-            phase = "scan"
-            try:
-                log_text = DIAG_LOG.read_text()
-                if "CHECK START" in log_text:
-                    phase = "check"
-                    DashboardHandler._diag_phase = "check"
-            except Exception:
-                pass
             self._json_response({"status": "running", "target": DashboardHandler._diag_target,
-                                 "elapsed_ms": elapsed, "phase": phase})
+                                 "elapsed_ms": elapsed, "phase": "check"})
             return
 
         # No process — check cache
@@ -914,10 +1257,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def _steal_skill(self):
-        """Install a skill via skill-mgr steal."""
-        if not SKILL_MGR.exists():
-            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
-            return
+        """Install a skill from GitHub URL — pure Python, no skill-mgr."""
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else '{}'
         try:
@@ -931,51 +1271,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
 
         target = self._current_target()
-        env = os.environ.copy()
-        env["SKILL_MANAGER_TARGET"] = target
-        try:
-            cmd = ["bash", str(SKILL_MGR), "steal", source, "--yes"]
-            if skill_name:
-                cmd.append(skill_name)
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
-            ok = r.returncode == 0
-            result = {"ok": ok, "source": source}
-            if ok:
-                result["output"] = r.stdout[-500:] if r.stdout else "installed"
-                # Re-scan after install
-                python_quick_check(target)
-            else:
-                result["error"] = r.stderr[-500:] if r.stderr else r.stdout[-500:] or "steal failed"
-            self._json_response(result)
-        except Exception as e:
-            self._json_response({"error": str(e)}, status=500)
+        result = install_skill(source, target, preferred_name=skill_name or None)
+        self._json_response(result)
 
     def _update_upstream(self, name):
-        """Trigger skill-mgr steal to update from upstream."""
-        if not SKILL_MGR.exists():
-            self._json_response({"status": "error", "error": "skill-mgr 未安装，路径: " + str(SKILL_MGR)})
-            return
-        try:
-            env = os.environ.copy()
-            env["SKILL_MANAGER_TARGET"] = self._current_target()
-            # Find source metadata
-            skill_dir = self._resolve_skill_dir(name)
-            meta_file = skill_dir / ".skill-manager-source.env" if skill_dir else None
-            source_url = ""
-            if meta_file and meta_file.exists():
-                for line in meta_file.read_text().splitlines():
-                    if line.startswith("SKILL_SOURCE_URL="):
-                        source_url = line.split("=", 1)[1].strip('"').strip("'")
-            if not source_url:
-                self._json_response({"error": "No upstream source tracked"}, status=400)
-                return
-            r = subprocess.run(
-                ["bash", str(SKILL_MGR), "steal", source_url, "--yes"],
-                capture_output=True, text=True, timeout=120, env=env,
-            )
-            self._json_response({"ok": r.returncode == 0, "name": name, "output": r.stdout[-500:] if r.stdout else ""})
-        except Exception as e:
-            self._json_response({"error": str(e)}, status=500)
+        """Update a skill from its upstream source — pure Python."""
+        target = self._current_target()
+        result = update_skill(name, target)
+        self._json_response(result)
 
     def _fix_skill(self, name, action):
         """Fix a skill issue."""
@@ -1018,7 +1321,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def main():
     if not STATE_DIR.exists():
         print(f"⚠ State dir not found: {STATE_DIR}")
-        print("  Run 'skill-mgr scan' first to generate data.")
         print(f"  Creating {STATE_DIR}...")
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1026,6 +1328,8 @@ def main():
     url = f"http://localhost:{PORT}"
     print(f"🚀 Skill Dashboard running at {url}")
     print(f"   Data source: {STATE_DIR}")
+    print(f"   Install: POST /api/steal {{\"source\": \"https://github.com/...\"}}")
+    print(f"   Update:  PATCH /api/skill/{{name}}/update")
     print(f"   Press Ctrl+C to stop")
     print()
 
