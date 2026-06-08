@@ -16,10 +16,11 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端：HTTP handler + 业务逻辑（~1400 行）
+serve.py           — 后端：HTTP handler + 业务逻辑（~1700 行）
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
-index.html         — 前端：HTML + CSS + JS 单文件（~1300 行）
-_cache/            — 诊断结果缓存（.gitignore）
+index.html         — 前端：HTML + CSS + JS 单文件（~1450 行）
+.data/             — 运行时状态与缓存（state/、cache/，.gitignore）
+docs/              — 项目文档（troubleshooting.md）
 README.md
 LICENSE
 screenshots/       — 截图（当前只有 .gitkeep）
@@ -48,17 +49,33 @@ screenshots/       — 截图（当前只有 .gitkeep）
 |---|---|---|
 | `/api/fast-scan` | GET | 列出当前目标库的 skills |
 | `/api/quick-check` | GET | 健康评分 + 结构问题 |
+| `/api/scan` | GET | 返回最近一次完整扫描结果 |
+| `/api/health` | GET | 返回最近一次健康检查结果 |
+| `/api/history` | GET | 操作历史记录 |
 | `/api/targets` | GET | 列出所有可用的技能库目录 |
+| `/api/target` | POST | 切换当前目标库 |
+| `/api/global-stats` | GET | 全域分类分布统计 |
+| `/api/export` | GET | 导出 skill 清单 JSON |
+| `/api/source/skills` | GET | 读取来源 skill 列表 |
+| `/api/custom-sources` | GET | 获取自定义来源列表 |
+| `/api/custom-sources` | POST | 添加自定义来源 |
+| `/api/custom-sources` | PATCH | 更新自定义来源 |
+| `/api/custom-sources` | DELETE | 删除自定义来源 |
 | `/api/steal` | POST | 从 GitHub URL 安装 skill |
-| `/api/skill/{name}` | DELETE | 删除 skill |
-| `/api/skill/{name}/update` | PATCH | 从上游更新 skill |
+| `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
 | `/api/diagnose` | POST | 触发完整诊断 |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
+| `/api/skill/{name}` | GET | 获取 skill 详情 |
+| `/api/skill/{name}` | DELETE | 删除 skill |
+| `/api/skill/{name}/content` | GET | 读取 SKILL.md 原始内容 |
+| `/api/skill/{name}/upstream` | GET | 检查上游版本状态 |
+| `/api/skill/{name}/update` | PATCH | 从上游更新 skill |
+| `/api/skill/{name}/fix` | PATCH | 修复 skill 结构问题 |
+| `/api/openapi` | GET | 返回路由清单（调试用） |
 
 ## 数据目录
 
-- 状态文件：`.data/state/`（current-target.json、latest-scan.json）
-- 诊断缓存：`.cache/`（按目标路径生成缓存文件名）
+- 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 
 ## 注意事项

@@ -285,6 +285,7 @@ tbody tr:hover{background:var(--bg-hover)}
     <div class="nav-group">
       <div class="nav-group-label">概览</div>
       <div class="nav-item active" onclick="switchView('dashboard',this)"><span>🏠</span> 仪表盘 <span class="badge" id="badge-health">-</span></div>
+      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 全量技能库 <span class="badge" id="badge-sources">-</span></div>
       <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 当前目标库 <span class="badge" id="badge-skills">-</span></div>
     </div>
     <div class="nav-group">
@@ -293,10 +294,6 @@ tbody tr:hover{background:var(--bg-hover)}
       <div class="nav-item" onclick="switchView('similar',this)"><span>🔍</span> 相似度 <span class="badge" id="badge-similar">-</span></div>
       <div class="nav-item" onclick="switchView('upstream',this)"><span>🔗</span> 上游追踪 <span class="badge" id="badge-upstream">-</span></div>
       <div class="nav-item" onclick="switchView('issues',this)"><span>⚠️</span> 问题修复 <span class="badge" id="badge-issues">-</span></div>
-    </div>
-    <div class="nav-group">
-      <div class="nav-group-label">来源</div>
-      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 全量技能库 <span class="badge" id="badge-sources">-</span></div>
     </div>
   </aside>
 
