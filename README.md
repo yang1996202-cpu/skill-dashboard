@@ -18,6 +18,10 @@
 
 > 上图替换方式：运行项目后按 `Cmd+Shift+4` 截图保存到 `screenshots/dashboard.png`
 
+### 技能库来源浏览
+
+![技能库](./screenshots/sources.png)
+
 ### 上游追踪
 
 ![上游追踪](./screenshots/upstream.png)
@@ -30,29 +34,24 @@
 
 ## 功能
 
-### ✅ 完全独立（无需 skill-mgr）
+**完全独立，零外部依赖。** 不装 skill-mgr，不装 gh CLI，一个 Python 文件跑起来。
 
 | 功能 | 说明 |
 |---|---|
 | 📦 **列出 Skills** | 即时扫描任意技能库目录，毫秒级 |
-| 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch 等 10+ 个技能库 |
+| 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch / Hermes / WorkBuddy / CodeBuddy 等 10+ 个技能库 |
+| 📚 **技能库来源浏览** | 扫描 150+ 个来源库，支持穿透查看、批量同步到目标库 |
 | 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + 支持 frontmatter `category` 覆盖 |
 | 📖 **查看内容** | 点击 skill 名称查看 SKILL.md 全文 |
 | 🏥 **健康评分** | Python 自主计算，不依赖 bash |
 | ⚠️ **结构问题** | broken symlink、缺 frontmatter、oversized 检测 |
 | 🔍 **轻量相似度** | 前端 Jaccard 算法，基于 name + description 关键词重叠分析 |
-| 🔗 **上游追踪** | 自动检测 `.git` 来源 + `skill-mgr steal` 安装记录 |
+| 🔗 **上游追踪** | 自动检测 `.git` 来源 + `.skill-manager-source.env` 安装记录 |
+| 🔄 **上游更新检测** | urllib 调 GitHub API，对比 installed vs latest commit |
+| ⬇️ **安装 Skill** | 粘贴 GitHub URL → Python 自动 git clone + 子目录选择 + 快照备份 |
+| ⬆️ **更新 Skill** | 一键从上游重新安装，自动快照 |
 | 💾 **清理候选** | 基于规则自动推荐无用/低质量 skill |
-
-### 🔧 深度诊断（需 [skill-mgr](https://github.com/yang1996202-cpu/local-skill-manager)，可选）
-
-装了 skill-mgr 后解锁：
-
-- 语义相似度（更准确，基于 embedding）
-- 上游版本状态（检测是否过时）
-- 来源库索引
-
-> **不需要为了用这个 Dashboard 去装 skill-mgr。** 基础功能全部自主完成。
+| 📤 **导入/导出** | 批量导入 GitHub URL，导出 Markdown 格式清单 |
 
 ---
 
@@ -69,14 +68,6 @@ python3 serve.py
 
 浏览器自动打开 `http://localhost:3457`。
 
-### 可选：安装 skill-mgr
-
-如果你想用深度诊断功能：
-
-```bash
-git clone https://github.com/yang1996202-cpu/local-skill-manager.git ~/.claude/skills/skill-manager
-```
-
 ---
 
 ## 架构
@@ -86,13 +77,12 @@ git clone https://github.com/yang1996202-cpu/local-skill-manager.git ~/.claude/s
                 ↓
           Python quick-check (~10ms) → 健康分 + 结构问题 + 上游追踪 + 清理候选
                 ↓
-    点「一键诊断」→ skill-mgr scan (7s) + check (40s) → 完整数据
+    点「一键诊断」→ Python diagnosis (~5s) → 完整数据 + 上游版本状态
 ```
 
-**三层设计**：
-- **Layer 0**（自主）：列出、分类、切换、查看、结构检查、健康评分、上游追踪、相似度、清理候选
-- **Layer 1**（需 skill-mgr）：深度语义相似度、上游版本状态
-- **Layer 2**（写操作）：安装、删除、更新
+**设计原则**：
+- Layer 0（自主）：列出、分类、切换、查看、结构检查、健康评分、上游追踪、相似度、清理候选、安装、更新
+- 所有写操作（安装、删除、更新）都有自动快照备份
 
 ---
 
@@ -100,7 +90,7 @@ git clone https://github.com/yang1996202-cpu/local-skill-manager.git ~/.claude/s
 
 - **后端**：Python 3 标准库（`http.server`），零依赖
 - **前端**：单文件 HTML + CSS + JS，无框架
-- **数据源**：直接读文件系统 + 可选 skill-mgr bash 脚本
+- **数据源**：直接读文件系统 + GitHub REST API
 
 ---
 
@@ -109,7 +99,9 @@ git clone https://github.com/yang1996202-cpu/local-skill-manager.git ~/.claude/s
 上游追踪通过两种方式检测：
 
 1. **`.git` 目录**：读取 `git remote get-url origin`
-2. **`.skill-manager-source.env`**：读取 `skill-mgr steal` 安装时记录的来源
+2. **`.skill-manager-source.env`**：读取 steal 安装时记录的来源
+
+更新检测使用 GitHub REST API（`repos/{owner}/{repo}/commits`），无需 `gh` CLI，无需 token。
 
 如果某个 skill 既没有 `.git` 也没有 `.skill-manager-source.env`，则检测不到上游。这不是 bug，是本地没有来源记录。
 
