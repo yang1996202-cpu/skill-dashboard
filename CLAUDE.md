@@ -57,7 +57,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ## 数据目录
 
-- 状态文件：`~/.skill-manager/state/`（current-target.json、latest-scan.json）
+- 状态文件：`.data/state/`（current-target.json、latest-scan.json）
 - 诊断缓存：`.cache/`（按目标路径生成缓存文件名）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 

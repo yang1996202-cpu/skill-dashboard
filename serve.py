@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-"""Skill Dashboard — 可视化 skill-manager 数据的轻量 WebUI
-零依赖，只用 Python 3 标准库。
-"""
+"""Skill Dashboard — 零依赖本地 WebUI，可视化管理 AI skill 文件"""
 
 import json
 import os
@@ -20,10 +18,10 @@ from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
 PORT = 3457
-STATE_DIR = Path.home() / ".skill-manager" / "state"
+STATE_DIR = Path(__file__).parent / ".data" / "state"
 HTML_FILE = Path(__file__).parent / "index.html"
-CACHE_DIR = Path(__file__).parent / ".cache"
-DIAG_LOG = Path(__file__).parent / ".cache" / "diag.log"
+CACHE_DIR = Path(__file__).parent / ".data" / "cache"
+DIAG_LOG = Path(__file__).parent / ".data" / "cache" / "diag.log"
 
 
 def _cache_path(target_path):
@@ -52,8 +50,158 @@ def save_cached_diagnosis(target_path, data):
     cp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+# ── Global classification ──
+
+# Keyword table matching frontend CAT_KW for consistency
+_CLASSIFY_KW = {
+    'code-dev': ['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit',
+        'pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm',
+        'bun','dev','ios','qa','fix','clean','deploy','benchmark','test','plan','eng','devex',
+        'guard','spec','code','ios-','sync','qa-only','learning','learn','handoff','交接',
+        'checkpoint','cleanup','session','skill-manager'],
+    'content': ['write','article','blog','copywriting','seo','newsletter','writer','content',
+        'khazix','title','prd','explain','解释','洞察','insight','report'],
+    'image-gen': ['image','picture','photo','cover','banner','illustration','dalle','midjourney',
+        'flux','logo','glm-image','seedream','illustrator','picgo'],
+    'video-audio': ['video','audio','ffmpeg','remotion','mp4','podcast','subtitle','srt','tts','voice'],
+    'data': ['data','analytics','chart','csv','excel','dashboard','visualization','stats',
+        'metrics','sql','analysis','笔记','知识库','note','knowledge'],
+    'web-search': ['search','web','browse','scrape','crawl','spider','google','bing',
+        'perplexity','web-access','gstack'],
+    'social': ['xhs','twitter','weibo','wechat','instagram','tiktok','youtube','bilibili',
+        'wechat-styler'],
+    'doc': ['pdf','docx','pptx','xlsx','notion','confluence','readme','make-pdf','document'],
+    'comms': ['email','mail','slack','feishu','lark','dingtalk','telegram','discord'],
+    'design': ['figma','canvas','theme','brand','sketch','wireframe','prototype','tailwind',
+        'css','design','design-html'],
+    'translate': ['translate','translation','i18n','l10n','locale'],
+    'sysadmin': ['server','docker','k8s','kubernetes','devops','ssh','linux','nginx','infra',
+        'terraform','aws','gcp','azure','deploy','setup','macos','sleep','caffeinate','pmset'],
+    'persona': ['personality','persona','mbti','sbti','character','role','elon','feynman',
+        '女娲','造人','skill'],
+    'finance': ['finance','invoice','receipt','stock','trade','accounting'],
+    'sales': ['sales','crm','销售','线索','客户','lead','求职','岗位','面试','简历',
+        'boss','job','hiring'],
+}
+
+
+def _classify_skill(name, description=""):
+    """Classify a skill by name + description using keyword matching."""
+    low = (name + " " + description).lower()
+    best, best_score = "other", 0
+    for cat, kws in _CLASSIFY_KW.items():
+        score = sum(1 for kw in kws if kw in low)
+        if score > best_score:
+            best_score = score
+            best = cat
+    return best if best_score > 0 else "other"
+
+
+def _read_skill_description(skill_dir):
+    """Read description from SKILL.md frontmatter. Handles YAML multiline."""
+    skill_md = Path(skill_dir) / "SKILL.md"
+    if not skill_md.exists():
+        return ""
+    try:
+        text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+        if not text.startswith("---"):
+            return ""
+        end = text.find("---", 3)
+        if end <= 0:
+            return ""
+        fm_lines = text[3:end].splitlines()
+        for i, line in enumerate(fm_lines):
+            stripped = line.strip()
+            if stripped.startswith("description:"):
+                val = stripped.split(":", 1)[1].strip()
+                if val in (">", "|", ">-", "|-", ">+", "|+"):
+                    parts = []
+                    for cont in fm_lines[i + 1:]:
+                        if cont and not cont[0].isspace():
+                            break
+                        parts.append(cont.strip())
+                    return " ".join(parts)
+                return val.strip("'\"")
+    except Exception:
+        pass
+    return ""
+
+
+def _scan_global_categories():
+    """Scan all main agent skill dirs, classify unique skills, return distribution.
+    Cached for 5 minutes.
+    """
+    cache_file = CACHE_DIR / "global-categories.json"
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    # Check cache freshness
+    if cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text("utf-8"))
+            age = time.time() - cached.get("_ts", 0)
+            if age < 300:  # 5 min TTL
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except Exception:
+            pass
+
+    home = Path.home()
+    # Main agent skill directories to scan
+    main_dirs = [
+        home / ".claude" / "skills",
+        home / ".agents" / "skills",
+        home / ".cc-switch" / "skills",
+        home / ".alice" / "skills",
+        home / ".codex" / "skills",
+        home / ".hermes" / "skills",
+        home / ".openclaw" / "skills",
+        home / ".workbuddy" / "skills-marketplace" / "skills",
+        home / ".codebuddy" / "skills-marketplace" / "skills",
+    ]
+    # Also include custom sources
+    try:
+        cf = STATE_DIR / "custom-sources.json"
+        if cf.exists():
+            for p in json.loads(cf.read_text()):
+                main_dirs.append(Path(p).expanduser())
+    except Exception:
+        pass
+
+    seen = {}       # name -> description (first seen wins)
+    targets_count = 0
+
+    for tdir in main_dirs:
+        tdir = tdir.resolve()
+        if not tdir.is_dir():
+            continue
+        targets_count += 1
+        for d in sorted(tdir.iterdir()):
+            if not d.is_dir():
+                continue
+            if not (d / "SKILL.md").exists():
+                continue
+            name = d.name
+            if name not in seen:
+                seen[name] = _read_skill_description(d)
+
+    # Classify all unique skills
+    cat_dist = {}
+    for name, desc in seen.items():
+        cat = _classify_skill(name, desc)
+        cat_dist[cat] = cat_dist.get(cat, 0) + 1
+
+    result = {
+        "unique_skills": len(seen),
+        "targets_scanned": targets_count,
+        "category_distribution": cat_dist,
+    }
+    # Save cache with timestamp
+    to_cache = dict(result)
+    to_cache["_ts"] = time.time()
+    cache_file.write_text(json.dumps(to_cache, ensure_ascii=False, indent=2), encoding="utf-8")
+    return result
+
+
 def python_quick_check(target_path):
-    """Python-only structure check — no bash, no skill-mgr.
+    """Python-only structure check — no bash, no dashboard.
     Returns: health_score, structure_issues, summary."""
     target_dir = Path(target_path)
     if not target_dir.is_dir():
@@ -122,7 +270,7 @@ def python_quick_check(target_path):
 
     total = len(skills)
 
-    # ── Independent upstream detection (no skill-mgr) ──
+    # ── Independent upstream detection (no dashboard) ──
     upstream_sources = []
     for s in skills:
         skill_dir = target_dir / s["name"]
@@ -156,9 +304,11 @@ def python_quick_check(target_path):
             except Exception:
                 pass
 
-        # 2) Fallback: skill-mgr source metadata (steal installs)
+        # 2) Fallback: dashboard source metadata (steal installs)
         if not detected:
-            meta_file = skill_dir / ".skill-manager-source.env"
+            meta_file = skill_dir / ".skill-source.env"
+            if not meta_file.exists():
+                meta_file = skill_dir / ".skill-manager-source.env"
             if meta_file.exists():
                 try:
                     for line in meta_file.read_text().splitlines():
@@ -192,7 +342,7 @@ def python_quick_check(target_path):
         elif s.get("oversized"):
             cleanup_candidates.append(s["name"])
 
-    # Health score (mirrors skill-mgr check.sh formula)
+    # Health score (mirrors dashboard check.sh formula)
     score = 100
     # Quantity penalty: >20, -2 per extra (max -60)
     if total > 20:
@@ -210,7 +360,7 @@ def python_quick_check(target_path):
     # Clamp
     score = max(0, min(100, score))
 
-    # Accuracy estimate (mirrors skill-mgr)
+    # Accuracy estimate (mirrors dashboard)
     if total <= 5:
         accuracy = 96
     elif total <= 20:
@@ -287,8 +437,8 @@ def parse_github_url(url):
 
 # ── Source metadata I/O ──
 def write_source_metadata(skill_dir, repo, ref, subdir, url, commit):
-    """Write .skill-manager-source.env to record upstream info."""
-    meta_file = Path(skill_dir) / ".skill-manager-source.env"
+    """Write .skill-source.env to record upstream info."""
+    meta_file = Path(skill_dir) / ".skill-source.env"
     lines = [
         f"SKILL_SOURCE_PROVIDER=github",
         f"SKILL_SOURCE_REPO={repo}",
@@ -301,10 +451,13 @@ def write_source_metadata(skill_dir, repo, ref, subdir, url, commit):
 
 
 def read_source_metadata(skill_dir):
-    """Read .skill-manager-source.env. Returns dict or None.
-    Supports both skill-mgr format (repo=, ref=) and Dashboard format (SKILL_SOURCE_REPO=).
+    """Read .skill-source.env. Returns dict or None.
+    Supports short keys (repo=, ref=) and long keys (SKILL_SOURCE_REPO=).
     """
-    meta_file = Path(skill_dir) / ".skill-manager-source.env"
+    meta_file = Path(skill_dir) / ".skill-source.env"
+    if not meta_file.exists():
+        # Backward compat: read old filename
+        meta_file = Path(skill_dir) / ".skill-manager-source.env"
     if not meta_file.exists():
         return None
     result = {}
@@ -313,7 +466,7 @@ def read_source_metadata(skill_dir):
         if "=" in line and not line.startswith("#"):
             k, v = line.split("=", 1)
             result[k] = v.strip('"').strip("'")
-    # Normalize: support both skill-mgr short keys and Dashboard long keys
+    # Normalize: support both short keys and long keys
     normalized = {}
     key_map = {
         "SKILL_SOURCE_REPO": "repo",
@@ -351,7 +504,7 @@ def create_snapshot(skill_dir):
 
 # ── Install skill from GitHub (pure Python) ──
 def install_skill(source_url, target_path, preferred_name=None):
-    """Install a skill from a GitHub URL. Pure Python, no skill-mgr.
+    """Install a skill from a GitHub URL. Pure Python, no dashboard.
 
     Steps:
       1. Parse GitHub URL (owner/repo/ref/subdir)
@@ -359,7 +512,7 @@ def install_skill(source_url, target_path, preferred_name=None):
       3. Find SKILL.md (handle subdirectories)
       4. If target exists, create snapshot
       5. shutil.copytree to target
-      6. Write .skill-manager-source.env
+      6. Write .skill-source.env
 
     Returns: {"ok": bool, "name": str, "output": str, "error": str, "snapshot": str}
     """
@@ -701,6 +854,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._list_source_skills()
         elif path == "/api/custom-sources":
             self._get_custom_sources()
+        elif path == "/api/global-stats":
+            self._json_response(_scan_global_categories())
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = self._validate_skill_name(path.split("/")[3])
             if not name:
@@ -727,6 +882,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._diagnose()
         elif path == "/api/steal":
             self._steal_skill()
+        elif path == "/api/copy-skill":
+            self._copy_skill()
         elif path == "/api/custom-sources":
             self._add_custom_source()
         else:
@@ -865,6 +1022,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
                 {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
+                {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
                 {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
@@ -998,12 +1156,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     end = text.find("---", 3)
                     if end > 0:
                         fm = text[3:end]
-                        for line in fm.splitlines():
-                            line = line.strip()
-                            if line.startswith("description:"):
-                                description = line.split(":", 1)[1].strip().strip("'\"")
-                            elif line.startswith("category:"):
-                                category = line.split(":", 1)[1].strip().strip("'\"")
+                        fm_lines = fm.splitlines()
+                        for i, line in enumerate(fm_lines):
+                            stripped = line.strip()
+                            if stripped.startswith("description:"):
+                                val = stripped.split(":", 1)[1].strip()
+                                # Strip YAML multiline indicators (>, |, >-, |-, >+, |+)
+                                if val in (">", "|", ">-", "|-", ">+", "|+"):
+                                    # Collect indented continuation lines
+                                    parts = []
+                                    for cont in fm_lines[i + 1:]:
+                                        if cont and not cont[0].isspace():
+                                            break
+                                        parts.append(cont.strip())
+                                    description = " ".join(parts)
+                                elif val.startswith('"') and val.endswith('"'):
+                                    description = val[1:-1]
+                                elif val.startswith("'") and val.endswith("'"):
+                                    description = val[1:-1]
+                                else:
+                                    description = val.strip("'\"")
+                            elif stripped.startswith("category:"):
+                                category = stripped.split(":", 1)[1].strip().strip("'\"")
             except Exception:
                 pass
             # Check if symlink
@@ -1050,7 +1224,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── Diagnosis (uses module-level globals + lock) ──
 
     def _diagnose(self):
-        """Trigger Python-only diagnosis in background. No skill-mgr needed."""
+        """Trigger Python-only diagnosis in background. No dashboard needed."""
         global _diag_process, _diag_target, _diag_start, _diag_phase
         target = self._current_target()
 
@@ -1135,7 +1309,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _list_targets(self):
         """Scan common locations + nested subdirs + custom sources for skill directories.
-        Mirrors skill-mgr scan breadth: standard paths, deep subdirs, project nests.
+        Mirrors dashboard scan breadth: standard paths, deep subdirs, project nests.
         """
         home = Path.home()
 
@@ -1272,7 +1446,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "is_current": str(skills_dir) == current,
             })
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
-        self._json_response(targets)
+
+        # Group by agent name
+        grouped = {}
+        for t in targets:
+            agent = t["name"]
+            if agent not in grouped:
+                grouped[agent] = {"agent": agent, "dirs": [], "total_skills": 0}
+            grouped[agent]["dirs"].append(t)
+            grouped[agent]["total_skills"] += t["count"]
+
+        # Sort groups: current target's group first, then by total skills desc
+        current_agent = next((t["name"] for t in targets if t["is_current"]), "")
+        groups = sorted(grouped.values(),
+                        key=lambda g: (0 if g["agent"] == current_agent else 1, -g["total_skills"]))
+
+        # Flat list for backward compat + grouped view
+        self._json_response({"targets": targets, "groups": groups})
 
     def _current_target(self):
         """Read current target from dedicated state file, fallback to latest-scan.json, fallback to ~/.claude/skills."""
@@ -1286,7 +1476,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return tp
         except Exception:
             pass
-        # 2) Legacy: latest-scan.json from skill-mgr
+        # 2) Legacy: latest-scan.json from dashboard
         try:
             scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
             tp = scan.get("target", {}).get("path", "")
@@ -1405,8 +1595,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def _copy_skill(self):
+        """Copy a skill from a local directory to the current target library."""
+        body = self._read_json()
+        if not body:
+            self._json_response({"ok": False, "error": "无效请求"}, 400)
+            return
+        src_path = body.get("src", "")
+        target = body.get("target", "") or self._current_target()
+        skill_name = body.get("name", "")
+        if not src_path or not skill_name:
+            self._json_response({"ok": False, "error": "缺少 src 或 name"}, 400)
+            return
+        src_dir = Path(src_path)
+        if not src_dir.is_dir() or not (src_dir / "SKILL.md").exists():
+            self._json_response({"ok": False, "error": f"源目录不存在: {src_path}"}, 400)
+            return
+        target_dir = Path(target)
+        dest = target_dir / skill_name
+        # Snapshot if exists
+        if dest.exists():
+            create_snapshot(dest)
+            shutil.rmtree(dest)
+        shutil.copytree(src_dir, dest)
+        self._json_response({"ok": True, "name": skill_name, "output": f"Copied to {dest}"})
+
     def _steal_skill(self):
-        """Install a skill from GitHub URL — pure Python, no skill-mgr."""
+        """Install a skill from GitHub URL — pure Python, no dashboard."""
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else '{}'
         try:

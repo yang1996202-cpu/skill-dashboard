@@ -118,6 +118,8 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .cat-bar-wrap{flex:1;height:3px;background:var(--border);border-radius:2px;overflow:hidden}
 .cat-bar{height:100%;border-radius:2px;transition:width .3s var(--ease)}
 .cat-num{font-size:12px;font-weight:600;min-width:20px;text-align:right;font-variant-numeric:tabular-nums}
+.cat-pct{font-weight:400;color:var(--text-muted);font-size:10px;margin-left:2px}
+.cat-local{font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:3px;margin-left:4px;white-space:nowrap}
 
 /* ── Skill groups ── */
 .skill-group{margin-bottom:12px}
@@ -208,7 +210,7 @@ tbody tr:hover{background:var(--bg-hover)}
 .target-current .t-name{font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .target-current .t-meta{font-size:10px;color:var(--text-muted);display:flex;gap:5px;align-items:center}
 .target-current .t-arrow{font-size:9px;color:var(--text-muted)}
-.target-dropdown{display:none;margin-top:4px;max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);box-shadow:0 4px 16px rgba(0,0,0,.08)}
+.target-dropdown{display:none;margin-top:4px;max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);box-shadow:0 4px 16px rgba(0,0,0,.08)}
 .target-dropdown.open{display:block}
 .target-opt{display:flex;align-items:center;gap:7px;padding:7px 10px;cursor:pointer;font-size:12px;transition:background .08s;border-bottom:1px solid var(--border-subtle)}
 .target-opt:last-child{border-bottom:none}
@@ -217,6 +219,8 @@ tbody tr:hover{background:var(--bg-hover)}
 .target-opt .to-scope{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:500}
 .to-global{background:var(--accent-bg);color:var(--accent)}.to-project{background:var(--amber-bg);color:var(--amber)}
 .target-opt .to-count{margin-left:auto;color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
+.to-agent{font-size:10px;background:var(--bg-card-alt);padding:1px 5px;border-radius:3px;color:var(--text-dim);white-space:nowrap}
+.to-path{font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
 
 /* ── Diagnose button — Linear CTA ── */
 .diag-btn{display:flex;align-items:center;gap:6px;width:100%;padding:7px 12px;border-radius:6px;border:none;background:var(--accent);color:#fff;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--font);transition:opacity .12s;margin-bottom:8px}
@@ -319,8 +323,8 @@ tbody tr:hover{background:var(--bg-hover)}
       <!-- Dashboard -->
       <div class="view active" id="view-dashboard">
         <div class="stats-row" id="stats-row"></div>
-        <div id="health-card"></div>
         <div id="cat-card"></div>
+        <div id="health-card"></div>
       </div>
 
       <!-- Skills -->
@@ -443,6 +447,7 @@ function switchView(v,el){
 }
 
 /* ── Data ── */
+let globalStats=null;
 async function loadData(){
   // Layer 0: fast-scan (instant skill list + classification)
   const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
@@ -451,18 +456,24 @@ async function loadData(){
   skills.forEach(s=>{
     if(!s.category||s.category===''){
       if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
-      else{s.category=classifySkillJS(s.name);s.categorySource='keyword'}
+      else{s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'}
     }else{s.categorySource='frontmatter'}
   });
   render();
-  // Fallback: load targets as sources if skill-mgr not available
+  // Load global category stats (cached, fast on repeat)
+  fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
+    if(gs){globalStats=gs;renderStats();renderCategories()}
+  });
+  // Fallback: load targets as sources
   if(!scan?.sources?.length){
     try{
-      const ts=await fetch('/api/targets').then(r=>r.json());
+      const td=await fetch('/api/targets').then(r=>r.json());
+      const ts=td.targets||td;
       if(ts?.length){
+        targets=ts;targetGroups=td.groups||[];
         scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
         renderSources();
-        $('badge-sources').textContent=ts.length;
+        $('badge-sources').textContent=targetGroups.length||ts.length;
       }
     }catch(e){}
   }
@@ -477,23 +488,24 @@ async function loadData(){
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
 const CAT_KW={
-  'code-dev':['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit','pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm','bun','代码','dev','ios','qa','fix','clean','deploy','benchmark','test','plan','eng','devex','guard','spec','code','ios-','sync','qa-only'],
-  'content':['write','article','blog','copywriting','seo','newsletter','文章','写作','创作','选题','大纲','稿件','essay','writer','content','khazix','title'],
+  'code-dev':['tdd','frontend','backend','api','debug','refactor','lint','ci','git','commit','pull-request','review','typescript','python','rust','react','vue','next','npm','pnpm','bun','代码','dev','ios','qa','fix','clean','deploy','benchmark','test','plan','eng','devex','guard','spec','code','ios-','sync','qa-only','learning','learn','handoff','交接','checkpoint','cleanup','session','skill-manager'],
+  'content':['write','article','blog','copywriting','seo','newsletter','文章','写作','创作','选题','大纲','稿件','essay','writer','content','khazix','title','prd','explain','解释','洞察','insight','report'],
   'image-gen':['image','picture','photo','cover','banner','illustration','封面','配图','dalle','midjourney','flux','logo','glm-image','seedream','illustrator','picgo'],
   'video-audio':['video','audio','ffmpeg','remotion','mp4','podcast','subtitle','srt','tts','voice','视频','音频','字幕'],
-  'data':['data','analytics','chart','csv','excel','dashboard','visualization','stats','metrics','sql','报告','报表','统计','analysis'],
+  'data':['data','analytics','chart','csv','excel','dashboard','visualization','stats','metrics','sql','报告','报表','统计','analysis','笔记','知识库','note','knowledge'],
   'web-search':['search','web','browse','scrape','crawl','spider','搜索','抓取','爬虫','google','bing','perplexity','web-access','gstack'],
   'social':['小红书','xhs','twitter','weibo','公众号','wechat','instagram','tiktok','抖音','微博','linkedin','threads','youtube','bilibili','wechat-styler'],
   'doc':['pdf','docx','pptx','xlsx','notion','confluence','文档','readme','spec','make-pdf','document'],
   'comms':['email','mail','slack','feishu','lark','dingtalk','telegram','discord','飞书','邮件','钉钉'],
   'design':['figma','canvas','theme','brand','sketch','wireframe','prototype','tailwind','css','设计','design','design-html'],
   'translate':['translate','translation','i18n','l10n','locale','翻译','多语言'],
-  'sysadmin':['server','docker','k8s','kubernetes','devops','ssh','linux','nginx','infra','terraform','aws','gcp','azure','运维','部署','deploy','setup'],
-  'persona':['personality','persona','mbti','sbti','character','role','人格','角色','蒸馏','elon','feynman'],
-  'finance':['finance','invoice','receipt','stock','trade','accounting','发票','财务','金融']
+  'sysadmin':['server','docker','k8s','kubernetes','devops','ssh','linux','nginx','infra','terraform','aws','gcp','azure','运维','部署','deploy','setup','macos','sleep','caffeinate','pmset'],
+  'persona':['personality','persona','mbti','sbti','character','role','人格','角色','蒸馏','elon','feynman','女娲','造人','skill'],
+  'finance':['finance','invoice','receipt','stock','trade','accounting','发票','财务','金融'],
+  'sales':['sales','crm','销售','线索','客户','lead','求职','岗位','面试','简历','boss','job','hiring']
 };
-function classifySkillJS(name){
-  const low=name.toLowerCase();let best='other',bestScore=0;
+function classifySkillJS(name,desc){
+  const low=(name+' '+(desc||'')).toLowerCase();let best='other',bestScore=0;
   for(const[cat,kws]of Object.entries(CAT_KW)){
     const score=kws.filter(kw=>low.includes(kw)).length;
     if(score>bestScore){bestScore=score;best=cat}
@@ -539,10 +551,13 @@ function renderTarget(){
 function renderStats(){
   const h=health,hs=h?.health_score;
   const hc=hs?.level==='green'?'var(--green)':hs?.level==='yellow'?'var(--amber)':'var(--red)';
+  const gUnique=globalStats?.unique_skills||0;
+  const gTargets=globalStats?.targets_scanned||0;
+  const coverage=gUnique?((skills.length/gUnique)*100).toFixed(1):'—';
   $('stats-row').innerHTML=`
-    <div class="stat s-total"><div class="val">${skills.length}</div><div class="lbl">Skills</div></div>
-    <div class="stat s-pool"><div class="val">${scan?.totals?.skills||0}</div><div class="lbl">技能池</div></div>
-    <div class="stat s-sources"><div class="val">${scan?.sources?.length||0}</div><div class="lbl">来源库</div></div>
+    <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全域 Skills</div></div>
+    <div class="stat s-libraries" title="已扫描的技能库目录数"><div class="val">${gTargets||(scan?.sources?.length||0)}</div><div class="lbl">技能库</div></div>
+    <div class="stat s-coverage" title="当前库占全域的百分比"><div class="val" style="color:var(--cyan)">${skills.length}<span style="font-size:13px;color:var(--text-muted)">/${gUnique}</span></div><div class="lbl">当前库/全域</div></div>
     <div class="stat s-issues"><div class="val" style="color:${(h?.summary?.structure_issues||0)>0?'var(--red)':'var(--green)'}">${h?.summary?.structure_issues||0}</div><div class="lbl">结构问题</div></div>
     <div class="stat s-ready"><div class="val" style="color:var(--green)">${h?.summary?.runtime_ready||0}</div><div class="lbl">可用</div></div>
     <div class="stat s-health"><div class="val" style="color:${hc}">${hs?.score??'-'}</div><div class="lbl">Health</div></div>`;
@@ -573,7 +588,7 @@ function buildDiags(){
   const d=[],total=skills.length;
   if(total>50)d.push({sev:'danger',title:`Skill 总量 ${total}，远超 50 上限`,desc:'准确率急剧下降',affected:[]});
   else if(total>20)d.push({sev:'warn',title:`Skill 数量 ${total}，偏多`,desc:'建议精简',affected:[]});
-  // Overlap from skill-mgr or JS fallback
+  // Overlap between sources
   (health?.overlap_groups||[]).forEach(g=>d.push({sev:'warn',title:`语义重叠: ${g.skills?.join(' ↔ ')}`,desc:`${g.count} 个相似`,affected:g.skills}));
   (health?.structure_issues||[]).forEach(s=>d.push({sev:'warn',title:`${s.name}: ${s.note}`,desc:'',affected:[s.name]}));
   // Cleanup candidates
@@ -590,14 +605,32 @@ function buildDiags(){
 }
 
 /* ── Categories ── */
-const CAT_NAMES={'code-dev':'💻 代码开发','content':'✍️ 内容创作','image-gen':'🎨 图片生成','video-audio':'🎬 视频/音频','data':'📊 数据分析','web-search':'🔍 搜索','social':'📱 社交','doc':'📄 文档','comms':'💬 通讯','design':'🖌️ 设计','translate':'🌐 翻译','sysadmin':'🖥️ 系统','persona':'🎭 人格','finance':'💰 财务','other':'📦 其他','':'📦 未分类'};
-const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#f472b6','other':'var(--text-muted)','':'var(--text-muted)'};
+const CAT_NAMES={'code-dev':'💻 代码开发','content':'✍️ 内容创作','image-gen':'🎨 图片生成','video-audio':'🎬 视频/音频','data':'📊 数据分析','web-search':'🔍 搜索','social':'📱 社交','doc':'📄 文档','comms':'💬 通讯','design':'🖌️ 设计','translate':'🌐 翻译','sysadmin':'🖥️ 系统','persona':'🎭 人格','finance':'💰 财务','sales':'💼 销售/求职','other':'📦 其他','':'📦 未分类'};
+const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#f472b6','sales':'#f59e0b','other':'var(--text-muted)','':'var(--text-muted)'};
 
 function renderCategories(){
-  const cm={};skills.forEach(s=>{const c=s.category||'other';cm[c]=(cm[c]||0)+1});
-  const cats=Object.entries(cm).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
-  $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 分类分布</h3><span class="sub">${cats.length} 类</span></div>
+  if(globalStats){
+    // Global view: show worldwide category distribution as bar chart
+    const gd=globalStats.category_distribution||{};
+    const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
+    const total=globalStats.unique_skills||0;
+    // Also compute current-target distribution for comparison
+    const localCm={};skills.forEach(s=>{const c=s.category||'other';localCm[c]=(localCm[c]||0)+1});
+    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 全域分类分布</h3><span class="sub">${total} skills across ${globalStats.targets_scanned||'?'} libraries · ${cats.length} categories</span></div>
+    <div class="cat-grid">${cats.map(([c,n])=>{
+      const local=localCm[c]||0;
+      const pct=(n/total*100).toFixed(1);
+      const barW=(n/mx*100).toFixed(0);
+      const localTag=local?`<span class="cat-local">${local}</span>`:'';
+      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div>${localTag}</div>`;
+    }).join('')}</div></div>`;
+  }else{
+    // Fallback: current-target only
+    const cm={};skills.forEach(s=>{const c=s.category||'other';cm[c]=(cm[c]||0)+1});
+    const cats=Object.entries(cm).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
+    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 分类分布</h3><span class="sub">${cats.length} 类</span></div>
     <div class="cat-grid">${cats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/mx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
+  }
 }
 
 /* ── Skills list with category groups ── */
@@ -726,7 +759,7 @@ function toggleGroup(el){el.classList.toggle('open');el.nextElementSibling.class
 /* ── Similarity ── */
 function renderSimilarity(){
   let gs=health?.overlap_groups||[];
-  // Fallback: lightweight Jaccard similarity when skill-mgr not available
+  // Lightweight Jaccard similarity for overlap detection
   if(!gs.length && skills.length>1 && health?.source==='python-quick-check'){
     gs=computeSimilarity(skills);
   }
@@ -826,34 +859,116 @@ async function cleanupAll(){
 /* ── Sources (穿透浏览 + 批量同步) ── */
 let sourceSkillsCache={};
 function renderSources(){
-  const srcs=scan?.sources||[];
-  if(!srcs.length){$('sources-list').innerHTML='<div class="empty">无来源数据</div>';return}
+  if(!targets.length){$('sources-list').innerHTML='';return}
+  try{
   const curTarget=targets.find(t=>t.is_current);
-  const installedNames=new Set(skills.map(s=>s.name));
   let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-    <h3 style="font-size:14px;font-weight:600">📚 技能库来源</h3>
-    <span style="font-size:11px;color:var(--text-muted)">${srcs.length} 个库 · 当前目标: ${curTarget?curTarget.name:'-'}</span>
+    <h3 style="font-size:14px;font-weight:600">📚 技能库</h3>
+    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()" style="margin-left:auto">＋ 添加来源</button>
   </div>`;
-  srcs.forEach((s,i)=>{
-    const isCurrent=curTarget&&s.path&&s.path.replace(/\$HOME|\${HOME}/g,'')===curTarget.rel.replace(/^~\//,'');
-    const scopeTag=isCurrent?'<span class="to-scope to-global" style="font-size:9px">当前目标</span>':'';
-    h+=`<div class="src-card" style="border:1px solid var(--border);border-radius:10px;margin-bottom:8px;background:var(--bg-card);overflow:hidden">
-      <div class="src-card-head" onclick="toggleSourceCard('${esc(s.path)}',this)" style="display:flex;align-items:center;gap:8px;padding:10px 14px;cursor:pointer;transition:background .12s">
-        <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s">▶</span>
-        <div style="flex:1;min-width:0">
-          <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">${s.display_name||s.name} ${scopeTag}</div>
-          <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.path}</div>
+  if(targetGroups.length){
+    targetGroups.forEach(g=>{
+      const isCurGroup=g.dirs.some(t=>t.is_current);
+      // Group header
+      h+=`<div class="src-card" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
+        <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.src-arrow').style.transform=this.nextElementSibling.style.display==='none'?'':'rotate(90deg)'"
+           style="display:flex;align-items:center;gap:8px;padding:12px 14px;cursor:pointer;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
+          <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s">▶</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+              ${g.agent}
+              ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
+            </div>
+            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
+          </div>
         </div>
-        <span style="font-size:12px;color:var(--text-muted)">${s.count} skills</span>
-        <button class="btn btn-sm" onclick="event.stopPropagation();showSourceSkills('${esc(s.path)}','${esc(s.display_name||s.name)}')" style="margin-left:4px">查看</button>
+        <div style="display:${isCurGroup?'block':'none'};border-top:1px solid var(--border)">`;
+      // Directory entries — click to browse skills, NOT to switch target
+      g.dirs.forEach((t,di)=>{
+        const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
+        const safeId='sd-'+Math.random().toString(36).slice(2,8);
+        h+=`<div style="border-top:1px solid var(--border-subtle)">
+          <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
+            <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
+            <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+            ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
+            <span class="to-count">${t.count}</span>
+            <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
+          </div>
+          <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
+        </div>`;
+      });
+      h+=`</div></div>`;
+    });
+  }else{
+    // Fallback: flat list from targets — browse only
+    targets.forEach((t,di)=>{
+      const safeId='fb-'+di;
+      h+=`<div class="target-opt" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" title="${t.rel}">
+        <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
+        <span style="flex:1;font-size:11px">${t.name}</span>
+        <span class="to-count">${t.count}</span>
+        <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
       </div>
-      <div class="src-card-body" style="display:none;border-top:1px solid var(--border)">
-        <div style="padding:8px 14px;font-size:11px;color:var(--text-muted)" id="src-body-${encodeURIComponent(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}">加载中...</div>
-      </div>
+      <div id="${safeId}" style="display:none;padding:4px 14px 8px 36px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
+    });
+  }
+  $('sources-list').innerHTML=h;
+  }catch(e){$('sources-list').innerHTML='<div class="empty">渲染出错: '+e.message+'</div>'}
+}
+
+async function browseSourceDir(safeId,path,head){
+  const container=$(safeId);
+  if(!container)return;
+  const arrow=head.querySelector('.src-arrow');
+  const isOpen=container.style.display==='block';
+  if(isOpen){container.style.display='none';if(arrow)arrow.style.transform='';return}
+  container.style.display='block';
+  if(arrow)arrow.style.transform='rotate(90deg)';
+  // Load and render skills in this directory
+  if(sourceSkillsCache[path]){
+    renderBrowseDir(path,sourceSkillsCache[path],container);
+    return;
+  }
+  container.innerHTML='<div style="padding:6px;color:var(--text-muted)">加载中...</div>';
+  try{
+    const r=await fetch('/api/source/skills?path='+encodeURIComponent(path));
+    const d=await r.json();
+    const list=d.skills||d;
+    sourceSkillsCache[path]=list;
+    renderBrowseDir(path,list,container);
+  }catch(e){container.innerHTML='<div style="padding:6px;color:var(--red)">加载失败</div>'}
+}
+
+function renderBrowseDir(path,skillList,container){
+  const installed=new Set(skills.map(s=>s.name));
+  const curTarget=targets.find(t=>t.is_current);
+  let h='';
+  if(!skillList.length){h='<div style="padding:6px;color:var(--text-muted)">空目录</div>';container.innerHTML=h;return}
+  skillList.forEach(s=>{
+    const isInstalled=installed.has(s.name);
+    const isCurrentTarget=curTarget&&path===curTarget.path;
+    h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
+      <span style="font-size:10px">${isInstalled?'✓':'○'}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>
+      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">同步到目标库</button>`:''}
+      ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
     </div>`;
   });
-  $('sources-list').innerHTML=h;
+  container.innerHTML=h;
+}
+
+async function stealFromSource(srcPath,skillName){
+  const srcDir=srcPath+'/'+skillName;
+  const curTarget=targets.find(t=>t.is_current);
+  if(!curTarget)return toast('未选择目标库','error');
+  try{
+    const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:srcDir,target:curTarget.path,name:skillName})});
+    const d=await r.json();
+    if(d.ok){toast(`${skillName} 已同步到目标库`);await loadData()}
+    else{toast(d.error||'同步失败','error')}
+  }catch(e){toast('同步失败','error')}
 }
 
 function toggleSourceCard(path,head){
@@ -1081,7 +1196,7 @@ async function refreshData(){
     const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
     if(sr){
       scan=sr;skills=sr?.installed||[];
-      skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+      skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name,s.description)});
       render();
     }
     const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
@@ -1101,8 +1216,12 @@ document.addEventListener('click',e=>{
   if(!e.target.closest('.target-bar'))$('target-dropdown').classList.remove('open');
 });
 
+let targetGroups=[];
 async function updateTargetSelector(){
-  try{targets=await fetch('/api/targets').then(r=>r.json())}catch{return}
+  let data;
+  try{data=await fetch('/api/targets').then(r=>r.json())}catch{return}
+  targets=data.targets||data;
+  targetGroups=data.groups||[];
   const cur=targets.find(t=>t.is_current)||targets[0];
   if(cur){
     $('t-icon').textContent=cur.scope==='global'?'🌐':'📁';
@@ -1110,14 +1229,24 @@ async function updateTargetSelector(){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  $('target-dropdown').innerHTML=targets.map(t=>{
-    const scopeClass=t.scope==='global'?'to-global':'to-project';
-    return `<div class="target-opt${t.is_current?' active':''}" onclick="switchTarget('${t.path}')">
-      <span class="to-scope ${scopeClass}">${t.scope==='global'?'🌐':'📁'}</span>
-      <span>${t.name}</span>
-      <span class="to-count">${t.count}</span>
+  // Show one entry per group (main directory), click to switch
+  $('target-dropdown').innerHTML=targetGroups.map(g=>{
+    const mainDir=g.dirs[0];
+    const isCur=g.dirs.some(t=>t.is_current);
+    const curInGroup=g.dirs.find(t=>t.is_current);
+    const displayDir=curInGroup||mainDir;
+    const scopeClass=displayDir.scope==='global'?'to-global':'to-project';
+    return`<div class="target-opt${isCur?' active':''}" onclick="switchTarget('${displayDir.path}')">
+      <span class="to-scope ${scopeClass}">${displayDir.scope==='global'?'🌐':'📁'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${g.dirs.length>1?`<span style="font-size:9px;color:var(--text-muted);font-weight:400">(${g.dirs.length} dirs)</span>`:''}</div>
+        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayDir.rel}</div>
+      </div>
+      <span class="to-count">${displayDir.count}</span>
     </div>`;
   }).join('');
+  $('badge-sources').textContent=targetGroups.length||targets.length;
+  renderSources();
 }
 
 async function switchTarget(path){
@@ -1129,17 +1258,19 @@ async function switchTarget(path){
     const d=await r.json();
     if(d.error){toast(d.error,'error');return}
     scan=d;skills=d?.installed||[];
-    skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name)});
+    skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name,s.description)});
     render();
     toast(`已切换 (${d.duration_ms}ms)`);
     // Fallback: load targets as sources if scan.sources is empty
     if(!scan?.sources?.length){
       try{
-        const ts=await fetch('/api/targets').then(r=>r.json());
+        const td=await fetch('/api/targets').then(r=>r.json());
+        const ts=td.targets||td;
         if(ts?.length){
           scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
           renderSources();
-          $('badge-sources').textContent=ts.length;
+          const groups=td.groups||[];
+          $('badge-sources').textContent=groups.length||ts.length;
         }
       }catch(e){}
     }

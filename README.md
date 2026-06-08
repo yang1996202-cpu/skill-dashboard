@@ -34,7 +34,7 @@
 
 ## 功能
 
-**完全独立，零外部依赖。** 不装 skill-mgr，不装 gh CLI，一个 Python 文件跑起来。
+**完全独立，零外部依赖。** 不装任何额外工具，一个 Python 文件跑起来。
 
 | 功能 | 说明 |
 |---|---|
@@ -46,7 +46,7 @@
 | 🏥 **健康评分** | Python 自主计算，不依赖 bash |
 | ⚠️ **结构问题** | broken symlink、缺 frontmatter、oversized 检测 |
 | 🔍 **轻量相似度** | 前端 Jaccard 算法，基于 name + description 关键词重叠分析 |
-| 🔗 **上游追踪** | 自动检测 `.git` 来源 + `.skill-manager-source.env` 安装记录 |
+| 🔗 **上游追踪** | 自动检测 `.git` 来源 + `.skill-source.env` 安装记录 |
 | 🔄 **上游更新检测** | urllib 调 GitHub API，对比 installed vs latest commit |
 | ⬇️ **安装 Skill** | 粘贴 GitHub URL → Python 自动 git clone + 子目录选择 + 快照备份 |
 | ⬆️ **更新 Skill** | 一键从上游重新安装，自动快照 |
@@ -99,11 +99,11 @@ python3 serve.py
 上游追踪通过两种方式检测：
 
 1. **`.git` 目录**：读取 `git remote get-url origin`
-2. **`.skill-manager-source.env`**：读取来源记录文件（Dashboard 安装时自动写入，也兼容读取旧版 skill-mgr 安装记录）
+2. **`.skill-source.env`**：读取来源记录文件（Dashboard 安装时自动写入）
 
 更新检测使用 GitHub REST API（`repos/{owner}/{repo}/commits`），无需 `gh` CLI，无需 token。
 
-如果某个 skill 既没有 `.git` 也没有 `.skill-manager-source.env`，则检测不到上游。这不是 bug，是本地没有来源记录。
+如果某个 skill 既没有 `.git` 也没有 `.skill-source.env`，则检测不到上游。这不是 bug，是本地没有来源记录。
 
 ---
 
