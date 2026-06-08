@@ -471,7 +471,8 @@ async function loadData(){
         targets=ts;targetGroups=td.groups||[];
         scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
         renderSources();
-        $('badge-sources').textContent=targetGroups.length||ts.length;
+        $('badge-sources').textContent=td.groups?.length||ts.length;
+        renderStats();
       }
     }catch(e){}
   }
@@ -516,7 +517,7 @@ function render(){
   renderSimilarity();renderUpstream();renderIssues();renderSources();renderSkillsList();
   updateTargetSelector();
   $('badge-skills').textContent=skills.length;
-  $('badge-sources').textContent=scan?.sources?.length||0;
+  // badge-sources is maintained by updateTargetSelector / loadData targets fetch
   updateDiagBadges();
 }
 
@@ -550,10 +551,10 @@ function renderStats(){
   const h=health,hs=h?.health_score;
   const hc=hs?.level==='green'?'var(--green)':hs?.level==='yellow'?'var(--amber)':'var(--red)';
   const gUnique=globalStats?.unique_skills||0;
-  const gTargets=globalStats?.targets_scanned||0;
+  const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
   $('stats-row').innerHTML=`
     <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全域 Skills</div></div>
-    <div class="stat s-libraries" title="已扫描的技能库目录数"><div class="val">${gTargets||(scan?.sources?.length||0)}</div><div class="lbl">技能库</div></div>
+    <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
     <div class="stat s-issues"><div class="val" style="color:${(h?.summary?.structure_issues||0)>0?'var(--red)':'var(--green)'}">${h?.summary?.structure_issues||0}</div><div class="lbl">结构问题</div></div>
     <div class="stat s-ready"><div class="val" style="color:var(--green)">${h?.summary?.runtime_ready||0}</div><div class="lbl">可用</div></div>
     <div class="stat s-health"><div class="val" style="color:${hc}">${hs?.score??'-'}</div><div class="lbl">Health</div></div>`;
@@ -1253,7 +1254,7 @@ async function updateTargetSelector(){
     </div>`;
   }).join('');
   $('badge-sources').textContent=targetGroups.length||targets.length;
-  renderSources();
+  renderStats();renderSources();
 }
 
 async function switchTarget(path){
@@ -1278,6 +1279,7 @@ async function switchTarget(path){
         if(!scan?.sources?.length) scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
         renderSources();
         $('badge-sources').textContent=targetGroups.length||ts.length;
+        renderStats();
       }
     }catch(e){}
     // Refresh global stats
@@ -1313,7 +1315,7 @@ async function loadSourcesFallback(){
   if(fullScan?.sources?.length){
     scan.sources=fullScan.sources;
     renderSources();
-    $('badge-sources').textContent=fullScan.sources.length;
+    // badge-sources is maintained by updateTargetSelector — don't overwrite with flat source count
   }
 }
 
