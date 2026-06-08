@@ -119,7 +119,6 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .cat-bar{height:100%;border-radius:2px;transition:width .3s var(--ease)}
 .cat-num{font-size:12px;font-weight:600;min-width:20px;text-align:right;font-variant-numeric:tabular-nums}
 .cat-pct{font-weight:400;color:var(--text-muted);font-size:10px;margin-left:2px}
-.cat-local{font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:3px;margin-left:4px;white-space:nowrap}
 
 /* ── Skill groups ── */
 .skill-group{margin-bottom:12px}
@@ -297,7 +296,7 @@ tbody tr:hover{background:var(--bg-hover)}
     </div>
     <div class="nav-group">
       <div class="nav-group-label">来源</div>
-      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 技能库 <span class="badge" id="badge-sources">-</span></div>
+      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 全量技能库 <span class="badge" id="badge-sources">-</span></div>
     </div>
   </aside>
 
@@ -441,7 +440,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目标库',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'技能库'};
+  const titles={dashboard:'仪表盘',skills:'当前目标库',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'全量技能库'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
@@ -452,11 +451,13 @@ async function loadData(){
   // Layer 0: fast-scan (instant skill list + classification)
   const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
   scan=sr;skills=sr?.installed||[];
+  // Sanitize descriptions to prevent template literal injection
+  skills.forEach(s=>{if(s.description)s.description=safeDesc(s.description)});
   loadCategoryOverrides();
   skills.forEach(s=>{
-    if(!s.category||s.category===''){
-      if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
-      else{s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'}
+    if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
+    else if(!s.category||s.category===''||!CAT_NAMES[s.category]){
+      s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'
     }else{s.categorySource='frontmatter'}
   });
   render();
@@ -553,11 +554,9 @@ function renderStats(){
   const hc=hs?.level==='green'?'var(--green)':hs?.level==='yellow'?'var(--amber)':'var(--red)';
   const gUnique=globalStats?.unique_skills||0;
   const gTargets=globalStats?.targets_scanned||0;
-  const coverage=gUnique?((skills.length/gUnique)*100).toFixed(1):'—';
   $('stats-row').innerHTML=`
     <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全域 Skills</div></div>
     <div class="stat s-libraries" title="已扫描的技能库目录数"><div class="val">${gTargets||(scan?.sources?.length||0)}</div><div class="lbl">技能库</div></div>
-    <div class="stat s-coverage" title="当前库占全域的百分比"><div class="val" style="color:var(--cyan)">${skills.length}<span style="font-size:13px;color:var(--text-muted)">/${gUnique}</span></div><div class="lbl">当前库/全域</div></div>
     <div class="stat s-issues"><div class="val" style="color:${(h?.summary?.structure_issues||0)>0?'var(--red)':'var(--green)'}">${h?.summary?.structure_issues||0}</div><div class="lbl">结构问题</div></div>
     <div class="stat s-ready"><div class="val" style="color:var(--green)">${h?.summary?.runtime_ready||0}</div><div class="lbl">可用</div></div>
     <div class="stat s-health"><div class="val" style="color:${hc}">${hs?.score??'-'}</div><div class="lbl">Health</div></div>`;
@@ -609,27 +608,36 @@ const CAT_NAMES={'code-dev':'💻 代码开发','content':'✍️ 内容创作',
 const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#f472b6','sales':'#f59e0b','other':'var(--text-muted)','':'var(--text-muted)'};
 
 function renderCategories(){
+  // Build current-target distribution
+  const localCm={};skills.forEach(s=>{const c=s.category||'other';localCm[c]=(localCm[c]||0)+1});
+  const localTotal=skills.length||1;
+  const localCats=Object.entries(localCm).sort((a,b)=>b[1]-a[1]);
+  const localMx=localCats[0]?.[1]||1;
+  const curLabel=targets.find(t=>t.is_current)?.name||'当前目标库';
+
   if(globalStats){
-    // Global view: show worldwide category distribution as bar chart
+    // Global distribution
     const gd=globalStats.category_distribution||{};
     const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
     const total=globalStats.unique_skills||0;
-    // Also compute current-target distribution for comparison
-    const localCm={};skills.forEach(s=>{const c=s.category||'other';localCm[c]=(localCm[c]||0)+1});
-    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 全域分类分布</h3><span class="sub">${total} skills across ${globalStats.targets_scanned||'?'} libraries · ${cats.length} categories</span></div>
+    let html=`<div class="card"><div class="card-head"><h3>📊 全域分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个技能库 · ${cats.length} 个分类</span></div>
     <div class="cat-grid">${cats.map(([c,n])=>{
-      const local=localCm[c]||0;
       const pct=(n/total*100).toFixed(1);
       const barW=(n/mx*100).toFixed(0);
-      const localTag=local?`<span class="cat-local">${local}</span>`:'';
-      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div>${localTag}</div>`;
+      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
     }).join('')}</div></div>`;
+    // Current target distribution
+    html+=`<div class="card" style="margin-top:12px"><div class="card-head"><h3>📂 ${safeDesc(curLabel)}</h3><span class="sub">${localTotal} skills · ${localCats.length} 个分类</span></div>
+    <div class="cat-grid">${localCats.map(([c,n])=>{
+      const pct=(n/localTotal*100).toFixed(1);
+      const barW=(n/localMx*100).toFixed(0);
+      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
+    }).join('')}</div></div>`;
+    $('cat-card').innerHTML=html;
   }else{
     // Fallback: current-target only
-    const cm={};skills.forEach(s=>{const c=s.category||'other';cm[c]=(cm[c]||0)+1});
-    const cats=Object.entries(cm).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
-    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📊 分类分布</h3><span class="sub">${cats.length} 类</span></div>
-    <div class="cat-grid">${cats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/mx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
+    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📂 ${curLabel}</h3><span class="sub">${localCats.length} 类</span></div>
+    <div class="cat-grid">${localCats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/localMx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
   }
 }
 
@@ -698,7 +706,7 @@ function exportSkills(){
     `# Count: ${skills.length}`,
     '',
     '## Installed Skills',
-    ...skills.map(s=>`- ${s.name}${s.description?': '+s.description:''}`),
+    ...skills.map(s=>`- ${s.name}${s.description?': '+safeDesc(s.description):''}`),
     '',
     '## GitHub Sources (paste these to import)',
     ...skills.map(s=>{
@@ -1012,7 +1020,7 @@ function renderSourceSkillList(path,sourceSkills,container){
       <span style="font-size:11px;${isInstalled?'color:var(--green)':'color:var(--text-muted)'};min-width:60px">${isInstalled?'✓ 已安装':'○ 未安装'}</span>
       <div style="flex:1;min-width:0">
         <div style="font-size:12px;font-weight:500;cursor:pointer;color:var(--indigo)" onclick="showSkill('${esc(sk.name)}')">${sk.name}</div>
-        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sk.description||''}</div>
+        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${safeDesc(sk.description)}</div>
       </div>
     </div>`;
   });
@@ -1054,7 +1062,7 @@ async function loadSourceSkillsForSync(path){
         <input type="checkbox" class="sync-check" data-name="${sk.name}" ${isInstalled?'disabled':''} onchange="toggleSyncSkill('${sk.name}')">
         <div style="flex:1;min-width:0">
           <div style="font-size:12px;font-weight:500">${sk.name} ${isInstalled?'<span style="font-size:10px;color:var(--green)">(已安装)</span>':''}</div>
-          <div style="font-size:10px;color:var(--text-muted)">${sk.description||''}</div>
+          <div style="font-size:10px;color:var(--text-muted)">${safeDesc(sk.description)}</div>
         </div>
       </div>`;
     });
@@ -1186,7 +1194,9 @@ async function showSkill(name){
 }
 function escapeHtml(t){return t.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 // Escape for use inside HTML attributes and JS string literals
-function esc(s){return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function esc(s){return String(s).replace(/\\/g,'\\\\').replace(/`/g,'\\`').replace(/'/g,"\\'").replace(/"/g,'&quot;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+// Safe description for template literals: strip backticks and ${} that break JS
+function safeDesc(d){return String(d||'').replace(/`/g,"'").replace(/\$\{/g,'{')}
 
 /* ── Refresh ── */
 async function refreshData(){
@@ -1196,7 +1206,7 @@ async function refreshData(){
     const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
     if(sr){
       scan=sr;skills=sr?.installed||[];
-      skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name,s.description)});
+      skills.forEach(s=>{if(!s.category||s.category===''||!CAT_NAMES[s.category])s.category=classifySkillJS(s.name,s.description)});
       render();
     }
     const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
@@ -1258,22 +1268,25 @@ async function switchTarget(path){
     const d=await r.json();
     if(d.error){toast(d.error,'error');return}
     scan=d;skills=d?.installed||[];
-    skills.forEach(s=>{if(!s.category||s.category==='')s.category=classifySkillJS(s.name,s.description)});
+    skills.forEach(s=>{if(s.description)s.description=safeDesc(s.description)});
+    skills.forEach(s=>{if(!s.category||s.category===''||!CAT_NAMES[s.category])s.category=classifySkillJS(s.name,s.description)});
     render();
     toast(`已切换 (${d.duration_ms}ms)`);
-    // Fallback: load targets as sources if scan.sources is empty
-    if(!scan?.sources?.length){
-      try{
-        const td=await fetch('/api/targets').then(r=>r.json());
-        const ts=td.targets||td;
-        if(ts?.length){
-          scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
-          renderSources();
-          const groups=td.groups||[];
-          $('badge-sources').textContent=groups.length||ts.length;
-        }
-      }catch(e){}
-    }
+    // Refresh targets + groups so dashboard/sources stay in sync
+    try{
+      const td=await fetch('/api/targets').then(r=>r.json());
+      const ts=td.targets||td;
+      if(ts?.length){
+        targets=ts;targetGroups=td.groups||[];
+        if(!scan?.sources?.length) scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
+        renderSources();
+        $('badge-sources').textContent=targetGroups.length||ts.length;
+      }
+    }catch(e){}
+    // Refresh global stats
+    fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
+      if(gs){globalStats=gs;renderStats();renderCategories()}
+    });
     // Quick-check the new target
     const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
     if(qc&&!qc.error){health=qc;renderHealth();renderIssues();updateDiagBadges();}
