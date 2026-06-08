@@ -553,7 +553,7 @@ function renderStats(){
   const gUnique=globalStats?.unique_skills||0;
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
   $('stats-row').innerHTML=`
-    <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全域 Skills</div></div>
+    <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全量 Skills</div></div>
     <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
     <div class="stat s-issues"><div class="val" style="color:${(h?.summary?.structure_issues||0)>0?'var(--red)':'var(--green)'}">${h?.summary?.structure_issues||0}</div><div class="lbl">结构问题</div></div>
     <div class="stat s-ready"><div class="val" style="color:var(--green)">${h?.summary?.runtime_ready||0}</div><div class="lbl">可用</div></div>
@@ -618,7 +618,7 @@ function renderCategories(){
     const gd=globalStats.category_distribution||{};
     const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
     const total=globalStats.unique_skills||0;
-    let html=`<div class="card"><div class="card-head"><h3>📊 全域分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个技能库 · ${cats.length} 个分类</span></div>
+    let html=`<div class="card"><div class="card-head"><h3>📊 全量分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
     <div class="cat-grid">${cats.map(([c,n])=>{
       const pct=(n/total*100).toFixed(1);
       const barW=(n/mx*100).toFixed(0);
@@ -639,18 +639,30 @@ function renderCategories(){
   }
 }
 
-/* ── Skills list with category groups ── */
+/* ── Skills list with category groups (horizontal bar + expandable) ── */
 function renderSkillsList(){
   const q=($('search').value||'').toLowerCase();
   const filtered=skills.filter(s=>!q||s.name.toLowerCase().includes(q));
   // Group by category
   const groups={};filtered.forEach(s=>{const c=s.category||'other';if(!groups[c])groups[c]=[];groups[c].push(s)});
   const sortedCats=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
+  const mx=sortedCats[0]?.[1].length||1;
+  const total=filtered.length||1;
   let html='';
   if(sortedCats.length===0){html='<div class="empty">无匹配结果</div>'}
   else{sortedCats.forEach(([cat,sk])=>{
+    const pct=(sk.length/total*100).toFixed(1);
+    const barW=(sk.length/mx*100).toFixed(0);
+    const icon=(CAT_NAMES[cat]||cat).split(' ')[0];
+    const label=(CAT_NAMES[cat]||cat).split(' ').slice(1).join(' ')||cat;
     html+=`<div class="skill-group">
-      <div class="skill-group-head" onclick="toggleGroup(this)"><span class="arrow">▶</span> ${CAT_NAMES[cat]||cat} <span style="font-weight:400;color:var(--text-muted);font-size:12px">(${sk.length})</span></div>
+      <div class="skill-group-head" onclick="toggleGroup(this)" style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background .1s ease">
+        <span class="arrow" style="font-size:9px;color:var(--text-muted);transition:transform .15s">▶</span>
+        <div class="cat-icon">${icon}</div>
+        <div class="cat-name" style="min-width:70px">${label}</div>
+        <div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[cat]||'var(--indigo)'}"></div></div>
+        <div class="cat-num">${sk.length} <span class="cat-pct">${pct}%</span></div>
+      </div>
       <div class="skill-group-body">${sk.map(s=>`<div class="skill-row" onclick="if(event.target.type!=='checkbox')showSkill('${esc(s.name)}')">
         <input type="checkbox" class="skill-check" ${selectedSkills.has(s.name)?'checked':''} onchange="toggleSkillSelect('${esc(s.name)}')">
         <div class="name">${s.name}</div>

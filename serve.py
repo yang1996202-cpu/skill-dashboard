@@ -127,9 +127,83 @@ def _read_skill_description(skill_dir):
     return ""
 
 
+def _discover_skill_dirs():
+    """Discover all skill directories on the system (shared by global-stats and targets).
+    Returns a list of Path objects pointing to directories that contain SKILL.md entries.
+    """
+    home = Path.home()
+    candidates = []
+    seen_paths = set()
+
+    def add_dir(d):
+        d = d.resolve()
+        if d.is_dir() and str(d) not in seen_paths:
+            seen_paths.add(str(d))
+            candidates.append(d)
+
+    # Standard agent prefixes
+    for prefix in [
+        home / ".claude", home / ".agents", home / ".alice", home / ".cc-switch",
+        home / ".codex", home / ".hermes", home / ".openclaw", home / ".qclaw",
+        home / ".workbuddy", home / ".codebuddy", home / ".cursor", home / ".cola",
+        home / "Downloads", home / "hyperframes", home / "AI-Skills",
+        home / ".config" / "opencode", home / "Documents",
+    ]:
+        if not prefix.exists():
+            continue
+        add_dir(prefix / "skills")
+        skills_dir = prefix / "skills"
+        if skills_dir.is_dir():
+            for sub in skills_dir.iterdir():
+                if sub.is_dir():
+                    add_dir(sub)
+        for deep in ["hermes-agent", "skills-marketplace", "connectors-marketplace",
+                     "extensions", "workspaces", "backups", "skill-backups"]:
+            deep_dir = prefix / deep
+            if deep_dir.is_dir():
+                for sub in deep_dir.iterdir():
+                    if sub.is_dir():
+                        add_dir(sub)
+                        for sub2 in sub.iterdir():
+                            if sub2.is_dir():
+                                add_dir(sub2)
+
+    # Projects
+    projects_dir = home / "projects"
+    if projects_dir.exists():
+        for p in projects_dir.iterdir():
+            if not p.is_dir():
+                continue
+            add_dir(p / ".claude" / "skills")
+            add_dir(p / "skills")
+            add_dir(p / ".agents" / "skills")
+            add_dir(p / ".codex" / "skills")
+
+    # Downloads subdirs
+    downloads = home / "Downloads"
+    if downloads.is_dir():
+        for d in downloads.iterdir():
+            if d.is_dir():
+                add_dir(d / ".claude" / "skills")
+                add_dir(d / "skills")
+
+    # Custom sources
+    try:
+        cf = STATE_DIR / "custom-sources.json"
+        if cf.exists():
+            for p in json.loads(cf.read_text()):
+                add_dir(Path(p).expanduser())
+    except Exception:
+        pass
+
+    # Filter to dirs that actually contain SKILL.md entries
+    return [d for d in candidates
+            if d.is_dir() and any(c.is_dir() and (c / "SKILL.md").exists() for c in d.iterdir())]
+
+
 def _scan_global_categories():
-    """Scan all main agent skill dirs, classify unique skills, return distribution.
-    Cached for 5 minutes.
+    """Scan all skill dirs, classify unique skills, return distribution.
+    Cached for 5 minutes. Uses _discover_skill_dirs for full coverage.
     """
     cache_file = CACHE_DIR / "global-categories.json"
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -143,36 +217,11 @@ def _scan_global_categories():
         except Exception:
             pass
 
-    home = Path.home()
-    # Main agent skill directories to scan
-    main_dirs = [
-        home / ".claude" / "skills",
-        home / ".agents" / "skills",
-        home / ".cc-switch" / "skills",
-        home / ".alice" / "skills",
-        home / ".codex" / "skills",
-        home / ".hermes" / "skills",
-        home / ".openclaw" / "skills",
-        home / ".workbuddy" / "skills-marketplace" / "skills",
-        home / ".codebuddy" / "skills-marketplace" / "skills",
-    ]
-    # Also include custom sources
-    try:
-        cf = STATE_DIR / "custom-sources.json"
-        if cf.exists():
-            for p in json.loads(cf.read_text()):
-                main_dirs.append(Path(p).expanduser())
-    except Exception:
-        pass
+    skill_dirs = _discover_skill_dirs()
 
     seen = {}       # name -> description (first seen wins)
-    targets_count = 0
 
-    for tdir in main_dirs:
-        tdir = tdir.resolve()
-        if not tdir.is_dir():
-            continue
-        targets_count += 1
+    for tdir in skill_dirs:
         for d in sorted(tdir.iterdir()):
             if not d.is_dir():
                 continue
@@ -190,7 +239,7 @@ def _scan_global_categories():
 
     result = {
         "unique_skills": len(seen),
-        "targets_scanned": targets_count,
+        "targets_scanned": len(skill_dirs),
         "category_distribution": cat_dist,
     }
     # Save cache with timestamp
@@ -1309,93 +1358,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _list_targets(self):
         """Scan common locations + nested subdirs + custom sources for skill directories.
-        Mirrors dashboard scan breadth: standard paths, deep subdirs, project nests.
+        Uses shared _discover_skill_dirs for directory discovery.
         """
         home = Path.home()
-
-        # Phase 1: Collect candidate directories
-        candidates = []
-        seen_paths = set()
-
-        def add_dir(d):
-            if d.is_dir() and str(d) not in seen_paths:
-                seen_paths.add(str(d))
-                candidates.append(d)
-
-        # 1A) Standard agent prefixes — scan prefix/skills AND one level of subdirs
-        standard_prefixes = [
-            home / ".claude",
-            home / ".agents",
-            home / ".alice",
-            home / ".cc-switch",
-            home / ".codex",
-            home / ".hermes",
-            home / ".openclaw",
-            home / ".qclaw",
-            home / ".workbuddy",
-            home / ".codebuddy",
-            home / ".cursor",
-            home / ".cola",
-            home / "Downloads",
-            home / "hyperframes",
-            home / "AI-Skills",
-            home / ".config" / "opencode",
-            home / "Documents",
-        ]
-        for prefix in standard_prefixes:
-            if not prefix.exists():
-                continue
-            # Direct skills/ dir
-            add_dir(prefix / "skills")
-            # One-level subdirs under skills/ (e.g. skills/gstack, skills/openclaw-imports)
-            skills_dir = prefix / "skills"
-            if skills_dir.is_dir():
-                for sub in skills_dir.iterdir():
-                    if sub.is_dir():
-                        add_dir(sub)
-            # Special nested patterns (e.g. hermes/hermes-agent/skills)
-            for deep in ["hermes-agent", "skills-marketplace", "connectors-marketplace",
-                         "extensions", "workspaces", "backups", "skill-backups"]:
-                deep_dir = prefix / deep
-                if deep_dir.is_dir():
-                    for sub in deep_dir.iterdir():
-                        if sub.is_dir():
-                            add_dir(sub)
-                            # One more level for hermes-agent/skills/xxx
-                            for sub2 in sub.iterdir():
-                                if sub2.is_dir():
-                                    add_dir(sub2)
-
-        # 1B) Projects — scan projects/*/.claude/skills etc.
-        projects_dir = home / "projects"
-        if projects_dir.exists():
-            for p in projects_dir.iterdir():
-                if not p.is_dir():
-                    continue
-                add_dir(p / ".claude" / "skills")
-                add_dir(p / "skills")
-                # Also scan project root as a prefix
-                add_dir(p / ".agents" / "skills")
-                add_dir(p / ".codex" / "skills")
-
-        # 1C) Downloads — scan for .claude/skills nests
-        downloads = home / "Downloads"
-        if downloads.is_dir():
-            for d in downloads.iterdir():
-                if d.is_dir():
-                    add_dir(d / ".claude" / "skills")
-                    add_dir(d / "skills")
-
-        # 1D) Custom sources
-        for cs in self._load_custom_sources():
-            p = Path(cs)
-            if p.is_dir():
-                add_dir(p)
-
-        # Phase 2: Filter to actual skill directories
-        targets = []
         current = self._current_target()
-        for skills_dir in candidates:
+
+        # Reuse shared discovery
+        skill_dirs = _discover_skill_dirs()
+        targets = []
+        for skills_dir in skill_dirs:
             count = sum(1 for d in skills_dir.iterdir()
                        if d.is_dir() and (d / "SKILL.md").exists())
             if count == 0:
