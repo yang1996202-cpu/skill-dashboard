@@ -99,7 +99,7 @@ python3 serve.py
 上游追踪通过两种方式检测：
 
 1. **`.git` 目录**：读取 `git remote get-url origin`
-2. **`.skill-manager-source.env`**：读取 steal 安装时记录的来源
+2. **`.skill-manager-source.env`**：读取来源记录文件（Dashboard 安装时自动写入，也兼容读取旧版 skill-mgr 安装记录）
 
 更新检测使用 GitHub REST API（`repos/{owner}/{repo}/commits`），无需 `gh` CLI，无需 token。
 
