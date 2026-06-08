@@ -6,13 +6,18 @@
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
+import urllib.request
+import urllib.parse
 import webbrowser
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs
 
 PORT = 3457
 STATE_DIR = Path.home() / ".skill-manager" / "state"
@@ -22,9 +27,10 @@ DIAG_LOG = Path(__file__).parent / ".cache" / "diag.log"
 
 
 def _cache_path(target_path):
-    """Get cache file path for a target."""
-    # Use a safe filename from the target path
-    safe = re.sub(r'[^\w]', '_', target_path)
+    """Get cache file path for a target. Resolves ~ and relative paths first."""
+    # Normalize: expand ~ and resolve to absolute path for consistent keys
+    p = Path(target_path).expanduser().resolve()
+    safe = re.sub(r'[^\w]', '_', str(p))
     return CACHE_DIR / f"{safe}.json"
 
 
@@ -335,7 +341,6 @@ def create_snapshot(skill_dir):
     skill_dir = Path(skill_dir)
     if not skill_dir.exists():
         return None
-    import shutil
     snap_dir = skill_dir.parent / ".snapshots"
     snap_dir.mkdir(parents=True, exist_ok=True)
     ts = time.strftime("%Y%m%d_%H%M%S")
@@ -358,8 +363,6 @@ def install_skill(source_url, target_path, preferred_name=None):
 
     Returns: {"ok": bool, "name": str, "output": str, "error": str, "snapshot": str}
     """
-    import shutil
-    import tempfile
 
     parsed = parse_github_url(source_url)
     if not parsed:
@@ -532,35 +535,68 @@ def check_upstream_status(skill_dir):
         return {"status": "outdated", "installed_commit": installed_commit, "latest_commit": latest, "repo": repo, "ahead_by": ahead_by}
 
 
-def _github_latest_commit(repo, ref="main", subdir=""):
-    """Query GitHub API for latest commit on a ref/path. No auth needed (rate-limited)."""
-    import urllib.request
+# ── GitHub API helpers with rate-limit protection ──
+_github_cache = {}  # (url,) -> (timestamp, result)
+_github_cache_ttl = 300  # 5 minutes
+_github_rate_limited = False  # global flag: stop querying after hitting rate limit
+
+
+def _github_api_get(url):
+    """Fetch GitHub API with TTL cache and rate-limit detection.
+    Returns (data, rate_limited_bool).
+    """
+    global _github_rate_limited
+
+    # Check cache
+    now = time.time()
+    cached = _github_cache.get(url)
+    if cached and (now - cached[0]) < _github_cache_ttl:
+        return cached[1], False
+
+    # If we already hit rate limit this session, skip
+    if _github_rate_limited:
+        return None, True
+
     try:
-        if subdir:
-            url = f"https://api.github.com/repos/{repo}/commits?path={urllib.parse.quote(subdir)}&sha={urllib.parse.quote(ref)}&per_page=1"
-        else:
-            url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
         req = urllib.request.Request(url, headers={"User-Agent": "skill-dashboard"})
         with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            if isinstance(data, list):
-                return data[0].get("sha", "") if data else ""
-            return data.get("sha", "")
+            raw = resp.read().decode("utf-8")
+            # Check remaining rate limit from response headers
+            remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            if remaining == "0":
+                _github_rate_limited = True
+            data = json.loads(raw)
+            _github_cache[url] = (now, data)
+            return data, False
+    except urllib.error.HTTPError as e:
+        if e.code == 403 or e.code == 429:
+            _github_rate_limited = True
+        return None, True
     except Exception:
+        return None, False
+
+
+def _github_latest_commit(repo, ref="main", subdir=""):
+    """Query GitHub API for latest commit on a ref/path. Cached + rate-limit protected."""
+    if subdir:
+        url = f"https://api.github.com/repos/{repo}/commits?path={urllib.parse.quote(subdir)}&sha={urllib.parse.quote(ref)}&per_page=1"
+    else:
+        url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
+    data, limited = _github_api_get(url)
+    if limited or data is None:
         return ""
+    if isinstance(data, list):
+        return data[0].get("sha", "") if data else ""
+    return data.get("sha", "")
 
 
 def _github_compare_ahead_by(repo, base, head):
-    """Query GitHub compare API for commits ahead. Returns int or None."""
-    import urllib.request
-    try:
-        url = f"https://api.github.com/repos/{repo}/compare/{base}...{head}"
-        req = urllib.request.Request(url, headers={"User-Agent": "skill-dashboard"})
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data.get("ahead_by")
-    except Exception:
+    """Query GitHub compare API for commits ahead. Cached + rate-limit protected."""
+    url = f"https://api.github.com/repos/{repo}/compare/{base}...{head}"
+    data, limited = _github_api_get(url)
+    if limited or data is None:
         return None
+    return data.get("ahead_by")
 
 
 # ── Update skill from upstream ──
@@ -594,8 +630,49 @@ def update_skill(skill_name, target_path):
     return {"ok": False, "error": "没有找到上游来源记录，无法更新"}
 
 
+# ── Diagnosis state (module-level, protected by lock) ──
+_diag_lock = threading.Lock()
+_diag_process = None
+_diag_target = ""
+_diag_start = 0
+_diag_phase = ""
+
+
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serve index.html and API endpoints."""
+
+    @staticmethod
+    def _validate_skill_name(name):
+        """Sanitize skill name from URL. Rejects path traversal attempts."""
+        if not name or '..' in name or '/' in name or '\\' in name:
+            return None
+        if name.startswith('.') or name.startswith('-'):
+            return None
+        # Allow letters, digits, hyphens, underscores, dots, @, +
+        if not re.match(r'^[a-zA-Z0-9._@+\-]+$', name):
+            return None
+        return name
+
+    def _check_csrf(self):
+        """Reject cross-origin write requests. Returns True if safe."""
+        origin = self.headers.get("Origin", "")
+        referer = self.headers.get("Referer", "")
+        # Allow requests with no Origin/Referer (curl, CLI tools, direct browser nav)
+        if not origin and not referer:
+            return True
+        # Check Origin first (preferred)
+        if origin:
+            allowed = [f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"]
+            return origin in allowed
+        # Fallback to Referer
+        if referer:
+            parsed = urlparse(referer)
+            return parsed.hostname in ("127.0.0.1", "localhost") and parsed.port == PORT
+        return True
+
+    def _csrf_reject(self):
+        """Send a 403 CSRF rejection response."""
+        self._json_response({"error": "CSRF check failed — cross-origin request rejected"}, status=403)
 
     def do_GET(self):
         path = urlparse(self.path).path
@@ -625,15 +702,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path == "/api/custom-sources":
             self._get_custom_sources()
         elif path.startswith("/api/skill/") and path.endswith("/content"):
-            name = path.split("/")[3]
-            self._serve_skill_content(name)
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                self._serve_skill_content(name)
         elif path.startswith("/api/skill/") and path.endswith("/upstream"):
-            name = path.split("/")[3]
-            self._check_skill_upstream(name)
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                self._check_skill_upstream(name)
         else:
             self.send_error(404)
 
     def do_POST(self):
+        if not self._check_csrf():
+            self._csrf_reject()
+            return
         path = urlparse(self.path).path
         if path == "/api/target":
             self._set_target()
@@ -647,10 +733,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_DELETE(self):
+        if not self._check_csrf():
+            self._csrf_reject()
+            return
         path = urlparse(self.path).path
         if path.startswith("/api/skill/"):
-            name = path.split("/")[3]
-            self._delete_skill(name)
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                self._delete_skill(name)
         elif path == "/api/custom-sources":
             self._remove_custom_source()
         else:
@@ -786,7 +878,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _list_source_skills(self):
         """Return skills in a given source directory (for穿透 browsing)."""
-        from urllib.parse import parse_qs
         query = parse_qs(urlparse(self.path).query)
         source_path = query.get("path", [""])[0]
         if not source_path:
@@ -869,7 +960,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _remove_custom_source(self):
         """Remove a custom source path."""
-        from urllib.parse import parse_qs
         query = parse_qs(urlparse(self.path).query)
         rm_path = query.get("path", [""])[0]
         if not rm_path:
@@ -957,92 +1047,66 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         self._json_response(result)
 
-    # ── Diagnosis state (background bash process) ──
-    _diag_process = None
-    _diag_target = ""
-    _diag_start = 0
-    _diag_phase = ""  # "scan" or "check"
+    # ── Diagnosis (uses module-level globals + lock) ──
 
     def _diagnose(self):
         """Trigger Python-only diagnosis in background. No skill-mgr needed."""
+        global _diag_process, _diag_target, _diag_start, _diag_phase
         target = self._current_target()
 
-        # Check if already running
-        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
-            elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
-            if elapsed > 60000:
-                DashboardHandler._diag_process.kill()
-                DashboardHandler._diag_process = None
-                self._json_response({"status": "error", "error": "诊断超时 (60s)，请重试"})
+        with _diag_lock:
+            # Check if already running
+            if _diag_process and _diag_process.poll() is None:
+                elapsed = int((time.time() - _diag_start) * 1000)
+                if elapsed > 60000:
+                    _diag_process.kill()
+                    _diag_process = None
+                    self._json_response({"status": "error", "error": "诊断超时 (60s)，请重试"})
+                    return
+                self._json_response({"status": "running", "target": _diag_target,
+                                     "elapsed_ms": elapsed, "phase": "check"})
                 return
-            self._json_response({"status": "running", "target": DashboardHandler._diag_target,
-                                 "elapsed_ms": elapsed, "phase": "check"})
-            return
 
-        def _run_diagnosis():
-            """Run diagnosis in a subprocess to avoid blocking the server."""
-            result = python_quick_check(target)
-            if result:
-                # Also check upstream status for each skill with metadata
-                upstream = result.get("upstream_sources", [])
-                for u in upstream:
-                    skill_dir = Path(target) / u["name"]
-                    status = check_upstream_status(skill_dir)
-                    if status.get("status") in ("current", "outdated"):
-                        u["status"] = status["status"]
-                        u["installed_commit"] = status.get("installed_commit", "")
-                        u["latest_commit"] = status.get("latest_commit", "")
-                        u["ahead_by"] = status.get("ahead_by")
-                result["source"] = "python-diagnosis"
-                result["generated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S")
-                save_cached_diagnosis(target, result)
-
-        try:
-            CACHE_DIR.mkdir(parents=True, exist_ok=True)
-            log_f = open(DIAG_LOG, "w")
-            DashboardHandler._diag_process = subprocess.Popen(
-                [sys.executable, "-c",
-                 "import sys; sys.path.insert(0, '" + str(Path(__file__).parent) + "'); "
-                 "from serve import python_quick_check, check_upstream_status, save_cached_diagnosis; "
-                 "import json, time; "
-                 "t = '" + target + "'; "
-                 "r = python_quick_check(t); "
-                 "[u.update({'status': s.get('status','unknown'), 'latest_commit': s.get('latest_commit',''), 'ahead_by': s.get('ahead_by')}) or None for u in r.get('upstream_sources',[]) if (s := check_upstream_status(__import__('pathlib').Path(t)/u['name']))]; "
-                 "r['source']='python-diagnosis'; r['generated_at']=time.strftime('%Y-%m-%dT%H:%M:%S'); "
-                 "save_cached_diagnosis(t, r); "
-                 "print('done')"],
-                stdout=log_f, stderr=subprocess.STDOUT,
-            )
-            DashboardHandler._diag_target = target
-            DashboardHandler._diag_start = time.time()
-            DashboardHandler._diag_phase = "check"
-            self._json_response({"status": "started", "target": target})
-        except Exception as e:
-            self._json_response({"status": "error", "error": str(e)})
+            try:
+                CACHE_DIR.mkdir(parents=True, exist_ok=True)
+                log_f = open(DIAG_LOG, "w")
+                worker_script = Path(__file__).parent / "_diag_worker.py"
+                _diag_process = subprocess.Popen(
+                    [sys.executable, str(worker_script), target],
+                    stdout=log_f, stderr=subprocess.STDOUT,
+                )
+                _diag_target = target
+                _diag_start = time.time()
+                _diag_phase = "check"
+                self._json_response({"status": "started", "target": target})
+            except Exception as e:
+                self._json_response({"status": "error", "error": str(e)})
 
     def _diagnosis_status(self):
         """Poll diagnosis progress. If done, cache and return results."""
+        global _diag_process
         target = self._current_target()
 
-        # If process is running, check if it just finished
-        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is not None:
-            DashboardHandler._diag_process = None
-            cached = load_cached_diagnosis(target)
-            if cached:
-                cached["status"] = "done"
-                cached["duration_ms"] = int((time.time() - DashboardHandler._diag_start) * 1000)
-                self._json_response(cached)
-                return
-            else:
-                self._json_response({"status": "error", "error": "诊断完成但缓存未找到"})
-                return
+        with _diag_lock:
+            # If process is running, check if it just finished
+            if _diag_process and _diag_process.poll() is not None:
+                _diag_process = None
+                cached = load_cached_diagnosis(target)
+                if cached:
+                    cached["status"] = "done"
+                    cached["duration_ms"] = int((time.time() - _diag_start) * 1000)
+                    self._json_response(cached)
+                    return
+                else:
+                    self._json_response({"status": "error", "error": "诊断完成但缓存未找到"})
+                    return
 
-        # Process still running
-        if DashboardHandler._diag_process and DashboardHandler._diag_process.poll() is None:
-            elapsed = int((time.time() - DashboardHandler._diag_start) * 1000)
-            self._json_response({"status": "running", "target": DashboardHandler._diag_target,
-                                 "elapsed_ms": elapsed, "phase": "check"})
-            return
+            # Process still running
+            if _diag_process and _diag_process.poll() is None:
+                elapsed = int((time.time() - _diag_start) * 1000)
+                self._json_response({"status": "running", "target": _diag_target,
+                                     "elapsed_ms": elapsed, "phase": "check"})
+                return
 
         # No process — check cache
         cached = load_cached_diagnosis(target)
@@ -1277,7 +1341,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _delete_skill(self, name):
         """Delete a skill directory."""
-        import shutil
         # Resolve skill path from scan data
         skill_dir = self._resolve_skill_dir(name)
         if not skill_dir:
@@ -1314,6 +1377,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def do_PATCH(self):
         """Handle skill update actions."""
+        if not self._check_csrf():
+            self._csrf_reject()
+            return
         path = urlparse(self.path).path
         # Read body
         length = int(self.headers.get('Content-Length', 0))
@@ -1324,12 +1390,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = {}
 
         if path.startswith("/api/skill/") and path.endswith("/update"):
-            name = path.split("/")[3]
-            self._update_upstream(name)
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                self._update_upstream(name)
         elif path.startswith("/api/skill/") and path.endswith("/fix"):
-            name = path.split("/")[3]
-            action = data.get("action", "")
-            self._fix_skill(name, action)
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                action = data.get("action", "")
+                self._fix_skill(name, action)
         else:
             self.send_error(404)
 
@@ -1385,6 +1457,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
 
