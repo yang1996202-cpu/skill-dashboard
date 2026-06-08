@@ -115,6 +115,83 @@ const ts = td.targets || td;  // 兼容数组和对象
 
 ---
 
+### btoa 中文路径崩溃导致技能库显示 0
+
+**现象**：技能库页面有来源但展开后显示 0 个 skill，控制台报 `Failed to execute 'btoa'` 或 `InvalidCharacterError`。
+
+**根因**：用 `btoa()` 把路径转成 DOM ID，但 `btoa` 不支持非 ASCII 字符（中文路径如 `~/项目/skills`）。转码失败 → ID 生成失败 → DOM 找不到容器 → 内容不渲染。
+
+**修复**：用 `encodeURIComponent()` 替代 `btoa()`：
+```js
+// 错误
+const safeId = 'src-body-' + btoa(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
+// 正确
+const safeId = 'src-body-' + encodeURIComponent(s.path).replace(/[^a-zA-Z0-9]/g,'').slice(0,20);
+```
+
+**适配风险**：任何把用户路径当 DOM ID 的地方，中文/日文/韩文/emoji 路径都会触发。其他用户机器上 `~/下载/`、`~/桌面/` 等中文路径是常见场景。
+
+---
+
+### 技能库页面无数据（来源列表空白）
+
+**现象**：技能库页面显示"无来源数据"或空白，但 `/api/targets` 能正常返回目录列表。
+
+**根因**：`scan.sources` 为空。在无 skill-mgr 的环境下，`/api/fast-scan` 不返回 `sources` 字段，而前端直接用 `scan.sources` 渲染，空就显示空白。
+
+**修复**：`loadData()` 和 `switchTarget()` 都加 fallback——`scan.sources` 为空时从 `/api/targets` 补数据：
+```js
+if(!scan?.sources?.length){
+  const ts = await fetch('/api/targets').then(r=>r.json());
+  scan.sources = ts.map(t=>({...}));
+  renderSources();
+}
+```
+
+**适配风险**：任何新安装、无 skill-mgr 的环境下必现。这是独立模式的核心兜底逻辑。
+
+---
+
+### 删除 skill 后列表不刷新 / 删错 skill
+
+**现象**：删除一个 skill 后列表还显示它，或者删的是另一个 skill。
+
+**根因**：删除 API 的路径拼接错误，或删除后没有重新调用 `loadData()` 列表。前端用 `name` 定位 skill，但如果同名 skill 存在于不同目录可能删错。
+
+**修复**：
+- 后端：`_validate_skill_name()` 白名单校验 `[a-zA-Z0-9._@+\-]+`
+- 后端：删除前验证路径在当前 target 目录内（防路径穿越）
+- 前端：删除成功后 `await loadData()` 强制刷新
+
+---
+
+## 适配性风险（跨用户环境）
+
+### 路径中的特殊字符
+
+用户机器上可能出现：
+- **中文路径**：`~/下载/skills`、`~/桌面/`、`~/项目/xxx/` → `btoa` 崩溃、URL 编码问题
+- **空格路径**：`~/My Projects/skills` → shell 命令拼接需引号包裹
+- **emoji 路径**：macOS 允许目录名含 emoji → JSON 序列化/反序列化正常但 DOM ID 可能异常
+- **符号链接**：`~` 展开为 `/Users/xxx`，`$HOME` 环境变量可能不一致 → 路径比较用 `realpath` 归一化
+
+### 权限问题
+
+- **只读目录**：`/api/copy-skill` 写入目标目录时权限不足 → 需要在后端捕获 `PermissionError` 返回友好错误
+- **symlink 指向不存在的目标**：`broken_symlink` 检测在 `_fast_scan` 中已处理，但某些 agent（如 CC-Switch 的备份目录）可能存在循环链接
+
+### GitHub API 限流
+
+- **未认证 60 次/小时**：频繁安装/更新 skill 时容易触发。后端有 5 分钟 TTL 缓存 + 熔断
+- **企业/学校网络**：GitHub API 可能被代理/防火墙拦截 → `ConnectionError` → 需要给用户明确提示而非静默失败
+
+### 字符编码
+
+- **SKILL.md 用 GBK/GB2312 编码**：Python `open()` 默认 UTF-8 会报 `UnicodeDecodeError`。目前用 `errors='replace'` 容错，但内容可能乱码
+- **Windows 换行符 `\r\n`**：YAML frontmatter 解析时 `\r` 残留会导致匹配失败。已用 `.strip()` 处理但极端情况可能遗漏
+
+---
+
 ## 排查方法论
 
 1. **先确认是数据问题还是渲染问题**：用 `curl` 拉 API 看原始数据，数据正常 → 前端问题
@@ -122,3 +199,5 @@ const ts = td.targets || td;  // 兼容数组和对象
 3. **变量未定义 / 格式变化**：浏览器 F12 控制台看报错，定位行号
 4. **缓存过期**：检查 `.data/cache/` 和 `.data/state/` 的时间戳
 5. **浏览器缓存**：Cmd+Shift+R 强制刷新，排除旧 JS 干扰
+6. **中文路径**：搜索代码中所有 `btoa` 调用，确认已替换为 `encodeURIComponent`
+7. **API 格式兼容**：搜索所有 `fetch('/api/targets')`，确认 `td.targets||td` 兜底
