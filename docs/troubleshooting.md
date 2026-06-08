@@ -91,6 +91,29 @@ if val in (">", "|", ">-", "|-", ">+", "|+"):
 
 ---
 
+### 大量 skill 归入"其他"/分类覆盖率低（如只有 42%）
+
+**现象**：分类分布中"📦 其他"占比极高（可能 50%+），keyword 分类似乎没生效。
+
+**根因**：两个叠加问题：
+1. **keyword 匹配只用 name**：很多 skill 名字不含分类关键词（如 `khazix`、`neat-freak`），但 description 里有（如"内容创作""搜索""数据分析"），name-only 匹配完全漏掉
+2. **无 description 的 skill**：部分 SKILL.md 没有 `description` 字段或为空，keyword 匹配输入为空字符串，必定归入"其他"
+
+**修复**：
+- keyword 匹配输入从 `name` 改为 `name + ' ' + description`：
+  ```js
+  function classifySkillJS(name, desc){
+    const low = (name + ' ' + (desc||'')).toLowerCase();
+    // ... keyword matching on low
+  }
+  ```
+- 扩充 `CAT_KW` 关键词表（从 ~5 个/类扩到 ~15 个/类），加入中英文关键词
+- 后端 `_scan_global_categories()` 同步用 name + description 做分类
+
+**影响**：分类覆盖率从 42% → 接近 100%。无 description 的 skill 仍然只能靠 name 匹配，覆盖不到就归"其他"——这是预期行为。
+
+---
+
 ### 技能库数量闪跳（152→133 或类似）
 
 **现象**：页面加载时技能库数量先显示一个数字，然后闪跳到另一个。
