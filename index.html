@@ -526,7 +526,7 @@ function updateDiagBadges(){
   $('badge-similar').textContent=h?.overlap_groups?.length||0;
   $('badge-upstream').textContent=h?.upstream_sources?.filter(s=>s.status==='outdated').length||0;
   $('badge-issues').textContent=(h?.structure_issues?.length||0)+(h?.cleanup_candidates?.length||0);
-  $('badge-sources').textContent=h?.sources?.length||scan?.sources?.length||0;
+  // badge-sources is set from /api/targets — never overwrite with stale diagnosis data
 }
 
 function renderTarget(){
@@ -1166,16 +1166,11 @@ async function checkCachedDiagnosis(){
 }
 
 async function loadSourcesFallback(){
-  // Load sources from full scan JSON as fallback
+  // Only use stale /api/scan data if we don't have fresh /api/targets data
+  if(scan.sources?.length) return;
   const fullScan=await fetch('/api/scan').then(r=>r.json()).catch(()=>null);
   if(fullScan?.sources?.length){
     scan.sources=fullScan.sources;
-    // Preserve fresh fast-scan totals.skills — don't let stale data overwrite it
-    if(fullScan.totals){
-      const freshCount=scan.totals?.skills;
-      scan.totals=fullScan.totals;
-      if(freshCount)scan.totals.skills=freshCount;
-    }
     renderSources();
     $('badge-sources').textContent=fullScan.sources.length;
   }
@@ -1183,12 +1178,9 @@ async function loadSourcesFallback(){
 
 function applyFullDiagnosis(d){
   health=d;
-  scan.sources=d.sources||scan.sources||[];
-  // Preserve fresh fast-scan totals.skills — cached diagnosis may be stale
-  if(d.totals){
-    const freshCount=scan.totals?.skills;
-    scan.totals=d.totals;
-    if(freshCount)scan.totals.skills=freshCount;
+  // Don't overwrite fresh /api/targets data with stale diagnosis sources
+  if(d.sources?.length && !scan.sources?.length){
+    scan.sources=d.sources;
   }
   renderHealth();renderSimilarity();renderUpstream();renderIssues();renderSources();
   updateDiagBadges();
