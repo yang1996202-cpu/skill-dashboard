@@ -296,6 +296,10 @@ tbody tr:hover{background:var(--bg-hover)}
       <div class="nav-item" onclick="switchView('upstream',this)"><span>🔗</span> 上游追踪 <span class="badge" id="badge-upstream">-</span></div>
       <div class="nav-item" onclick="switchView('issues',this)"><span>⚠️</span> 问题修复 <span class="badge" id="badge-issues">-</span></div>
     </div>
+    <div class="nav-group">
+      <div class="nav-group-label">回收</div>
+      <div class="nav-item" onclick="switchView('trash',this)"><span>🗑</span> 垃圾站 <span class="badge" id="badge-trash">0</span></div>
+    </div>
   </aside>
 
   <div class="main">
@@ -354,6 +358,8 @@ tbody tr:hover{background:var(--bg-hover)}
 
       <!-- Sources -->
       <div class="view" id="view-sources"><div id="sources-list"></div></div>
+      <!-- Trash -->
+      <div class="view" id="view-trash"><div id="trash-list"></div></div>
     </div>
   </div>
 </div>
@@ -438,7 +444,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'全部目录技能'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'全部目录技能',trash:'垃圾站'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
@@ -497,6 +503,7 @@ async function loadData(){
   }
   // Check if there's cached full diagnosis
   checkCachedDiagnosis();
+  loadTrash();
 }
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
@@ -888,6 +895,56 @@ async function cleanupAll(){
   toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);await loadData();
 }
 
+/* ── Trash (垃圾站) ── */
+let trashItems=[];
+async function loadTrash(){
+  try{
+    const d=await fetch('/api/trash').then(r=>r.json());
+    trashItems=d.items||[];
+    $('badge-trash').textContent=trashItems.length;
+    renderTrash();
+  }catch{}
+}
+function renderTrash(){
+  if(!$('trash-list'))return;
+  let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
+    <h3 style="font-size:14px;font-weight:600">🗑 垃圾站</h3>
+    <span style="font-size:11px;color:var(--text-muted)">${trashItems.length} 个已删除项</span>
+  </div>`;
+  if(!trashItems.length){h+='<div class="empty">垃圾站为空</div>';$('trash-list').innerHTML=h;return}
+  trashItems.forEach(t=>{
+    const dateStr=t.trashed_at?t.trashed_at.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/,'$1-$2-$3 $4:$5:$6'):'';
+    h+=`<div class="card" style="margin-bottom:8px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:13px">${t.name}</div>
+          <div style="font-size:11px;color:var(--text-muted)">原路径: ${t.original_path||'未知'} · ${t.skill_count} skills · ${dateStr}</div>
+        </div>
+        <button class="btn btn-sm btn-primary" onclick="restoreTrash('${t.id}')" style="font-size:10px">恢复</button>
+        <button class="btn btn-sm btn-danger" onclick="permanentDeleteTrash('${t.id}','${esc(t.name)}')" style="font-size:10px">永久删除</button>
+      </div>
+    </div>`;
+  });
+  $('trash-list').innerHTML=h;
+}
+async function restoreTrash(id){
+  try{
+    const r=await fetch(`/api/trash/${encodeURIComponent(id)}/restore`,{method:'POST',headers:{'Content-Type':'application/json'}});
+    const d=await r.json();
+    if(d.ok){toast(`已恢复: ${d.restored_to}`);await loadTrash();await loadData()}
+    else{toast(d.error||'恢复失败','error')}
+  }catch{toast('恢复失败','error')}
+}
+async function permanentDeleteTrash(id,name){
+  if(!confirm(`永久删除 ${name}？不可恢复！`))return;
+  try{
+    const r=await fetch(`/api/trash/${encodeURIComponent(id)}`,{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){toast('已永久删除');await loadTrash()}
+    else{toast(d.error||'删除失败','error')}
+  }catch{toast('删除失败','error')}
+}
+
 /* ── Sources (穿透浏览 + 常用目录) ── */
 let sourceSkillsCache={};
 function renderSources(){
@@ -997,22 +1054,24 @@ let srcSelectedSkills=new Set();
 function renderBrowseDir(path,skillList,container){
   const installed=new Set(skills.map(s=>s.name));
   const curTarget=targets.find(t=>t.is_current);
+  const isCurrentTarget=curTarget&&path===curTarget.path;
   let h='';
   if(!skillList.length){h='<div style="padding:6px;color:var(--text-muted)">空目录</div>';container.innerHTML=h;return}
   // Batch actions bar
-  h+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:2px 0">
+  const bId=esc(path).replace(/[^a-z0-9]/gi,'');
+  h+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:2px 0;flex-wrap:wrap">
     <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:3px;cursor:pointer">
-      <input type="checkbox" onchange="toggleAllSrcSkills(this.checked,'${esc(path)}',${JSON.stringify(skillList.map(s=>s.name)).replace(/'/g,"\\'")})" style="cursor:pointer"> 全选
+      <input type="checkbox" id="src-selall-${bId}" onchange="toggleAllSrcSkills(this.checked)" style="cursor:pointer"> 全选
     </label>
-    <button class="btn btn-sm btn-danger" id="src-batch-del-${esc(path).replace(/[^a-z0-9]/gi,'')}" onclick="batchDeleteSrcSkills('${esc(path)}')" disabled style="font-size:9px;padding:2px 6px">批量删除</button>
-    <span style="font-size:10px;color:var(--text-muted)" id="src-sel-count-${esc(path).replace(/[^a-z0-9]/gi,'')}"></span>
+    ${!isCurrentTarget?`<button class="btn btn-sm btn-primary" id="src-batch-sync-${bId}" onclick="batchSyncSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量同步到当前目录</button>`:''}
+    <button class="btn btn-sm btn-danger" id="src-batch-del-${bId}" onclick="batchDeleteSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量删除</button>
+    <span style="font-size:10px;color:var(--text-muted)" id="src-sel-count-${bId}"></span>
   </div>`;
   skillList.forEach(s=>{
     const isInstalled=installed.has(s.name);
-    const isCurrentTarget=curTarget&&path===curTarget.path;
     const selKey=path+'::'+s.name;
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
-      <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill('${esc(path)}','${esc(s.name)}',this)" style="cursor:pointer">
+      <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>
       ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">同步</button>`:''}
       ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
@@ -1020,48 +1079,74 @@ function renderBrowseDir(path,skillList,container){
     </div>`;
   });
   container.innerHTML=h;
-  updateSrcBatchUI(path);
+  updateSrcBatchUI();
 }
-function toggleSrcSkill(path,name,el){
+function toggleSrcSkill(el){
+  const path=el.dataset.path,name=el.dataset.name;
   const key=path+'::'+name;
   if(el.checked)srcSelectedSkills.add(key);else srcSelectedSkills.delete(key);
-  updateSrcBatchUI(path);
+  updateSrcBatchUI();
 }
-function toggleAllSrcSkills(checked,path,names){
-  names.forEach(n=>{const k=path+'::'+n;if(checked)srcSelectedSkills.add(k);else srcSelectedSkills.delete(k)});
-  document.querySelectorAll(`.src-skill-check[data-path="${path}"]`).forEach(c=>c.checked=checked);
-  updateSrcBatchUI(path);
+function toggleAllSrcSkills(checked){
+  document.querySelectorAll('.src-skill-check').forEach(c=>{
+    c.checked=checked;
+    const key=c.dataset.path+'::'+c.dataset.name;
+    if(checked)srcSelectedSkills.add(key);else srcSelectedSkills.delete(key);
+  });
+  updateSrcBatchUI();
 }
-function updateSrcBatchUI(path){
-  const sel=[...srcSelectedSkills].filter(k=>k.startsWith(path+'::'));
-  const id=path.replace(/[^a-z0-9]/gi,'');
-  const btn=document.getElementById('src-batch-del-'+id);
-  const cnt=document.getElementById('src-sel-count-'+id);
-  if(btn)btn.disabled=sel.length===0;
+function updateSrcBatchUI(){
+  const sel=[...srcSelectedSkills];
+  // Find the batch buttons by looking for any src-batch-del id
+  const first=document.querySelector('[id^="src-batch-del-"]');
+  if(!first)return;
+  const bId=first.id.replace('src-batch-del-','');
+  const delBtn=document.getElementById('src-batch-del-'+bId);
+  const syncBtn=document.getElementById('src-batch-sync-'+bId);
+  const cnt=document.getElementById('src-sel-count-'+bId);
+  if(delBtn)delBtn.disabled=sel.length===0;
+  if(syncBtn)syncBtn.disabled=sel.length===0;
   if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
 }
 async function deleteSrcSkill(path,name){
-  if(!confirm(`确认删除 ${name}？`))return;
+  if(!confirm(`确认删除 ${name}？将移入垃圾站`))return;
   try{
     const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});
     const d=await r.json();
-    if(d.ok){toast(`已删除 ${name}`);delete sourceSkillsCache[path];renderSources()}
+    if(d.ok){toast(`${name} 已移入垃圾站`);delete sourceSkillsCache[path];renderSources();loadTrash()}
     else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败','error')}
 }
-async function batchDeleteSrcSkills(path){
-  const sel=[...srcSelectedSkills].filter(k=>k.startsWith(path+'::')).map(k=>k.split('::').slice(1).join('::'));
+async function batchDeleteSrcSkills(){
+  const sel=[...srcSelectedSkills].map(k=>({path:k.split('::')[0],name:k.split('::').slice(1).join('::')}));
   if(!sel.length)return;
-  if(!confirm(`确认删除 ${sel.length} 个 skill？\n\n${sel.join(', ')}`))return;
+  if(!confirm(`确认删除 ${sel.length} 个 skill？将移入垃圾站`))return;
   let ok=0,fail=0;
-  for(const name of sel){
+  for(const{name,path}of sel){
     try{const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}
     catch{fail++}
     srcSelectedSkills.delete(path+'::'+name);
   }
-  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);
-  delete sourceSkillsCache[path];
-  renderSources();
+  toast(`${ok} 个已移入垃圾站${fail?`，${fail} 个失败`:''}`);
+  delete sourceSkillsCache[sel[0].path];
+  renderSources();loadTrash();
+}
+async function batchSyncSrcSkills(){
+  const sel=[...srcSelectedSkills].map(k=>({path:k.split('::')[0],name:k.split('::').slice(1).join('::')}));
+  if(!sel.length)return;
+  const curTarget=targets.find(t=>t.is_current);
+  if(!curTarget)return toast('未选择目标目录','error');
+  if(!confirm(`确认将 ${sel.length} 个 skill 同步到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
+  let ok=0,fail=0;
+  for(const{name,path}of sel){
+    try{
+      const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:path+'/'+name,target:curTarget.path,name})});
+      const d=await r.json();d.ok?ok++:fail++;
+    }catch{fail++}
+  }
+  toast(`已同步 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  srcSelectedSkills.clear();
+  await loadData();
 }
 
 async function stealFromSource(srcPath,skillName){

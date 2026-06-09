@@ -907,6 +907,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(_scan_global_categories())
         elif path == "/api/favorite-dirs":
             self._get_favorite_dirs()
+        elif path == "/api/trash":
+            self._list_trash()
+        elif path.startswith("/api/trash/") and path.endswith("/restore"):
+            self._restore_trash(path)
         elif path.startswith("/api/skill/") and path.endswith("/content"):
             name = self._validate_skill_name(path.split("/")[3])
             if not name:
@@ -957,6 +961,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._delete_skill(name, target or None)
         elif path == "/api/custom-sources":
             self._remove_custom_source()
+        elif path.startswith("/api/trash/"):
+            # Permanent delete: DELETE /api/trash/{trash_dir_name}
+            self._delete_trash(path)
         else:
             self.send_error(404)
 
@@ -1208,6 +1215,77 @@ class DashboardHandler(BaseHTTPRequestHandler):
         (STATE_DIR / "favorite-dirs.json").write_text(
             json.dumps(dirs, ensure_ascii=False, indent=2), encoding="utf-8")
         self._json_response({"ok": True, "count": len(dirs)})
+
+    # ── Trash ──
+
+    def _list_trash(self):
+        """List all trashed skills."""
+        trash_dir = STATE_DIR.parent / "trash"
+        items = []
+        if trash_dir.is_dir():
+            for d in sorted(trash_dir.iterdir(), reverse=True):
+                if not d.is_dir():
+                    continue
+                meta_path = d / ".trash-meta.json"
+                try:
+                    meta = json.loads(meta_path.read_text("utf-8"))
+                except Exception:
+                    meta = {"name": d.name, "original_path": "", "trashed_at": ""}
+                # Count skills inside
+                skill_count = sum(1 for c in d.iterdir() if c.is_dir() and (c / "SKILL.md").exists()) if d.is_dir() else 0
+                items.append({
+                    "id": d.name,
+                    "name": meta.get("name", d.name),
+                    "original_path": meta.get("original_path", ""),
+                    "trashed_at": meta.get("trashed_at", ""),
+                    "skill_count": skill_count,
+                })
+        self._json_response({"items": items, "count": len(items)})
+
+    def _restore_trash(self, path):
+        """Restore a trashed skill to its original location (or current target)."""
+        trash_id = path.split("/api/trash/")[1].replace("/restore", "")
+        trash_dir = STATE_DIR.parent / "trash" / trash_id
+        if not trash_dir.is_dir():
+            self._json_response({"error": "not found"}, status=404)
+            return
+        # Read metadata for original path
+        meta_path = trash_dir / ".trash-meta.json"
+        try:
+            meta = json.loads(meta_path.read_text("utf-8"))
+            original = meta.get("original_path", "")
+        except Exception:
+            original = ""
+        # Determine restore destination
+        if original and Path(original).parent.is_dir():
+            dest = Path(original)
+        else:
+            # Fallback: current target
+            dest = Path(self._current_target()) / meta.get("name", trash_id.split("_", 2)[-1])
+        if dest.exists():
+            self._json_response({"error": f"目标已存在: {dest}", "status": "conflict"}, status=409)
+            return
+        try:
+            # Remove meta file before moving
+            if meta_path.exists():
+                meta_path.unlink()
+            shutil.move(str(trash_dir), str(dest))
+            self._json_response({"ok": True, "restored_to": str(dest)})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
+
+    def _delete_trash(self, path):
+        """Permanently delete a trashed skill."""
+        trash_id = path.split("/api/trash/")[1]
+        trash_dir = STATE_DIR.parent / "trash" / trash_id
+        if not trash_dir.is_dir():
+            self._json_response({"error": "not found"}, status=404)
+            return
+        try:
+            shutil.rmtree(trash_dir)
+            self._json_response({"ok": True, "deleted": trash_id})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
 
     def _fast_scan(self):
         """Direct Python directory scan — milliseconds instead of bash subprocess."""
@@ -1531,15 +1609,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Now do fast scan
         self._fast_scan()
 
+    def _trash_dir(self, skill_dir):
+        """Move a skill directory to trash. Returns trash path."""
+        trash = STATE_DIR.parent / "trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        dest = trash / f"{ts}_{skill_dir.name}"
+        # Avoid collision
+        if dest.exists():
+            for i in range(100):
+                candidate = trash / f"{ts}_{skill_dir.name}_{i}"
+                if not candidate.exists():
+                    dest = candidate
+                    break
+        shutil.move(str(skill_dir), str(dest))
+        # Save metadata for restore
+        meta = {"original_path": str(skill_dir), "trashed_at": ts, "name": skill_dir.name}
+        (dest / ".trash-meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        return dest
+
     def _delete_skill(self, name, target=None):
-        """Delete a skill directory. If target is given, delete from that dir."""
+        """Move a skill to trash. If target is given, delete from that dir."""
         if target:
             target_path = Path(target).expanduser()
             skill_dir = target_path / name
             if skill_dir.is_dir():
                 try:
-                    shutil.rmtree(skill_dir)
-                    self._json_response({"ok": True, "name": name, "removed": str(skill_dir)})
+                    dest = self._trash_dir(skill_dir)
+                    self._json_response({"ok": True, "name": name, "trashed": str(dest)})
                 except Exception as e:
                     self._json_response({"error": str(e)}, status=500)
                 return
@@ -1551,8 +1648,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"error": f"Skill '{name}' not found"}, status=404)
             return
         try:
-            shutil.rmtree(skill_dir)
-            self._json_response({"ok": True, "name": name, "removed": str(skill_dir)})
+            dest = self._trash_dir(skill_dir)
+            self._json_response({"ok": True, "name": name, "trashed": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
 
