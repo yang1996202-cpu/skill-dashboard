@@ -200,7 +200,7 @@ tbody tr:hover{background:var(--bg-hover)}
 .toast.error{border-color:var(--red);color:var(--red)}
 
 /* ── Target switcher — Linear dropdown ── */
-.target-bar{padding:10px 16px;border-bottom:1px solid var(--border);margin-bottom:4px}
+.target-bar{padding:10px 16px;border-bottom:1px solid var(--border);margin-bottom:4px;position:relative}
 .target-label{font-size:11px;letter-spacing:.08em;color:var(--text-muted);font-weight:500;margin-bottom:6px;text-transform:uppercase}
 .target-current{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:6px;background:var(--accent-bg);border:1px solid transparent;cursor:pointer;transition:all .15s ease}
 .target-current:hover{border-color:color-mix(in srgb,var(--accent) 20%,transparent)}
@@ -209,7 +209,7 @@ tbody tr:hover{background:var(--bg-hover)}
 .target-current .t-name{font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .target-current .t-meta{font-size:10px;color:var(--text-muted);display:flex;gap:5px;align-items:center}
 .target-current .t-arrow{font-size:9px;color:var(--text-muted)}
-.target-dropdown{display:none;margin-top:4px;max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);box-shadow:0 4px 16px rgba(0,0,0,.08)}
+.target-dropdown{display:none;margin-top:4px;max-height:420px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);box-shadow:0 4px 16px rgba(0,0,0,.08);position:absolute;left:0;right:0;z-index:40;min-width:360px}
 .target-dropdown.open{display:block}
 .target-opt{display:flex;align-items:center;gap:7px;padding:7px 10px;cursor:pointer;font-size:12px;transition:background .08s;border-bottom:1px solid var(--border-subtle)}
 .target-opt:last-child{border-bottom:none}
@@ -1268,7 +1268,7 @@ async function updateTargetSelector(){
           const scopeClass=t.scope==='global'?'to-global':'to-project';
           return`<div class="target-opt${t.is_current?' active':''}" onclick="event.stopPropagation();switchTarget('${t.path}')" style="padding:6px 10px 6px 28px" title="${t.rel}">
             <span class="to-scope ${scopeClass}" style="font-size:9px">${t.scope==='global'?'🌐':'📁'}</span>
-            <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+            <span style="flex:1;font-size:11px">${t.rel}</span>
             <span class="to-count" style="font-size:10px">${t.count}</span>
           </div>`;
         }).join('')}
