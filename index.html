@@ -446,7 +446,6 @@ function switchView(v,el){
 /* ── Data ── */
 let globalStats=null;
 let favDirs=[];
-let favEditActive=false;
 async function loadFavDirs(){
   try{favDirs=await fetch('/api/favorite-dirs').then(r=>r.json())}catch{favDirs=[]}
 }
@@ -889,7 +888,7 @@ async function cleanupAll(){
   toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);await loadData();
 }
 
-/* ── Sources (穿透浏览 + 收藏管理) ── */
+/* ── Sources (穿透浏览 + 常用目录) ── */
 let sourceSkillsCache={};
 function renderSources(){
   if(!targets.length){$('sources-list').innerHTML='';return}
@@ -899,23 +898,19 @@ function renderSources(){
     <h3 style="font-size:14px;font-weight:600">📚 全部目录技能</h3>
     <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <span style="flex:1"></span>
-    <button class="btn btn-sm" onclick="favEditActive=!favEditActive;renderSources()" style="font-size:11px">${favEditActive?'✓ 完成编辑':'✏️ 管理常用'}</button>
     <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
   </div>`;
-  // Quick-switch chips: favorites first, then top dirs
-  const allMainDirs=targetGroups.map(g=>{
-    const cur=g.dirs.find(t=>t.is_current)||g.dirs[0];
-    return{agent:g.agent,path:cur.path,rel:cur.rel,count:g.total_skills,scope:cur.scope,isCurrent:cur.is_current};
-  }).filter(d=>!d.isCurrent);
-  const favMain=allMainDirs.filter(d=>isFav(d.path)).sort((a,b)=>b.count-a.count);
-  const autoMain=allMainDirs.filter(d=>!isFav(d.path)).sort((a,b)=>b.count-a.count).slice(0,5);
-  const chipDirs=[...favMain,...autoMain].slice(0,10);
+  // Quick-switch chips: favorited individual dirs first
+  const allDirs=targets.filter(t=>!t.is_current).map(t=>({name:t.name,path:t.path,rel:t.rel,count:t.count,scope:t.scope,agent:t.name}));
+  const favDirsList=allDirs.filter(d=>isFav(d.path));
+  const autoDirs=allDirs.filter(d=>!isFav(d.path)).sort((a,b)=>b.count-a.count).slice(0,6-favDirsList.length);
+  const chipDirs=[...favDirsList,...autoDirs].slice(0,8);
   if(chipDirs.length){
-    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">⚡ 快速切换${favMain.length?' · ⭐ 收藏优先':''}</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
+    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">⚡ 快速切换${favDirsList.length?' · ⭐ 常用优先':''}</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
     chipDirs.forEach(d=>{
       const fav=isFav(d.path);
       h+=`<button class="btn btn-sm" onclick="switchTarget('${d.path}')" title="${d.rel}" style="display:inline-flex;align-items:center;gap:4px;${fav?'border-color:var(--amber);background:var(--amber-bg)':''}">
-        <span style="font-size:10px">${fav?'⭐':d.scope==='global'?'🌐':'📁'}</span>${d.agent}<span style="color:var(--text-muted);font-size:10px">${d.count}</span>
+        <span style="font-size:10px">${fav?'⭐':d.scope==='global'?'🌐':'📁'}</span>${d.name}<span style="color:var(--text-muted);font-size:10px">${d.count}</span>
       </button>`;
     });
     h+=`</div></div>`;
@@ -923,34 +918,34 @@ function renderSources(){
   if(targetGroups.length){
     targetGroups.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
-      const mainDir=g.dirs[0];
-      const groupFav=isFav(mainDir.path);
-      const favBtn=favEditActive?`<span onclick="event.stopPropagation();toggleFav('${mainDir.path}')" style="cursor:pointer;font-size:16px;margin-right:4px;flex-shrink:0" title="${groupFav?'取消收藏':'收藏为常用'}">${groupFav?'⭐':'☆'}</span>`:'';
-      h+=`<div class="src-card" style="border:1px solid ${isCurGroup?'var(--accent)':groupFav?'var(--amber)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
+      const hasFav=g.dirs.some(t=>isFav(t.path));
+      h+=`<div class="src-card" style="border:1px solid ${isCurGroup?'var(--accent)':hasFav?'var(--amber)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.src-arrow').style.transform=this.nextElementSibling.style.display==='none'?'':'rotate(90deg)'"
-           style="display:flex;align-items:center;gap:8px;padding:12px 14px;cursor:pointer;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':groupFav?'background:var(--amber-bg)':''}">
-          ${favBtn}
+           style="display:flex;align-items:center;gap:8px;padding:12px 14px;cursor:pointer;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':hasFav?'background:var(--amber-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s">▶</span>
           <div style="flex:1;min-width:0">
             <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
-              ${groupFav&&!favEditActive?'<span style="font-size:9px;color:var(--amber)">⭐ 常用</span>':''}
+              ${hasFav?'<span style="font-size:9px;color:var(--amber)">⭐ 含常用</span>':''}
             </div>
             <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
           </div>
         </div>
-        <div style="display:${isCurGroup||favEditActive?'block':'none'};border-top:1px solid var(--border)">`;
+        <div style="display:${isCurGroup||hasFav?'block':'none'};border-top:1px solid var(--border)">`;
       g.dirs.forEach((t,di)=>{
         const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
         const safeId='sd-'+Math.random().toString(36).slice(2,8);
+        const fav=isFav(t.path);
         h+=`<div style="border-top:1px solid var(--border-subtle)">
-          <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
-            <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
+          <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px;${fav?'background:var(--amber-bg)':''}" title="${t.rel}">
+            <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
             <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
             ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
             <span class="to-count">${t.count}</span>
             ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
+            ${fav?`<span class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);flex-shrink:0;cursor:pointer">⭐ 常用</span>`
+                 :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
             <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
           </div>
           <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -959,8 +954,8 @@ function renderSources(){
       h+=`</div></div>`;
     });
   }else{
-
     targets.forEach((t,di)=>{
+
       const safeId='fb-'+di;
       h+=`<div class="target-opt" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" title="${t.rel}">
         <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
@@ -1288,69 +1283,44 @@ async function updateTargetSelector(){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  // Sort groups: favorites first, then current group, then by skill count
+  // Sort groups: those with favorited dirs first, then current group, then by skill count
   const sorted=[...targetGroups].sort((a,b)=>{
-    const aFav=isFav(a.dirs[0]?.path||'');
-    const bFav=isFav(b.dirs[0]?.path||'');
+    const aHasFav=a.dirs.some(t=>isFav(t.path));
+    const bHasFav=b.dirs.some(t=>isFav(t.path));
     const aCur=a.dirs.some(t=>t.is_current);
     const bCur=b.dirs.some(t=>t.is_current);
     if(aCur!==bCur)return aCur?-1:1;
-    if(aFav!==bFav)return aFav?-1:1;
+    if(aHasFav!==bHasFav)return aHasFav?-1:1;
     return b.total_skills-a.total_skills;
   });
   // Show groups with expandable sub-directories (two-level menu)
   $('target-dropdown').innerHTML=sorted.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
-    const curInGroup=g.dirs.find(t=>t.is_current);
-    const mainPath=g.dirs[0]?.path||'';
-    const groupFav=isFav(mainPath);
     const gId='tg-'+g.agent.replace(/[^a-zA-Z0-9]/g,'');
     return`<div class="tg-wrap${isCurGroup?' tg-active':''}" style="border-bottom:1px solid var(--border-subtle)">
       <div class="target-opt" onclick="toggleTgSub('${gId}',this)" style="padding:8px 10px">
         <span style="font-size:11px;transition:transform .15s" id="${gId}-arrow">${isCurGroup?'▼':'▶'}</span>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}${groupFav?'<span style="font-size:9px;color:var(--amber);font-weight:400">⭐</span>':''}</div>
+          <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}</div>
           <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
         </div>
       </div>
       <div id="${gId}" style="display:${isCurGroup?'block':'none'};background:var(--bg-card-alt)">
         ${g.dirs.map(t=>{
           const scopeClass=t.scope==='global'?'to-global':'to-project';
+          const fav=isFav(t.path);
           return`<div class="target-opt${t.is_current?' active':''}" onclick="event.stopPropagation();switchTarget('${t.path}')" style="padding:6px 10px 6px 28px" title="${t.rel}">
-            <span class="to-scope ${scopeClass}" style="font-size:9px">${t.scope==='global'?'🌐':'📁'}</span>
+            <span class="to-scope ${scopeClass}" style="font-size:9px">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
             <span style="flex:1;font-size:11px">${t.rel}</span>
+            ${fav?'<span style="font-size:9px;color:var(--amber)">常用</span>':''}
             <span class="to-count" style="font-size:10px">${t.count}</span>
           </div>`;
         }).join('')}
       </div>
     </div>`;
-  }).join('')+
-  `<div style="padding:6px 10px;border-top:1px solid var(--border);text-align:center">
-    <button class="btn btn-sm" onclick="showFavManager()" style="font-size:11px;width:100%">⚙ 管理常用目录</button>
-  </div>`;
+  }).join('');
   $('badge-sources').textContent=targetGroups.length||targets.length;
   renderStats();renderSources();
-}
-
-function showFavManager(){
-  $('target-dropdown').classList.remove('open');
-  $('modal-title').textContent='管理常用目录';
-  let h='<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">';
-  h+='<div style="margin-bottom:12px;color:var(--text-muted);font-size:11px">⭐ 收藏的应用会置顶显示在常用目录切换区</div>';
-  targetGroups.forEach(g=>{
-    const mainPath=g.dirs[0]?.path||'';
-    const fav=isFav(mainPath);
-    h+=`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid ${fav?'var(--amber)':'var(--border)'};border-radius:8px;margin-bottom:6px;background:${fav?'var(--amber-bg)':'var(--bg-card)'}">
-      <span onclick="toggleFav('${mainPath}')" style="cursor:pointer;font-size:20px;flex-shrink:0" title="${fav?'取消收藏':'收藏'}">${fav?'⭐':'☆'}</span>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:13px">${g.agent}</div>
-        <div style="font-size:11px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
-      </div>
-    </div>`;
-  });
-  h+='</div>';
-  $('modal-body').innerHTML=h;
-  $('modal').classList.remove('hidden');
 }
 
 function toggleTgSub(id,head){
