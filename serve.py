@@ -947,12 +947,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._csrf_reject()
             return
         path = urlparse(self.path).path
+        query = parse_qs(urlparse(self.path).query)
         if path.startswith("/api/skill/"):
             name = self._validate_skill_name(path.split("/")[3])
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
-                self._delete_skill(name)
+                target = query.get("target", [""])[0]
+                self._delete_skill(name, target or None)
         elif path == "/api/custom-sources":
             self._remove_custom_source()
         else:
@@ -1529,9 +1531,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Now do fast scan
         self._fast_scan()
 
-    def _delete_skill(self, name):
-        """Delete a skill directory."""
-        # Resolve skill path from scan data
+    def _delete_skill(self, name, target=None):
+        """Delete a skill directory. If target is given, delete from that dir."""
+        if target:
+            target_path = Path(target).expanduser()
+            skill_dir = target_path / name
+            if skill_dir.is_dir():
+                try:
+                    shutil.rmtree(skill_dir)
+                    self._json_response({"ok": True, "name": name, "removed": str(skill_dir)})
+                except Exception as e:
+                    self._json_response({"error": str(e)}, status=500)
+                return
+            self._json_response({"error": f"Skill '{name}' not found in {target}"}, status=404)
+            return
+        # Default: resolve from scan data
         skill_dir = self._resolve_skill_dir(name)
         if not skill_dir:
             self._json_response({"error": f"Skill '{name}' not found"}, status=404)

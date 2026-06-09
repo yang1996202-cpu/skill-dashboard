@@ -993,22 +993,75 @@ async function browseSourceDir(safeId,path,head){
   }catch(e){container.innerHTML='<div style="padding:6px;color:var(--red)">加载失败</div>'}
 }
 
+let srcSelectedSkills=new Set();
 function renderBrowseDir(path,skillList,container){
   const installed=new Set(skills.map(s=>s.name));
   const curTarget=targets.find(t=>t.is_current);
   let h='';
   if(!skillList.length){h='<div style="padding:6px;color:var(--text-muted)">空目录</div>';container.innerHTML=h;return}
+  // Batch actions bar
+  h+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:2px 0">
+    <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:3px;cursor:pointer">
+      <input type="checkbox" onchange="toggleAllSrcSkills(this.checked,'${esc(path)}',${JSON.stringify(skillList.map(s=>s.name)).replace(/'/g,"\\'")})" style="cursor:pointer"> 全选
+    </label>
+    <button class="btn btn-sm btn-danger" id="src-batch-del-${esc(path).replace(/[^a-z0-9]/gi,'')}" onclick="batchDeleteSrcSkills('${esc(path)}')" disabled style="font-size:9px;padding:2px 6px">批量删除</button>
+    <span style="font-size:10px;color:var(--text-muted)" id="src-sel-count-${esc(path).replace(/[^a-z0-9]/gi,'')}"></span>
+  </div>`;
   skillList.forEach(s=>{
     const isInstalled=installed.has(s.name);
     const isCurrentTarget=curTarget&&path===curTarget.path;
+    const selKey=path+'::'+s.name;
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
-      <span style="font-size:10px">${isInstalled?'✓':'○'}</span>
+      <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill('${esc(path)}','${esc(s.name)}',this)" style="cursor:pointer">
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>
-      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">同步到目标库</button>`:''}
+      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">同步</button>`:''}
       ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
+      <button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>
     </div>`;
   });
   container.innerHTML=h;
+  updateSrcBatchUI(path);
+}
+function toggleSrcSkill(path,name,el){
+  const key=path+'::'+name;
+  if(el.checked)srcSelectedSkills.add(key);else srcSelectedSkills.delete(key);
+  updateSrcBatchUI(path);
+}
+function toggleAllSrcSkills(checked,path,names){
+  names.forEach(n=>{const k=path+'::'+n;if(checked)srcSelectedSkills.add(k);else srcSelectedSkills.delete(k)});
+  document.querySelectorAll(`.src-skill-check[data-path="${path}"]`).forEach(c=>c.checked=checked);
+  updateSrcBatchUI(path);
+}
+function updateSrcBatchUI(path){
+  const sel=[...srcSelectedSkills].filter(k=>k.startsWith(path+'::'));
+  const id=path.replace(/[^a-z0-9]/gi,'');
+  const btn=document.getElementById('src-batch-del-'+id);
+  const cnt=document.getElementById('src-sel-count-'+id);
+  if(btn)btn.disabled=sel.length===0;
+  if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
+}
+async function deleteSrcSkill(path,name){
+  if(!confirm(`确认删除 ${name}？`))return;
+  try{
+    const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){toast(`已删除 ${name}`);delete sourceSkillsCache[path];renderSources()}
+    else{toast(d.error||'删除失败','error')}
+  }catch(e){toast('删除失败','error')}
+}
+async function batchDeleteSrcSkills(path){
+  const sel=[...srcSelectedSkills].filter(k=>k.startsWith(path+'::')).map(k=>k.split('::').slice(1).join('::'));
+  if(!sel.length)return;
+  if(!confirm(`确认删除 ${sel.length} 个 skill？\n\n${sel.join(', ')}`))return;
+  let ok=0,fail=0;
+  for(const name of sel){
+    try{const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}
+    catch{fail++}
+    srcSelectedSkills.delete(path+'::'+name);
+  }
+  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  delete sourceSkillsCache[path];
+  renderSources();
 }
 
 async function stealFromSource(srcPath,skillName){
