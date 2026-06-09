@@ -1288,16 +1288,28 @@ async function updateTargetSelector(){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
+  // Sort groups: favorites first, then current group, then by skill count
+  const sorted=[...targetGroups].sort((a,b)=>{
+    const aFav=isFav(a.dirs[0]?.path||'');
+    const bFav=isFav(b.dirs[0]?.path||'');
+    const aCur=a.dirs.some(t=>t.is_current);
+    const bCur=b.dirs.some(t=>t.is_current);
+    if(aCur!==bCur)return aCur?-1:1;
+    if(aFav!==bFav)return aFav?-1:1;
+    return b.total_skills-a.total_skills;
+  });
   // Show groups with expandable sub-directories (two-level menu)
-  $('target-dropdown').innerHTML=targetGroups.map(g=>{
+  $('target-dropdown').innerHTML=sorted.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
     const curInGroup=g.dirs.find(t=>t.is_current);
+    const mainPath=g.dirs[0]?.path||'';
+    const groupFav=isFav(mainPath);
     const gId='tg-'+g.agent.replace(/[^a-zA-Z0-9]/g,'');
     return`<div class="tg-wrap${isCurGroup?' tg-active':''}" style="border-bottom:1px solid var(--border-subtle)">
       <div class="target-opt" onclick="toggleTgSub('${gId}',this)" style="padding:8px 10px">
         <span style="font-size:11px;transition:transform .15s" id="${gId}-arrow">${isCurGroup?'▼':'▶'}</span>
         <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}</div>
+          <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}${groupFav?'<span style="font-size:9px;color:var(--amber);font-weight:400">⭐</span>':''}</div>
           <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
         </div>
       </div>
@@ -1312,9 +1324,33 @@ async function updateTargetSelector(){
         }).join('')}
       </div>
     </div>`;
-  }).join('');
+  }).join('')+
+  `<div style="padding:6px 10px;border-top:1px solid var(--border);text-align:center">
+    <button class="btn btn-sm" onclick="showFavManager()" style="font-size:11px;width:100%">⚙ 管理常用目录</button>
+  </div>`;
   $('badge-sources').textContent=targetGroups.length||targets.length;
   renderStats();renderSources();
+}
+
+function showFavManager(){
+  $('target-dropdown').classList.remove('open');
+  $('modal-title').textContent='管理常用目录';
+  let h='<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">';
+  h+='<div style="margin-bottom:12px;color:var(--text-muted);font-size:11px">⭐ 收藏的应用会置顶显示在常用目录切换区</div>';
+  targetGroups.forEach(g=>{
+    const mainPath=g.dirs[0]?.path||'';
+    const fav=isFav(mainPath);
+    h+=`<div style="display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid ${fav?'var(--amber)':'var(--border)'};border-radius:8px;margin-bottom:6px;background:${fav?'var(--amber-bg)':'var(--bg-card)'}">
+      <span onclick="toggleFav('${mainPath}')" style="cursor:pointer;font-size:20px;flex-shrink:0" title="${fav?'取消收藏':'收藏'}">${fav?'⭐':'☆'}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:600;font-size:13px">${g.agent}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
+      </div>
+    </div>`;
+  });
+  h+='</div>';
+  $('modal-body').innerHTML=h;
+  $('modal').classList.remove('hidden');
 }
 
 function toggleTgSub(id,head){
