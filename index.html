@@ -894,7 +894,7 @@ function renderIssues(){
     fixCards+=`</div>`;
   }
   if(noDesc.length){
-    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📝 缺少描述</h3><span class="sub">${noDesc.length} 个</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${noDesc.map(n=>`'${esc(n)}'`).join(',')}],'缺描述')" style="font-size:10px;padding:2px 8px">批量删除</button></div>`;
+    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📝 缺少描述</h3><span class="sub">${noDesc.length} 个</span><span style="flex:1"></span></div>`;
     noDesc.forEach(name=>{
       fixCards+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${name}</div><div style="font-size:11px;color:var(--text-muted)">没有 description 字段</div></div>
@@ -904,7 +904,7 @@ function renderIssues(){
     fixCards+=`</div>`;
   }
   if(brokenOnly.length){
-    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔗 损坏的链接</h3><span class="sub">${brokenOnly.length} 个</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${brokenOnly.map(i=>`'${esc(i.name)}'`).join(',')}],'损坏链接')" style="font-size:10px;padding:2px 8px">批量删除</button></div>`;
+    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔗 损坏的链接</h3><span class="sub">${brokenOnly.length} 个</span><span style="flex:1"></span></div>`;
     brokenOnly.forEach(i=>{
       fixCards+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${i.name}</div><div style="font-size:11px;color:var(--text-muted)">符号链接指向不存在的目标</div></div>
