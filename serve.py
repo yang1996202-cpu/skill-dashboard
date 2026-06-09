@@ -1417,6 +1417,15 @@ _diag_phase = ""
 class DashboardHandler(BaseHTTPRequestHandler):
     """Serve index.html and API endpoints."""
 
+    def _read_json(self):
+        """Read and parse JSON body from request. Returns dict or None."""
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            body = self.rfile.read(length).decode('utf-8') if length else '{}'
+            return json.loads(body)
+        except Exception:
+            return None
+
     @staticmethod
     def _validate_skill_name(name):
         """Sanitize skill name from URL. Rejects path traversal attempts."""
@@ -1891,6 +1900,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _restore_trash(self, path):
         """Restore a trashed skill to its original location (or current target)."""
         trash_id = path.split("/api/trash/")[1].replace("/restore", "")
+        if '..' in trash_id or '/' in trash_id or '\\' in trash_id:
+            self._json_response({"error": "invalid trash id"}, status=400)
+            return
         trash_dir = STATE_DIR.parent / "trash" / trash_id
         if not trash_dir.is_dir():
             self._json_response({"error": "not found"}, status=404)
@@ -1923,6 +1935,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _delete_trash(self, path):
         """Permanently delete a trashed skill."""
         trash_id = path.split("/api/trash/")[1]
+        if '..' in trash_id or '/' in trash_id or '\\' in trash_id:
+            self._json_response({"error": "invalid trash id"}, status=400)
+            return
         trash_dir = STATE_DIR.parent / "trash" / trash_id
         if not trash_dir.is_dir():
             self._json_response({"error": "not found"}, status=404)
@@ -2277,7 +2292,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _delete_skill(self, name, target=None):
         """Move a skill to trash. If target is given, delete from that dir."""
         if target:
-            target_path = Path(target).expanduser()
+            target_path = Path(target).expanduser().resolve()
+            # Validate target is under home directory
+            if not target_path.is_relative_to(Path.home()):
+                self._json_response({"error": "target must be under home directory"}, status=400)
+                return
             skill_dir = target_path / name
             if skill_dir.is_dir():
                 try:
@@ -2371,14 +2390,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         src_path = body.get("src", "")
         target = body.get("target", "") or self._current_target()
         skill_name = body.get("name", "")
+        skill_name = self._validate_skill_name(skill_name)
         if not src_path or not skill_name:
             self._json_response({"ok": False, "error": "缺少 src 或 name"}, 400)
             return
-        src_dir = Path(src_path)
+        src_dir = Path(src_path).expanduser().resolve()
         if not src_dir.is_dir() or not (src_dir / "SKILL.md").exists():
             self._json_response({"ok": False, "error": f"源目录不存在: {src_path}"}, 400)
             return
-        target_dir = Path(target)
+        if not src_dir.is_relative_to(Path.home()):
+            self._json_response({"ok": False, "error": "src must be under home directory"}, 400)
+            return
+        target_dir = Path(target).expanduser().resolve()
+        if not target_dir.is_relative_to(Path.home()):
+            self._json_response({"ok": False, "error": "target must be under home directory"}, 400)
+            return
         dest = target_dir / skill_name
         # Snapshot if exists
         if dest.exists():

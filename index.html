@@ -921,7 +921,9 @@ function renderIssues(){
   if(overlaps.length){
     const curLabel=targets.find(t=>t.is_current)?.name||'当前目录';
     const overlapNames=[...new Set(overlaps.flatMap(g=>g.skills))];
-    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${curLabel} 内相似</h3><span class="sub">${overlaps.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${overlapNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill')" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+    // Build targets from skills_meta
+    const overlapTargets=overlapNames.map(n=>{const m=(overlaps.find(g=>g.skills_meta&&g.skills_meta[n])||{}).skills_meta||{};return m[n]?.dir||'';});
+    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${curLabel} 内相似</h3><span class="sub">${overlaps.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${overlapNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill',[${overlapTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
       <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">当前目录内 TF-IDF 全文比对，相似度 ≥45%</div>`;
     overlaps.forEach(g=>{
       const pct=Math.round((g.score||0)*100);
@@ -936,11 +938,12 @@ function renderIssues(){
         <div style="display:none;padding:6px 12px 10px">
           ${g.skills.map(s=>{
             const m=meta[s]||{};
+            const sDir=m.dir||'';
             return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
               <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
               <button class="btn btn-sm" onclick="showSkill('${esc(s)}')" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this)" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -955,7 +958,9 @@ function renderIssues(){
   agentNames.forEach(agent=>{
     const groups=agentSimilar[agent];
     const groupNames=[...new Set(groups.flatMap(g=>g.skills))];
-    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${groupNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill')" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+    // Build targets from skills_meta
+    const groupTargets=groupNames.map(n=>{const m=(groups.find(g=>g.skills_meta&&g.skills_meta[n])||{}).skills_meta||{};return m[n]?.dir||'';});
+    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${groupNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill',[${groupTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
       <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录 TF-IDF 全文比对，相似度 ≥45%</div>`;
     groups.forEach(g=>{
       const pct=Math.round((g.score||0)*100);
@@ -970,11 +975,12 @@ function renderIssues(){
         <div style="display:none;padding:6px 12px 10px">
           ${g.skills.map(s=>{
             const m=meta[s]||{};
+            const sDir=m.dir||'';
             return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
               <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
               <button class="btn btn-sm" onclick="showSkill('${esc(s)}')" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this)" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -997,8 +1003,11 @@ function renderIssues(){
     });
     const snAgentList=Object.entries(snByAgent).sort((a,b)=>b[1].length-a[1].length);
     snAgentList.forEach(([agent,dups])=>{
-      const groupNames=[...new Set(dups.flatMap(d=>d.locations.filter(l=>(l.agent||'其他')===agent).map(l=>l.name||d.name)))];
-      sameNameCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${groupNames.map(n=>`'${esc(n)}'`).join(',')}],'同名 skill')" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+      // Build parallel name/target arrays — keep ALL locations (no dedup by name)
+      const agentLocsAll=dups.flatMap(d=>d.locations.filter(l=>(l.agent||'其他')===agent).map(l=>({name:l.name||d.name,dir:l.dir})));
+      const batchNames=agentLocsAll.map(l=>l.name);
+      const batchTargets=agentLocsAll.map(l=>l.dir);
+      sameNameCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${batchNames.map(n=>`'${esc(n)}'`).join(',')}],'同名 skill',[${batchTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 下不同目录同名但内容不同的 skill</div>`;
       dups.forEach(dup=>{
         const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
@@ -1016,7 +1025,7 @@ function renderIssues(){
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(loc.name||dup.name)}')">${loc.name||dup.name}</span>
                 <span style="font-size:9px;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(loc.dir)}">${shortDir}</span>
                 <button class="btn btn-sm" onclick="showSkill('${esc(loc.name||dup.name)}')" style="font-size:9px;padding:2px 6px">查看</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(loc.name||dup.name)}',this)" style="font-size:9px;padding:2px 6px">删</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(loc.name||dup.name)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
             }).join('')}
           </div>
@@ -1088,20 +1097,24 @@ async function rehashSkill(name,btn){
   catch(e){toast('更新失败','error')}finally{btn.disabled=false;btn.textContent='重新记录'}
 }
 
-async function deleteSkill(name,btn){
+async function deleteSkill(name,btn,target){
   if(!confirm(`确认删除 skill "${name}"？`))return;
   if(btn){btn.disabled=true;btn.textContent='删除中...';}
-  try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();
+  const url=target?`/api/skill/${name}?target=${encodeURIComponent(target)}`:`/api/skill/${name}`;
+  try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();
     if(d.ok){toast(`已删除 ${name}`);await loadData()}else toast(d.error||'删除失败','error')}
   catch(e){toast('删除失败','error')}finally{if(btn){btn.disabled=false;btn.textContent='删除';}}
 }
 
-async function batchDeleteNames(names,label){
+async function batchDeleteNames(names,label,targets){
   if(!names||!names.length)return;
   if(!confirm(`确认批量删除 ${names.length} 个${label?`「${label}」`:''} skill？\n\n将移到回收站：\n${names.join(', ')}`))return;
   let ok=0,fail=0;
-  for(const name of names){
-    try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
+  for(let i=0;i<names.length;i++){
+    const name=names[i];
+    const t=targets&&targets[i]?targets[i]:null;
+    const url=t?`/api/skill/${name}?target=${encodeURIComponent(t)}`:`/api/skill/${name}`;
+    try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
     catch{fail++;}
   }
   toast(`${label||'批量删除'}: 已删 ${ok} 个${fail>0?`，${fail} 个失败`:''}`);
