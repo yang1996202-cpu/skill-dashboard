@@ -944,7 +944,7 @@ function renderSources(){
             ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
             <span class="to-count">${t.count}</span>
             ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
-            ${fav?`<span class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);flex-shrink:0;cursor:pointer">⭐ 常用</span>`
+            ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
                  :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
             <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
           </div>
