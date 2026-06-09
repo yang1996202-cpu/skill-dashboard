@@ -271,7 +271,7 @@ tbody tr:hover{background:var(--bg-hover)}
     </div>
     <!-- Target switcher — below logo -->
     <div class="target-bar">
-      <div class="target-label">目标库</div>
+      <div class="target-label">常用目录技能</div>
       <div class="target-current" id="target-btn" onclick="toggleTargetDropdown()">
         <span class="t-icon" id="t-icon">🌐</span>
         <div class="t-info">
@@ -285,8 +285,8 @@ tbody tr:hover{background:var(--bg-hover)}
     <div class="nav-group">
       <div class="nav-group-label">概览</div>
       <div class="nav-item active" onclick="switchView('dashboard',this)"><span>🏠</span> 仪表盘 <span class="badge" id="badge-health">-</span></div>
-      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 全量技能库 <span class="badge" id="badge-sources">-</span></div>
-      <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 当前目标库 <span class="badge" id="badge-skills">-</span></div>
+      <div class="nav-item" onclick="switchView('sources',this)"><span>📚</span> 全部目录技能 <span class="badge" id="badge-sources">-</span></div>
+      <div class="nav-item" onclick="switchView('skills',this)"><span>📦</span> 当前目录技能 <span class="badge" id="badge-skills">-</span></div>
     </div>
     <div class="nav-group">
       <div class="nav-group-label">诊断</div>
@@ -437,7 +437,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目标库',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'全量技能库'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',similar:'相似度检测',upstream:'上游追踪',issues:'问题修复',sources:'全部目录技能'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
@@ -611,7 +611,7 @@ function renderCategories(){
   const localTotal=skills.length||1;
   const localCats=Object.entries(localCm).sort((a,b)=>b[1]-a[1]);
   const localMx=localCats[0]?.[1]||1;
-  const curLabel=targets.find(t=>t.is_current)?.name||'当前目标库';
+  const curLabel=targets.find(t=>t.is_current)?.name||'当前目录技能';
 
   if(globalStats){
     // Global distribution
@@ -881,10 +881,24 @@ function renderSources(){
   try{
   const curTarget=targets.find(t=>t.is_current);
   let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-    <h3 style="font-size:14px;font-weight:600">📚 技能库</h3>
+    <h3 style="font-size:14px;font-weight:600">📚 全部目录技能</h3>
     <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()" style="margin-left:auto">＋ 添加来源</button>
   </div>`;
+  // Quick-switch: show primary directory from each group as clickable chips
+  const mainDirs=targetGroups.map(g=>{
+    const cur=g.dirs.find(t=>t.is_current)||g.dirs[0];
+    return{agent:g.agent,path:cur.path,rel:cur.rel,count:g.total_skills,scope:cur.scope,isCurrent:cur.is_current};
+  }).filter(d=>!d.isCurrent).sort((a,b)=>b.count-a.count).slice(0,8);
+  if(mainDirs.length){
+    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">⚡ 快速切换到常用目录</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
+    mainDirs.forEach(d=>{
+      h+=`<button class="btn btn-sm" onclick="switchTarget('${d.path}')" title="${d.rel}" style="display:inline-flex;align-items:center;gap:4px">
+        <span style="font-size:10px">${d.scope==='global'?'🌐':'📁'}</span>${d.agent}<span style="color:var(--text-muted);font-size:10px">${d.count}</span>
+      </button>`;
+    });
+    h+=`</div></div>`;
+  }
   if(targetGroups.length){
     targetGroups.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
