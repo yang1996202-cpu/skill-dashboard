@@ -902,7 +902,7 @@ function renderSources(){
           </div>
         </div>
         <div style="display:${isCurGroup?'block':'none'};border-top:1px solid var(--border)">`;
-      // Directory entries — click to browse skills, NOT to switch target
+      // Directory entries — click to browse skills, with switch action
       g.dirs.forEach((t,di)=>{
         const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
         const safeId='sd-'+Math.random().toString(36).slice(2,8);
@@ -912,6 +912,7 @@ function renderSources(){
             <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
             ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
             <span class="to-count">${t.count}</span>
+            ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
             <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
           </div>
           <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -1249,24 +1250,42 @@ async function updateTargetSelector(){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  // Show one entry per group (main directory), click to switch
+  // Show groups with expandable sub-directories (two-level menu)
   $('target-dropdown').innerHTML=targetGroups.map(g=>{
-    const mainDir=g.dirs[0];
-    const isCur=g.dirs.some(t=>t.is_current);
+    const isCurGroup=g.dirs.some(t=>t.is_current);
     const curInGroup=g.dirs.find(t=>t.is_current);
-    const displayDir=curInGroup||mainDir;
-    const scopeClass=displayDir.scope==='global'?'to-global':'to-project';
-    return`<div class="target-opt${isCur?' active':''}" onclick="switchTarget('${displayDir.path}')">
-      <span class="to-scope ${scopeClass}">${displayDir.scope==='global'?'🌐':'📁'}</span>
-      <div style="flex:1;min-width:0">
-        <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${g.dirs.length>1?`<span style="font-size:9px;color:var(--text-muted);font-weight:400">(${g.dirs.length} dirs)</span>`:''}</div>
-        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayDir.rel}</div>
+    const gId='tg-'+g.agent.replace(/[^a-zA-Z0-9]/g,'');
+    return`<div class="tg-wrap${isCurGroup?' tg-active':''}" style="border-bottom:1px solid var(--border-subtle)">
+      <div class="target-opt" onclick="toggleTgSub('${gId}',this)" style="padding:8px 10px">
+        <span style="font-size:11px;transition:transform .15s" id="${gId}-arrow">${isCurGroup?'▼':'▶'}</span>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}</div>
+          <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
+        </div>
       </div>
-      <span class="to-count">${displayDir.count}</span>
+      <div id="${gId}" style="display:${isCurGroup?'block':'none'};background:var(--bg-card-alt)">
+        ${g.dirs.map(t=>{
+          const scopeClass=t.scope==='global'?'to-global':'to-project';
+          return`<div class="target-opt${t.is_current?' active':''}" onclick="event.stopPropagation();switchTarget('${t.path}')" style="padding:6px 10px 6px 28px" title="${t.rel}">
+            <span class="to-scope ${scopeClass}" style="font-size:9px">${t.scope==='global'?'🌐':'📁'}</span>
+            <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+            <span class="to-count" style="font-size:10px">${t.count}</span>
+          </div>`;
+        }).join('')}
+      </div>
     </div>`;
   }).join('');
   $('badge-sources').textContent=targetGroups.length||targets.length;
   renderStats();renderSources();
+}
+
+function toggleTgSub(id,head){
+  const sub=$(id);
+  const arrow=$(id+'-arrow');
+  if(!sub)return;
+  const isOpen=sub.style.display!=='none';
+  sub.style.display=isOpen?'none':'block';
+  if(arrow)arrow.textContent=isOpen?'▶':'▼';
 }
 
 async function switchTarget(path){
