@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Skill Dashboard — 零依赖本地 WebUI，可视化管理 AI skill 文件"""
 
+import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -13,6 +15,7 @@ import time
 import urllib.request
 import urllib.parse
 import webbrowser
+from collections import Counter
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
@@ -125,6 +128,463 @@ def _read_skill_description(skill_dir):
     except Exception:
         pass
     return ""
+
+
+# ── TF-IDF similarity detection ──
+
+_TFIDF_STOP = frozenset((
+    # English
+    "the","be","to","of","and","a","in","that","have","i","it","for","not","on","with",
+    "he","as","you","do","at","this","but","his","by","from","they","we","say","her",
+    "she","or","an","will","my","one","all","would","there","their","what","so","up",
+    "out","if","about","who","get","which","go","me","when","make","can","like","time",
+    "no","just","him","know","take","people","into","year","your","good","some","could",
+    "them","see","other","than","then","now","look","only","come","its","over","think",
+    "also","back","after","use","two","how","our","work","first","well","way","even",
+    "new","want","because","any","these","give","day","most","us","is","are","was",
+    "were","been","being","has","had","did","does","done","shall","should","may",
+    "might","must","need","let","very","much","more","many","such","each","every",
+    "own","same","both","few","too","here","where","why","while","during","before",
+    "between","after","above","below","through","under","again","further","once",
+    # Skill-specific noise
+    "skill","claude","code","agent","tool","use","using","used","file","files","run",
+    "running","command","commands","help","when","ask","this","that","will","task",
+    "set","based","add","create","write","read","update","check","example","review",
+    "test","build","autom","automat","perform","allows","provide","supports",
+    "including","default","following","specific","via","user","users","project",
+    "note","the","and","for","with","from","your","also","can","run","all","code",
+    # Chinese
+    "的","了","在","是","我","有","和","就","不","人","都","一","一个","上","也","很",
+    "到","说","要","去","你","会","着","没有","看","好","自己","这","他","她","它","们",
+    "那","些","什么","怎么","如果","因为","所以","但","但是","而且","或者","可以","已经",
+    "这个","那个","还是","就是","不是","可能","需要","应该","使用","进行","可以","以及",
+    "通过","根据","关于","对于","由于","之间","一些","这些","那些","然后","此外",
+    "功能","工具","使用","提供","支持","运行","执行","操作","命令","文件","目录",
+    "项目","设置","配置","自动","管理","分析","检查","处理","生成","创建","修改",
+    "包括","默认","指定","相关","确保","建议","参考","文档","注意","代码",
+))
+
+
+def _tfidf_tokenize(text):
+    """Mixed Chinese/English tokenizer for TF-IDF."""
+    text = text.lower()
+    # English words (2+ letters)
+    en_tokens = re.findall(r'[a-z]{2,}', text)
+    # Chinese segments (2+ chars) → bigram split for long segments
+    cn_tokens = []
+    for seg in re.findall(r'[一-鿿]{2,}', text):
+        if len(seg) == 2:
+            cn_tokens.append(seg)
+        else:
+            # sliding bigram
+            for i in range(len(seg) - 1):
+                cn_tokens.append(seg[i:i + 2])
+    tokens = [t for t in en_tokens + cn_tokens if t not in _TFIDF_STOP]
+    return tokens
+
+
+def compute_tfidf_similarity(target_path, skills_data):
+    """Compute pairwise TF-IDF cosine similarity between skills.
+    Returns list of overlap groups with scores.
+    """
+    target_dir = Path(target_path)
+    target_agent = _agent_from_path(target_path)
+    if not target_dir.is_dir() or len(skills_data) <= 1:
+        return []
+    # Skip for very large collections (let full diagnosis handle it)
+    if len(skills_data) > 100:
+        return []
+
+    # Check cache (5-min TTL)
+    cache_key = _cache_path(target_path)
+    tfidf_cache = cache_key.parent / f"tfidf-{cache_key.name}"
+    if tfidf_cache.exists():
+        try:
+            cached = json.loads(tfidf_cache.read_text("utf-8"))
+            if time.time() - cached.get("_ts", 0) < 300:
+                return cached.get("groups", [])
+        except Exception:
+            pass
+
+    # Step 1: Read full SKILL.md content for each skill
+    docs = {}
+    for s in skills_data:
+        name = s["name"]
+        skill_md = target_dir / name / "SKILL.md"
+        if skill_md.exists():
+            try:
+                content = skill_md.read_text("utf-8", errors="ignore")
+                docs[name] = content
+            except Exception:
+                docs[name] = ""
+        else:
+            docs[name] = ""
+
+    if len(docs) <= 1:
+        return []
+
+    # Step 2: Tokenize
+    tokenized = {name: _tfidf_tokenize(text) for name, text in docs.items()}
+    # Filter out docs with no tokens
+    tokenized = {k: v for k, v in tokenized.items() if v}
+    if len(tokenized) <= 1:
+        return []
+
+    names = list(tokenized.keys())
+    N = len(names)
+
+    # Step 3: Build TF-IDF vectors
+    # Document frequency
+    df = Counter()
+    for tokens in tokenized.values():
+        unique_tokens = set(tokens)
+        for t in unique_tokens:
+            df[t] += 1
+
+    # IDF
+    idf = {t: math.log(N / (cnt + 1)) for t, cnt in df.items()}
+
+    # TF-IDF vectors (sparse: dict of token -> weight)
+    vectors = {}
+    for name in names:
+        tf = Counter(tokenized[name])
+        total_terms = sum(tf.values())
+        if total_terms == 0:
+            vectors[name] = {}
+            continue
+        vec = {}
+        for t, cnt in tf.items():
+            tfidf = (cnt / total_terms) * idf.get(t, 0)
+            if tfidf > 0:
+                vec[t] = tfidf
+        # Normalize to unit length
+        norm = math.sqrt(sum(v * v for v in vec.values()))
+        if norm > 0:
+            vec = {t: v / norm for t, v in vec.items()}
+        vectors[name] = vec
+
+    # Step 4: Pairwise cosine similarity (dot product of unit vectors)
+    THRESHOLD = 0.45
+    # Build similar pairs only (no transitive grouping — prevents chain inflation)
+    pairs = []
+    for i in range(N):
+        vi = vectors[names[i]]
+        if not vi:
+            continue
+        for j in range(i + 1, N):
+            vj = vectors[names[j]]
+            if not vj:
+                continue
+            common_keys = vi.keys() & vj.keys()
+            sim = sum(vi[k] * vj[k] for k in common_keys)
+            if sim >= THRESHOLD:
+                pairs.append((names[i], names[j], sim))
+
+    # Step 5: Group pairs that share a skill (compact groups, no long chains)
+    # Use Union-Find but with a max-group-size cap
+    parent = {n: n for n in names}
+    group_size = {n: 1 for n in names}
+    MAX_GROUP = 6
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb and group_size.get(ra, 1) + group_size.get(rb, 1) <= MAX_GROUP:
+            parent[ra] = rb
+            group_size[rb] = group_size.get(ra, 1) + group_size.get(rb, 1)
+
+    # Sort pairs by score descending so strongest pairs form the core groups
+    pairs.sort(key=lambda p: p[2], reverse=True)
+    pair_scores = {}
+    for a, b, sim in pairs:
+        pair_scores[(a, b)] = sim
+        union(a, b)
+
+    groups_map = {}
+    for n in names:
+        root = find(n)
+        groups_map.setdefault(root, []).append(n)
+
+    # Step 6: Assemble result with scores
+    result = []
+    for root, members in groups_map.items():
+        if len(members) < 2:
+            continue
+        scores = []
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                key = (members[i], members[j])
+                rev_key = (members[j], members[i])
+                s = pair_scores.get(key, pair_scores.get(rev_key, 0))
+                scores.append(s)
+        avg_score = sum(scores) / len(scores) if scores else 0
+        # Category: use _classify_skill for primary category
+        cats = Counter(_classify_skill(m, "") for m in members)
+        primary_cat = cats.most_common(1)[0][0] if cats else "other"
+        result.append({
+            "skills": sorted(members),
+            "skills_meta": {m: {"agent": target_agent, "dir": str(target_dir)} for m in members},
+            "score": round(avg_score, 4),
+            "avg_score": round(avg_score, 4),
+            "category": primary_cat,
+            "source": "tfidf",
+            "scope": "current_dir",
+        })
+
+    # Sort by score descending
+    result.sort(key=lambda g: g["score"], reverse=True)
+
+    # Save cache
+    try:
+        tfidf_cache.write_text(
+            json.dumps({"_ts": time.time(), "groups": result}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return result
+
+
+def detect_cross_dir_overlaps():
+    """Detect duplicate and similar skills across ALL directories.
+    Returns two lists:
+      - duplicates: same skill name in multiple directories
+      - cross_similar: similar content across different directories (TF-IDF)
+    Each entry includes source directory info for safe deletion.
+    """
+    # Cache (5-min TTL)
+    cache_file = CACHE_DIR / "cross-dir-overlaps.json"
+    if cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text("utf-8"))
+            if time.time() - cached.get("_ts", 0) < 300:
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except Exception:
+            pass
+
+    # Step 1: Scan all directories, collect skill→directory mapping
+    all_skills = {}  # name -> [{dir, agent}]
+    dir_skills = {}  # dir_path -> [skill_names]
+
+    for tdir in _discover_skill_dirs():
+        dir_path = str(tdir)
+        skills_in_dir = []
+        try:
+            entries = sorted(tdir.iterdir())
+        except Exception:
+            continue
+        for d in entries:
+            if not d.is_dir():
+                continue
+            if not (d / "SKILL.md").exists():
+                continue
+            name = d.name
+            skills_in_dir.append(name)
+            if name not in all_skills:
+                all_skills[name] = []
+            all_skills[name].append({
+                "dir": dir_path,
+                "agent": _agent_from_path(dir_path),
+            })
+        if skills_in_dir:
+            dir_skills[dir_path] = skills_in_dir
+
+    # Step 2: Find duplicates and classify by content hash
+    duplicates_identical = []   # same name, identical content → can safely prune
+    duplicates_same_name = []   # same name, different content → just coincidence
+    for name, locations in all_skills.items():
+        if len(locations) < 2:
+            continue
+        # Compute content hash for each location
+        hashes = {}
+        for loc in locations:
+            skill_md = Path(loc["dir"]) / name / "SKILL.md"
+            try:
+                h = hashlib.sha256(skill_md.read_bytes()).hexdigest()[:12]
+            except Exception:
+                h = "error"
+            loc["hash"] = h
+            hashes.setdefault(h, []).append(loc)
+
+        agents = list(set(loc["agent"] for loc in locations))
+        entry = {
+            "name": name,
+            "locations": locations,
+            "agent_count": len(agents),
+            "dir_count": len(locations),
+            "hash_count": len(hashes),
+        }
+
+        if len(hashes) == 1:
+            # All copies are identical → true duplicate, safe to prune
+            entry["type"] = "identical"
+            duplicates_identical.append(entry)
+        else:
+            # Same name but different content across dirs
+            entry["type"] = "same_name_diff"
+            duplicates_same_name.append(entry)
+
+    # Sort: identical by dir_count (most copies first), same_name by agent_count
+    duplicates_identical.sort(key=lambda d: d["dir_count"], reverse=True)
+    duplicates_same_name.sort(key=lambda d: d["dir_count"], reverse=True)
+
+    # Step 3: Agent summary for grouping in UI
+    agent_summary = {}
+    for dup in duplicates_identical:
+        for loc in dup["locations"]:
+            ag = loc["agent"]
+            if ag not in agent_summary:
+                agent_summary[ag] = {"identical_skills": 0, "identical_copies": 0}
+            agent_summary[ag]["identical_skills"] += 1
+            # copies = total locations for this skill minus 1 (the "original")
+        copies = dup["dir_count"] - 1
+        for loc in dup["locations"]:
+            agent_summary.setdefault(loc["agent"], {"identical_skills": 0, "identical_copies": 0})
+        # Count prunable copies per agent (all but the largest agent per skill)
+    # For simplicity: count how many identical entries each agent participates in
+    agent_identical = {}
+    for dup in duplicates_identical:
+        for loc in dup["locations"]:
+            agent_identical.setdefault(loc["agent"], []).append(dup["name"])
+    agent_summary_final = []
+    for ag, names in sorted(agent_identical.items(), key=lambda x: -len(x[1])):
+        agent_summary_final.append({
+            "agent": ag,
+            "identical_count": len(names),  # how many skills this agent has that are identical elsewhere
+            "skills_sample": names[:5],
+        })
+
+    # Count prunable copies (total locations minus unique names = redundant copies)
+    prunable = sum(d["dir_count"] - 1 for d in duplicates_identical)
+
+    result = {
+        "duplicates_identical": duplicates_identical,
+        "duplicates_same_name": duplicates_same_name,
+        "agent_summary": agent_summary_final,
+        "total_unique_names": len(all_skills),
+        "total_dirs_scanned": len(dir_skills),
+        "total_identical": len(duplicates_identical),
+        "total_same_name": len(duplicates_same_name),
+        "total_prunable": prunable,
+        "total_identical_locations": sum(d["dir_count"] for d in duplicates_identical),
+    }
+
+    try:
+        cache_file.write_text(
+            json.dumps({"_ts": time.time(), **result}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return result
+
+
+def _agent_from_path(dir_path):
+    """Infer agent name from directory path."""
+    p = str(dir_path)
+    agents = [
+        (".claude", "Claude Code"), (".workbuddy", "WorkBuddy"), (".hermes", "Hermes"),
+        (".agents", "通用 Agents"), (".codex", "Codex"), (".cursor", "Cursor"),
+        (".alice", "Alice"), (".openclaw", "OpenClaw"), (".cc-switch", "CC-Switch"),
+        (".qclaw", "QClaw"), (".cola", "Cola"), (".codebuddy", "CodeBuddy"),
+    ]
+    for prefix, name in agents:
+        if prefix in p:
+            return name
+    parts = Path(p).parts
+    for part in reversed(parts):
+        if part.startswith(".") and not part.startswith(".."):
+            return part.lstrip(".")
+    return Path(p).name
+
+
+# ── Content hash tracking ──
+
+CONTENT_HASH_FILE = STATE_DIR / "content-hashes.json"
+_hash_lock = threading.Lock()
+
+
+def _load_content_hashes():
+    """Load content hashes from state file."""
+    if CONTENT_HASH_FILE.exists():
+        try:
+            return json.loads(CONTENT_HASH_FILE.read_text("utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_content_hashes(data):
+    """Atomically save content hashes."""
+    CONTENT_HASH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp = CONTENT_HASH_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(CONTENT_HASH_FILE)
+
+
+def record_content_hash(skill_path):
+    """Compute SHA256 of SKILL.md and store it. Called during install/copy."""
+    skill_md = Path(skill_path) / "SKILL.md"
+    if not skill_md.exists():
+        return
+    try:
+        content = skill_md.read_text("utf-8", errors="ignore")
+        h = hashlib.sha256(content.encode("utf-8")).hexdigest()
+        name = Path(skill_path).name
+        with _hash_lock:
+            hashes = _load_content_hashes()
+            hashes[name] = {"hash": h, "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            _save_content_hashes(hashes)
+    except Exception:
+        pass
+
+
+def check_content_changes(target_path):
+    """Compare current SKILL.md hashes with stored hashes.
+    Returns dict with changed/deleted lists.
+    """
+    target_dir = Path(target_path)
+    if not target_dir.is_dir():
+        return {"changed": [], "deleted": [], "total_tracked": 0, "total_changed": 0}
+
+    with _hash_lock:
+        stored = _load_content_hashes()
+
+    if not stored:
+        return {"changed": [], "deleted": [], "total_tracked": 0, "total_changed": 0}
+
+    changed = []
+    deleted = []
+    tracked = 0
+
+    for name, info in stored.items():
+        skill_md = target_dir / name / "SKILL.md"
+        if not skill_md.exists():
+            deleted.append(name)
+            continue
+        try:
+            current = hashlib.sha256(
+                skill_md.read_text("utf-8", errors="ignore").encode("utf-8")
+            ).hexdigest()
+            tracked += 1
+            if current != info.get("hash"):
+                changed.append({"name": name, "last_recorded": info.get("recorded_at", "")})
+        except Exception:
+            tracked += 1
+
+    return {
+        "changed": changed,
+        "deleted": deleted,
+        "total_tracked": tracked,
+        "total_changed": len(changed),
+    }
 
 
 def _discover_skill_dirs():
@@ -425,6 +885,15 @@ def python_quick_check(target_path):
     else:
         level = "red"
 
+    # TF-IDF similarity (with graceful fallback)
+    try:
+        overlap_groups = compute_tfidf_similarity(target_path, skills)
+    except Exception:
+        overlap_groups = []
+
+    # Content change detection
+    content_changes = check_content_changes(target_path)
+
     return {
         "health_score": {
             "score": score,
@@ -432,9 +901,10 @@ def python_quick_check(target_path):
             "accuracy_estimate": accuracy,
         },
         "structure_issues": structure_issues,
-        "overlap_groups": [],  # populated by frontend fallback
+        "overlap_groups": overlap_groups,
         "upstream_sources": upstream_sources,
         "cleanup_candidates": list(dict.fromkeys(cleanup_candidates)),  # dedup, preserve order
+        "content_changes": content_changes,
         "summary": {
             "total": total,
             "entities": entities,
@@ -654,6 +1124,9 @@ def install_skill(source_url, target_path, preferred_name=None):
             else:
                 dest_dir.unlink()
         shutil.copytree(selected_dir, dest_dir)
+
+        # Record content hash for change detection
+        record_content_hash(dest_dir)
 
         # Write metadata
         write_source_metadata(dest_dir, f"{owner}/{repo}", ref, selected_rel, clean_url, installed_commit)
@@ -889,6 +1362,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_history()
         elif path == "/api/targets":
             self._list_targets()
+        elif path == "/api/category-order":
+            f = STATE_DIR / "category-order.json"
+            data = f.read_text(encoding="utf-8") if f.exists() else "[]"
+            self._json_response(json.loads(data))
         elif path == "/api/fast-scan":
             self._fast_scan()
         elif path == "/api/quick-check":
@@ -905,6 +1382,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._get_custom_sources()
         elif path == "/api/global-stats":
             self._json_response(_scan_global_categories())
+        elif path == "/api/global-overlap":
+            self._json_response(detect_cross_dir_overlaps())
         elif path == "/api/favorite-dirs":
             self._get_favorite_dirs()
         elif path == "/api/trash":
@@ -917,6 +1396,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Invalid skill name")
             else:
                 self._serve_skill_content(name)
+        elif path.startswith("/api/preview/"):
+            # Preview skill from any directory: /api/preview/<encoded-path>/<name>
+            # URL: /api/preview?dir=...&name=...
+            from urllib.parse import parse_qs
+            qs = parse_qs(urlparse(self.path).query)
+            preview_dir = qs.get("dir", [""])[0]
+            preview_name = qs.get("name", [""])[0]
+            if preview_dir and preview_name:
+                self._serve_preview(preview_dir, preview_name)
+            else:
+                self.send_error(400, "Missing dir or name")
         elif path.startswith("/api/skill/") and path.endswith("/upstream"):
             name = self._validate_skill_name(path.split("/")[3])
             if not name:
@@ -943,6 +1433,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._add_custom_source()
         elif path == "/api/favorite-dirs":
             self._save_favorite_dirs()
+        elif path == "/api/category-order":
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                raw = self.rfile.read(length).decode('utf-8') if length else '[]'
+                data = json.loads(raw)
+                if isinstance(data, list):
+                    (STATE_DIR / "category-order.json").write_text(
+                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                    )
+                    self._json_response({"ok": True})
+                else:
+                    self.send_error(400, "Expected JSON array")
+            except Exception as e:
+                self._json_response({"error": str(e)}, 400)
+        elif path.startswith("/api/skill/") and path.endswith("/rehash"):
+            name = self._validate_skill_name(path.split("/")[3])
+            if not name:
+                self.send_error(400, "Invalid skill name")
+            else:
+                self._rehash_skill(name)
         else:
             self.send_error(404)
 
@@ -1023,6 +1533,42 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"name": name, "content": content, "path": str(skill_md)})
                 return
         self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+
+    def _serve_preview(self, dir_path, name):
+        """Preview SKILL.md from any directory (no target switch needed)."""
+        skill_md = Path(dir_path) / name / "SKILL.md"
+        if not skill_md.exists():
+            self._json_response({"error": "not found"}, status=404)
+            return
+        try:
+            content = skill_md.read_text(encoding="utf-8", errors="ignore")
+            # Extract description from frontmatter
+            desc = ""
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end > 0:
+                    fm = content[3:end]
+                    for line in fm.split("\n"):
+                        if line.strip().startswith("description:"):
+                            desc = line.split(":", 1)[1].strip().strip("'\"")
+                            break
+            # First 500 chars of body (skip frontmatter)
+            body = content
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end > 0:
+                    body = content[end + 3:].strip()
+            preview = body[:500] + ("…" if len(body) > 500 else "")
+            self._json_response({
+                "name": name,
+                "dir": dir_path,
+                "agent": _agent_from_path(dir_path),
+                "description": desc,
+                "preview": preview,
+                "size": len(content),
+            })
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
 
     def _check_skill_upstream(self, name):
         """Check upstream status for a single skill."""
@@ -1702,9 +2248,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Invalid skill name")
             else:
                 action = data.get("action", "")
-                self._fix_skill(name, action)
+                self._fix_skill(name, action, data)
         else:
             self.send_error(404)
+
+    def _rehash_skill(self, name):
+        """Re-record content hash for a skill (confirm change)."""
+        target = self._current_target()
+        skill_dir = Path(target) / name
+        if not skill_dir.is_dir():
+            self._json_response({"error": "not found"}, status=404)
+            return
+        record_content_hash(skill_dir)
+        self._json_response({"ok": True, "name": name})
 
     def _copy_skill(self):
         """Copy a skill from a local directory to the current target library."""
@@ -1729,6 +2285,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             create_snapshot(dest)
             shutil.rmtree(dest)
         shutil.copytree(src_dir, dest)
+        record_content_hash(dest)
         self._json_response({"ok": True, "name": skill_name, "output": f"Copied to {dest}"})
 
     def _steal_skill(self):
@@ -1755,7 +2312,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         result = update_skill(name, target)
         self._json_response(result)
 
-    def _fix_skill(self, name, action):
+    def _fix_skill(self, name, action, body=None):
         """Fix a skill issue."""
         if action == "delete":
             self._delete_skill(name)
@@ -1775,6 +2332,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"ok": True, "name": name, "fixed": "added frontmatter"})
             else:
                 self._json_response({"ok": False, "error": "already has frontmatter"})
+            return
+        elif action == "add_description":
+            skill_dir = self._resolve_skill_dir(name)
+            if not skill_dir:
+                self._json_response({"error": "not found"}, status=404)
+                return
+            skill_md = skill_dir / "SKILL.md"
+            if not skill_md.exists():
+                self._json_response({"error": "no SKILL.md"}, status=400)
+                return
+            desc = body.get("description", "") if isinstance(body, dict) else ""
+            if not desc:
+                desc = f"{name} skill"
+            content = skill_md.read_text("utf-8")
+            if content.startswith("---"):
+                # Replace or add description in frontmatter
+                import re as _re
+                # If description line exists but empty, replace it
+                new_content = _re.sub(
+                    r'description:\s*[\'"]?\s*[\'"]?\s*\n',
+                    f'description: \'{desc}\'\n',
+                    content
+                )
+                if new_content == content:
+                    # No description line found — insert after name line
+                    new_content = _re.sub(
+                        r'(name:\s*.+\n)',
+                        rf"\1description: '{desc}'\n",
+                        content
+                    )
+                skill_md.write_text(new_content, encoding="utf-8")
+            else:
+                # No frontmatter at all — add both
+                skill_md.write_text(f"---\nname: {name}\ndescription: '{desc}'\n---\n\n{content}", encoding="utf-8")
+            self._json_response({"ok": True, "name": name, "fixed": "added description"})
             return
         self._json_response({"error": f"unknown action: {action}"}, status=400)
 
