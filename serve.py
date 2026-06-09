@@ -183,42 +183,47 @@ def _tfidf_tokenize(text):
     return tokens
 
 
-def compute_tfidf_similarity(target_path, skills_data):
+def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=None):
     """Compute pairwise TF-IDF cosine similarity between skills.
     Returns list of overlap groups with scores.
+    If docs is provided, use it instead of reading from disk.
+    If agent_name is provided, use it instead of inferring from target_path.
     """
     target_dir = Path(target_path)
-    target_agent = _agent_from_path(target_path)
-    if not target_dir.is_dir() or len(skills_data) <= 1:
+    target_agent = agent_name or _agent_from_path(target_path)
+    if len(skills_data) <= 1:
         return []
     # Skip for very large collections (let full diagnosis handle it)
-    if len(skills_data) > 100:
+    if len(skills_data) > 300:
         return []
 
-    # Check cache (5-min TTL)
-    cache_key = _cache_path(target_path)
-    tfidf_cache = cache_key.parent / f"tfidf-{cache_key.name}"
-    if tfidf_cache.exists():
-        try:
-            cached = json.loads(tfidf_cache.read_text("utf-8"))
-            if time.time() - cached.get("_ts", 0) < 300:
-                return cached.get("groups", [])
-        except Exception:
-            pass
+    # Check cache only when reading from disk (docs=None)
+    tfidf_cache = None
+    if docs is None:
+        cache_key = _cache_path(target_path)
+        tfidf_cache = cache_key.parent / f"tfidf-{cache_key.name}"
+        if tfidf_cache.exists():
+            try:
+                cached = json.loads(tfidf_cache.read_text("utf-8"))
+                if time.time() - cached.get("_ts", 0) < 300:
+                    return cached.get("groups", [])
+            except Exception:
+                pass
 
     # Step 1: Read full SKILL.md content for each skill
-    docs = {}
-    for s in skills_data:
-        name = s["name"]
-        skill_md = target_dir / name / "SKILL.md"
-        if skill_md.exists():
-            try:
-                content = skill_md.read_text("utf-8", errors="ignore")
-                docs[name] = content
-            except Exception:
+    if docs is None:
+        docs = {}
+        for s in skills_data:
+            name = s["name"]
+            skill_md = target_dir / name / "SKILL.md"
+            if skill_md.exists():
+                try:
+                    content = skill_md.read_text("utf-8", errors="ignore")
+                    docs[name] = content
+                except Exception:
+                    docs[name] = ""
+            else:
                 docs[name] = ""
-        else:
-            docs[name] = ""
 
     if len(docs) <= 1:
         return []
@@ -371,6 +376,7 @@ def detect_cross_dir_overlaps():
     # Step 1: Scan all directories, collect skill→directory mapping
     all_skills = {}  # name -> [{dir, agent}]
     dir_skills = {}  # dir_path -> [skill_names]
+    agent_dirs = {}  # agent -> [dir_paths]
 
     for tdir in _discover_skill_dirs():
         dir_path = str(tdir)
@@ -388,12 +394,15 @@ def detect_cross_dir_overlaps():
             skills_in_dir.append(name)
             if name not in all_skills:
                 all_skills[name] = []
+            agent = _agent_from_path(dir_path)
             all_skills[name].append({
                 "dir": dir_path,
-                "agent": _agent_from_path(dir_path),
+                "agent": agent,
             })
         if skills_in_dir:
             dir_skills[dir_path] = skills_in_dir
+            agent = _agent_from_path(dir_path)
+            agent_dirs.setdefault(agent, []).append(dir_path)
 
     # Step 2: Find duplicates and classify by content hash
     duplicates_identical = []   # same name, identical content → can safely prune
@@ -463,10 +472,41 @@ def detect_cross_dir_overlaps():
     # Count prunable copies (total locations minus unique names = redundant copies)
     prunable = sum(d["dir_count"] - 1 for d in duplicates_identical)
 
+    # Step 4: Per-agent TF-IDF similarity (cross-directory within each agent)
+    agent_similar = {}
+    for agent_name, dirs in agent_dirs.items():
+        if len(dirs) < 2:
+            continue  # Need at least 2 dirs to have cross-dir similarity
+        agent_skills = []
+        agent_docs = {}
+        seen_names = set()
+        for dir_path in dirs:
+            for skill_name in dir_skills.get(dir_path, []):
+                if skill_name in seen_names:
+                    continue
+                seen_names.add(skill_name)
+                skill_md = Path(dir_path) / skill_name / "SKILL.md"
+                try:
+                    content = skill_md.read_text("utf-8", errors="ignore")
+                    agent_docs[skill_name] = content
+                    agent_skills.append({"name": skill_name})
+                except Exception:
+                    pass
+        if len(agent_skills) > 1 and len(agent_skills) <= 300:
+            groups = compute_tfidf_similarity(
+                target_path=dirs[0],
+                skills_data=agent_skills,
+                docs=agent_docs,
+                agent_name=agent_name,
+            )
+            if groups:
+                agent_similar[agent_name] = groups
+
     result = {
         "duplicates_identical": duplicates_identical,
         "duplicates_same_name": duplicates_same_name,
         "agent_summary": agent_summary_final,
+        "agent_similar": agent_similar,
         "total_unique_names": len(all_skills),
         "total_dirs_scanned": len(dir_skills),
         "total_identical": len(duplicates_identical),
@@ -590,6 +630,12 @@ def check_content_changes(target_path):
 def _discover_skill_dirs():
     """Discover all skill directories on the system (shared by global-stats and targets).
     Returns a list of Path objects pointing to directories that contain SKILL.md entries.
+
+    Discovery strategy (in order):
+    1. Hard-coded common agent prefixes
+    2. Auto-recursive scan of ~ for **/skills/ directories (depth 3)
+    3. .skill-dashboard.json config files (project-level and home-level)
+    4. custom-sources.json (legacy user-defined paths)
     """
     home = Path.home()
     candidates = []
@@ -601,7 +647,7 @@ def _discover_skill_dirs():
             seen_paths.add(str(d))
             candidates.append(d)
 
-    # Standard agent prefixes
+    # 1. Standard agent prefixes
     for prefix in [
         home / ".claude", home / ".agents", home / ".alice", home / ".cc-switch",
         home / ".codex", home / ".hermes", home / ".openclaw", home / ".qclaw",
@@ -628,7 +674,62 @@ def _discover_skill_dirs():
                             if sub2.is_dir():
                                 add_dir(sub2)
 
-    # Projects
+    # 2. Auto-recursive scan: find all */skills/ directories under ~ (max depth 3)
+    def scan_for_skills(root, depth=0, max_depth=3):
+        if depth >= max_depth:
+            return
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir():
+                    continue
+                name = entry.name
+                # Skip hidden, common non-skill dirs
+                if name.startswith(".") and name not in (".claude", ".agents", ".codex", ".cursor"):
+                    continue
+                if name in ("node_modules", "__pycache__", ".git", "venv", ".venv", "env", "dist", "build"):
+                    continue
+                if name == "skills":
+                    add_dir(entry)
+                # Also check for <agent>/skills pattern
+                sub_skills = entry / "skills"
+                if sub_skills.is_dir():
+                    add_dir(sub_skills)
+                scan_for_skills(entry, depth + 1, max_depth)
+        except (PermissionError, OSError):
+            pass
+
+    scan_for_skills(home, depth=0, max_depth=3)
+
+    # 3. .skill-dashboard.json config files
+    # Home-level config
+    home_config = home / ".skill-dashboard.json"
+    if home_config.exists():
+        try:
+            cfg = json.loads(home_config.read_text("utf-8"))
+            for p in cfg.get("paths", []):
+                add_dir(Path(p).expanduser())
+        except Exception:
+            pass
+    # Project-level configs (scan common project roots)
+    for proj_root in [home / "projects", home / "Projects", home / "code", home / "Code", home / "workspace"]:
+        if not proj_root.exists():
+            continue
+        try:
+            for proj in proj_root.iterdir():
+                if not proj.is_dir():
+                    continue
+                cfg_file = proj / ".skill-dashboard.json"
+                if cfg_file.exists():
+                    try:
+                        cfg = json.loads(cfg_file.read_text("utf-8"))
+                        for p in cfg.get("paths", []):
+                            add_dir(Path(p).expanduser())
+                    except Exception:
+                        pass
+        except (PermissionError, OSError):
+            pass
+
+    # 4. Projects (legacy hard-coded project paths)
     projects_dir = home / "projects"
     if projects_dir.exists():
         for p in projects_dir.iterdir():
@@ -647,7 +748,7 @@ def _discover_skill_dirs():
                 add_dir(d / ".claude" / "skills")
                 add_dir(d / "skills")
 
-    # Custom sources
+    # 5. Custom sources (legacy)
     try:
         cf = STATE_DIR / "custom-sources.json"
         if cf.exists():
@@ -1396,9 +1497,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.send_error(400, "Invalid skill name")
             else:
                 self._serve_skill_content(name)
-        elif path.startswith("/api/preview/"):
-            # Preview skill from any directory: /api/preview/<encoded-path>/<name>
-            # URL: /api/preview?dir=...&name=...
+        elif path == "/api/preview":
+            # Preview skill from any directory: /api/preview?dir=...&name=...
             from urllib.parse import parse_qs
             qs = parse_qs(urlparse(self.path).query)
             preview_dir = qs.get("dir", [""])[0]
