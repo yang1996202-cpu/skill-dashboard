@@ -670,15 +670,11 @@ def _discover_skill_dirs():
             candidates.append(d)
 
     # 1. ~/.xxx/ — any dot-prefixed agent directory
-    #    For dirs with skills/ subdir: also scan deeper for marketplaces/backups/etc.
-    #    For other dirs: shallow scan only.
+    #    Only skip genuine system junk. Everything else: let SKILL.md validation decide.
     _SKIP_DEEP = {".git", ".Trash", "node_modules", "__pycache__", "venv", ".venv",
-                  "env", "dist", "build", "logs", ".cache", ".npm", ".bun", ".local",
-                  ".vscode", ".config", ".antigravity", "Library"}
-    _SHALLOW_SKIP = {".Trash", ".cache", ".npm", ".bun", ".local", ".vscode",
-                     ".config", ".antigravity", ".git", ".cargo", ".rustup",
-                     ".docker", ".minikube", ".terraform", ".gradle", ".m2",
-                     ".cocoapods", ".swift", ".nix-defexpr"}
+                  "env", "dist", "build", "logs", ".cache", ".npm", "Library"}
+    # Shallow skip: only dirs that are DEFINITELY not agents (system caches, build tools)
+    _SHALLOW_SKIP = {".Trash", ".cache", ".git"}
 
     def _has_skill_md(d):
         """Check if directory contains at least one */SKILL.md entry."""
@@ -711,8 +707,9 @@ def _discover_skill_dirs():
                 continue
             if name.startswith("."):
                 skills_dir = entry / "skills"
-                if skills_dir.is_dir():
-                    # Confirmed agent dir — standard skills/ + subdirs + deep scan
+                has_skills = skills_dir.is_dir()
+                if has_skills:
+                    # Standard: skills/ + its subdirs
                     add_dir(skills_dir)
                     try:
                         for sub in skills_dir.iterdir():
@@ -720,16 +717,10 @@ def _discover_skill_dirs():
                                 add_dir(sub)
                     except (PermissionError, OSError):
                         pass
-                    # Deep scan for marketplaces, backups, extensions, etc.
-                    _scan_agent_deep(entry, max_depth=3)
-                else:
-                    # No skills/ — check if it has SKILL.md entries directly (depth 1)
-                    try:
-                        for sub in entry.iterdir():
-                            if sub.is_dir() and not sub.name.startswith(".") and _has_skill_md(sub):
-                                add_dir(sub)
-                    except (PermissionError, OSError):
-                        pass
+                # Deep scan for ALL .xxx dirs (not just confirmed agents)
+                # This catches: .config/opencode/skills/, .antigravity/extensions/,
+                # .alice/backups/, .openclaw/workspace/, etc.
+                _scan_agent_deep(entry, max_depth=3)
     except (PermissionError, OSError):
         pass
 
