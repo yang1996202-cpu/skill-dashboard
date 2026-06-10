@@ -356,61 +356,35 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
     return result
 
 
-def detect_cross_dir_overlaps():
-    """Detect duplicate and similar skills across ALL directories.
-    Returns two lists:
-      - duplicates: same skill name in multiple directories
-      - cross_similar: similar content across different directories (TF-IDF)
-    Each entry includes source directory info for safe deletion.
+def _find_same_name_duplicates(dirs):
+    """Find same-name skills across the given directory list.
+    Returns (duplicates_identical, duplicates_same_name, all_skills_map).
     """
-    # Cache (5-min TTL)
-    cache_file = CACHE_DIR / "cross-dir-overlaps.json"
-    if cache_file.exists():
-        try:
-            cached = json.loads(cache_file.read_text("utf-8"))
-            if time.time() - cached.get("_ts", 0) < 300:
-                return {k: v for k, v in cached.items() if not k.startswith("_")}
-        except Exception:
-            pass
-
-    # Step 1: Scan all directories, collect skill→directory mapping
     all_skills = {}  # name -> [{dir, agent}]
-    dir_skills = {}  # dir_path -> [skill_names]
-    agent_dirs = {}  # agent -> [dir_paths]
-
-    for tdir in _discover_skill_dirs():
+    for tdir in dirs:
         dir_path = str(tdir)
-        skills_in_dir = []
         try:
             entries = sorted(tdir.iterdir())
         except Exception:
             continue
         for d in entries:
-            if not d.is_dir():
+            if not (d.is_dir() or d.is_symlink()):
                 continue
             if not (d / "SKILL.md").exists():
                 continue
             name = d.name
-            skills_in_dir.append(name)
             if name not in all_skills:
                 all_skills[name] = []
-            agent = _agent_from_path(dir_path)
             all_skills[name].append({
                 "dir": dir_path,
-                "agent": agent,
+                "agent": _agent_from_path(dir_path),
             })
-        if skills_in_dir:
-            dir_skills[dir_path] = skills_in_dir
-            agent = _agent_from_path(dir_path)
-            agent_dirs.setdefault(agent, []).append(dir_path)
 
-    # Step 2: Find duplicates and classify by content hash
-    duplicates_identical = []   # same name, identical content → can safely prune
-    duplicates_same_name = []   # same name, different content → just coincidence
+    duplicates_identical = []
+    duplicates_same_name = []
     for name, locations in all_skills.items():
         if len(locations) < 2:
             continue
-        # Compute content hash for each location
         hashes = {}
         for loc in locations:
             skill_md = Path(loc["dir"]) / name / "SKILL.md"
@@ -429,34 +403,94 @@ def detect_cross_dir_overlaps():
             "dir_count": len(locations),
             "hash_count": len(hashes),
         }
-
         if len(hashes) == 1:
-            # All copies are identical → true duplicate, safe to prune
             entry["type"] = "identical"
             duplicates_identical.append(entry)
         else:
-            # Same name but different content across dirs
             entry["type"] = "same_name_diff"
             duplicates_same_name.append(entry)
 
-    # Sort: identical by dir_count (most copies first), same_name by agent_count
     duplicates_identical.sort(key=lambda d: d["dir_count"], reverse=True)
     duplicates_same_name.sort(key=lambda d: d["dir_count"], reverse=True)
+    return duplicates_identical, duplicates_same_name
 
-    # Step 3: Agent summary for grouping in UI
-    agent_summary = {}
-    for dup in duplicates_identical:
-        for loc in dup["locations"]:
-            ag = loc["agent"]
-            if ag not in agent_summary:
-                agent_summary[ag] = {"identical_skills": 0, "identical_copies": 0}
-            agent_summary[ag]["identical_skills"] += 1
-            # copies = total locations for this skill minus 1 (the "original")
-        copies = dup["dir_count"] - 1
-        for loc in dup["locations"]:
-            agent_summary.setdefault(loc["agent"], {"identical_skills": 0, "identical_copies": 0})
-        # Count prunable copies per agent (all but the largest agent per skill)
-    # For simplicity: count how many identical entries each agent participates in
+
+def _find_agent_cross_dir_similar(dirs):
+    """Per-agent TF-IDF cross-directory similarity for the given directory list.
+    Returns {agent_name: [overlap_groups]}.
+    """
+    dir_skills = {}  # dir_path -> [skill_names]
+    agent_dirs = {}  # agent -> [dir_paths]
+    for tdir in dirs:
+        dir_path = str(tdir)
+        skills_in_dir = []
+        try:
+            entries = sorted(tdir.iterdir())
+        except Exception:
+            continue
+        for d in entries:
+            if not (d.is_dir() or d.is_symlink()):
+                continue
+            if not (d / "SKILL.md").exists():
+                continue
+            skills_in_dir.append(d.name)
+        if skills_in_dir:
+            dir_skills[dir_path] = skills_in_dir
+            agent = _agent_from_path(dir_path)
+            agent_dirs.setdefault(agent, []).append(dir_path)
+
+    agent_similar = {}
+    for agent_name, agent_dir_list in agent_dirs.items():
+        if len(agent_dir_list) < 2:
+            continue
+        agent_skills = []
+        agent_docs = {}
+        seen_names = set()
+        for dp in agent_dir_list:
+            for skill_name in dir_skills.get(dp, []):
+                if skill_name in seen_names:
+                    continue
+                seen_names.add(skill_name)
+                skill_md = Path(dp) / skill_name / "SKILL.md"
+                try:
+                    content = skill_md.read_text("utf-8", errors="ignore")
+                    agent_docs[skill_name] = content
+                    agent_skills.append({"name": skill_name})
+                except Exception:
+                    pass
+        if 1 < len(agent_skills) <= 300:
+            groups = compute_tfidf_similarity(
+                target_path=agent_dir_list[0],
+                skills_data=agent_skills,
+                docs=agent_docs,
+                agent_name=agent_name,
+            )
+            if groups:
+                agent_similar[agent_name] = groups
+    return agent_similar
+
+
+def detect_cross_dir_overlaps():
+    """Detect duplicate and similar skills across ALL directories.
+    Uses _find_same_name_duplicates and _find_agent_cross_dir_similar helpers.
+    Cached for 5 minutes.
+    """
+    # Cache (5-min TTL)
+    cache_file = CACHE_DIR / "cross-dir-overlaps.json"
+    if cache_file.exists():
+        try:
+            cached = json.loads(cache_file.read_text("utf-8"))
+            if time.time() - cached.get("_ts", 0) < 300:
+                return {k: v for k, v in cached.items() if not k.startswith("_")}
+        except Exception:
+            pass
+
+    all_dirs = _discover_skill_dirs()
+
+    # Same-name detection
+    duplicates_identical, duplicates_same_name = _find_same_name_duplicates(all_dirs)
+
+    # Agent summary
     agent_identical = {}
     for dup in duplicates_identical:
         for loc in dup["locations"]:
@@ -465,50 +499,37 @@ def detect_cross_dir_overlaps():
     for ag, names in sorted(agent_identical.items(), key=lambda x: -len(x[1])):
         agent_summary_final.append({
             "agent": ag,
-            "identical_count": len(names),  # how many skills this agent has that are identical elsewhere
+            "identical_count": len(names),
             "skills_sample": names[:5],
         })
 
-    # Count prunable copies (total locations minus unique names = redundant copies)
     prunable = sum(d["dir_count"] - 1 for d in duplicates_identical)
 
-    # Step 4: Per-agent TF-IDF similarity (cross-directory within each agent)
-    agent_similar = {}
-    for agent_name, dirs in agent_dirs.items():
-        if len(dirs) < 2:
-            continue  # Need at least 2 dirs to have cross-dir similarity
-        agent_skills = []
-        agent_docs = {}
-        seen_names = set()
-        for dir_path in dirs:
-            for skill_name in dir_skills.get(dir_path, []):
-                if skill_name in seen_names:
-                    continue
-                seen_names.add(skill_name)
-                skill_md = Path(dir_path) / skill_name / "SKILL.md"
-                try:
-                    content = skill_md.read_text("utf-8", errors="ignore")
-                    agent_docs[skill_name] = content
-                    agent_skills.append({"name": skill_name})
-                except Exception:
-                    pass
-        if len(agent_skills) > 1 and len(agent_skills) <= 300:
-            groups = compute_tfidf_similarity(
-                target_path=dirs[0],
-                skills_data=agent_skills,
-                docs=agent_docs,
-                agent_name=agent_name,
-            )
-            if groups:
-                agent_similar[agent_name] = groups
+    # Cross-directory TF-IDF similarity
+    agent_similar = _find_agent_cross_dir_similar(all_dirs)
+
+    # Count unique skills across all dirs for stats
+    unique_names = set()
+    total_dirs = 0
+    for tdir in all_dirs:
+        try:
+            has_any = False
+            for d in tdir.iterdir():
+                if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists():
+                    unique_names.add(d.name)
+                    has_any = True
+            if has_any:
+                total_dirs += 1
+        except Exception:
+            pass
 
     result = {
         "duplicates_identical": duplicates_identical,
         "duplicates_same_name": duplicates_same_name,
         "agent_summary": agent_summary_final,
         "agent_similar": agent_similar,
-        "total_unique_names": len(all_skills),
-        "total_dirs_scanned": len(dir_skills),
+        "total_unique_names": len(unique_names),
+        "total_dirs_scanned": total_dirs,
         "total_identical": len(duplicates_identical),
         "total_same_name": len(duplicates_same_name),
         "total_prunable": prunable,
@@ -628,14 +649,15 @@ def check_content_changes(target_path):
 
 
 def _discover_skill_dirs():
-    """Discover all skill directories on the system (shared by global-stats and targets).
+    """Discover all skill directories on the system.
     Returns a list of Path objects pointing to directories that contain SKILL.md entries.
 
     Discovery strategy (in order):
-    1. Hard-coded common agent prefixes
-    2. Auto-recursive scan of ~ for **/skills/ directories (depth 3)
-    3. .skill-dashboard.json config files (project-level and home-level)
-    4. custom-sources.json (legacy user-defined paths)
+    1. ~/.xxx/skills/ — any dot-prefixed agent directory with a skills/ subdir
+    2. ~/first-level/skills/ — non-hidden directories with a skills/ subdir
+    3. ~/projects/*//skills/ — project-level skill directories
+    4. .skill-dashboard.json config files (home-level + project-level)
+    5. custom-sources.json (user-defined paths)
     """
     home = Path.home()
     candidates = []
@@ -647,61 +669,55 @@ def _discover_skill_dirs():
             seen_paths.add(str(d))
             candidates.append(d)
 
-    # 1. Standard agent prefixes
-    for prefix in [
-        home / ".claude", home / ".agents", home / ".alice", home / ".cc-switch",
-        home / ".codex", home / ".hermes", home / ".openclaw", home / ".qclaw",
-        home / ".workbuddy", home / ".codebuddy", home / ".cursor", home / ".cola",
-        home / "Downloads", home / "hyperframes", home / "AI-Skills",
-        home / ".config" / "opencode", home / "Documents",
-    ]:
-        if not prefix.exists():
-            continue
-        add_dir(prefix / "skills")
-        skills_dir = prefix / "skills"
-        if skills_dir.is_dir():
-            for sub in skills_dir.iterdir():
-                if sub.is_dir():
-                    add_dir(sub)
-        for deep in ["hermes-agent", "skills-marketplace", "connectors-marketplace",
-                     "extensions", "workspaces", "backups", "skill-backups"]:
-            deep_dir = prefix / deep
-            if deep_dir.is_dir():
-                for sub in deep_dir.iterdir():
-                    if sub.is_dir():
-                        add_dir(sub)
-                        for sub2 in sub.iterdir():
-                            if sub2.is_dir():
-                                add_dir(sub2)
+    # 1. ~/.xxx/skills/ for any dot-prefixed hidden dir (generic — no hardcoded agent list)
+    try:
+        for entry in home.iterdir():
+            if not entry.is_dir():
+                continue
+            name = entry.name
+            if name.startswith(".") and not name.startswith(".."):
+                skills_dir = entry / "skills"
+                if skills_dir.is_dir():
+                    add_dir(skills_dir)
+                    # Also check sub-directories within skills/ (e.g., skills/marketplace/)
+                    try:
+                        for sub in skills_dir.iterdir():
+                            if sub.is_dir():
+                                add_dir(sub)
+                    except (PermissionError, OSError):
+                        pass
+    except (PermissionError, OSError):
+        pass
 
-    # 2. Auto-recursive scan: find all */skills/ directories under ~ (max depth 3)
-    def scan_for_skills(root, depth=0, max_depth=3):
-        if depth >= max_depth:
-            return
+    # 2. ~/first-level/skills/ for non-hidden directories
+    try:
+        for entry in home.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            skills_dir = entry / "skills"
+            if skills_dir.is_dir():
+                add_dir(skills_dir)
+    except (PermissionError, OSError):
+        pass
+
+    # 3. ~/projects/*//skills/ — project-level skill directories
+    for proj_root_name in ("projects", "Projects", "code", "Code", "workspace"):
+        proj_root = home / proj_root_name
+        if not proj_root.is_dir():
+            continue
         try:
-            for entry in root.iterdir():
-                if not entry.is_dir():
+            for proj in proj_root.iterdir():
+                if not proj.is_dir():
                     continue
-                name = entry.name
-                # Skip hidden, common non-skill dirs
-                if name.startswith(".") and name not in (".claude", ".agents", ".codex", ".cursor"):
-                    continue
-                if name in ("node_modules", "__pycache__", ".git", "venv", ".venv", "env", "dist", "build"):
-                    continue
-                if name == "skills":
-                    add_dir(entry)
-                # Also check for <agent>/skills pattern
-                sub_skills = entry / "skills"
-                if sub_skills.is_dir():
-                    add_dir(sub_skills)
-                scan_for_skills(entry, depth + 1, max_depth)
+                add_dir(proj / "skills")
+                # Check any .xxx/skills/ inside the project
+                for sub in proj.iterdir():
+                    if sub.is_dir() and sub.name.startswith(".") and not sub.name.startswith(".."):
+                        add_dir(sub / "skills")
         except (PermissionError, OSError):
             pass
 
-    scan_for_skills(home, depth=0, max_depth=3)
-
-    # 3. .skill-dashboard.json config files
-    # Home-level config
+    # 4. .skill-dashboard.json config files
     home_config = home / ".skill-dashboard.json"
     if home_config.exists():
         try:
@@ -710,9 +726,9 @@ def _discover_skill_dirs():
                 add_dir(Path(p).expanduser())
         except Exception:
             pass
-    # Project-level configs (scan common project roots)
-    for proj_root in [home / "projects", home / "Projects", home / "code", home / "Code", home / "workspace"]:
-        if not proj_root.exists():
+    for proj_root_name in ("projects", "Projects", "code", "Code", "workspace"):
+        proj_root = home / proj_root_name
+        if not proj_root.is_dir():
             continue
         try:
             for proj in proj_root.iterdir():
@@ -729,25 +745,6 @@ def _discover_skill_dirs():
         except (PermissionError, OSError):
             pass
 
-    # 4. Projects (legacy hard-coded project paths)
-    projects_dir = home / "projects"
-    if projects_dir.exists():
-        for p in projects_dir.iterdir():
-            if not p.is_dir():
-                continue
-            add_dir(p / ".claude" / "skills")
-            add_dir(p / "skills")
-            add_dir(p / ".agents" / "skills")
-            add_dir(p / ".codex" / "skills")
-
-    # Downloads subdirs
-    downloads = home / "Downloads"
-    if downloads.is_dir():
-        for d in downloads.iterdir():
-            if d.is_dir():
-                add_dir(d / ".claude" / "skills")
-                add_dir(d / "skills")
-
     # 5. Custom sources (legacy)
     try:
         cf = STATE_DIR / "custom-sources.json"
@@ -759,7 +756,10 @@ def _discover_skill_dirs():
 
     # Filter to dirs that actually contain SKILL.md entries
     return [d for d in candidates
-            if d.is_dir() and any(c.is_dir() and (c / "SKILL.md").exists() for c in d.iterdir())]
+            if d.is_dir() and any(
+                (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
+                for c in d.iterdir()
+            )]
 
 
 def _scan_global_categories():
@@ -1494,6 +1494,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(_scan_global_categories())
         elif path == "/api/global-overlap":
             self._json_response(detect_cross_dir_overlaps())
+        elif path == "/api/scan-result":
+            self._serve_json(CACHE_DIR / "scan-result.json")
         elif path == "/api/favorite-dirs":
             self._get_favorite_dirs()
         elif path == "/api/trash":
@@ -1534,6 +1536,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._set_target()
         elif path == "/api/diagnose":
             self._diagnose()
+        elif path == "/api/scan-run":
+            self._run_scan()
         elif path == "/api/steal":
             self._steal_skill()
         elif path == "/api/copy-skill":
@@ -1752,6 +1756,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
                 {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
                 {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (Python-only)"},
+                {"method": "POST", "path": "/api/scan-run", "desc": "Targeted scan: selected directories + analysis types"},
+                {"method": "GET", "path": "/api/scan-result", "desc": "Get cached scan result"},
                 {"method": "POST", "path": "/api/steal", "desc": "Install skill from GitHub URL"},
                 {"method": "DELETE", "path": "/api/skill/{name}", "desc": "Delete a skill"},
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
@@ -2049,6 +2055,120 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     # ── Diagnosis (uses module-level globals + lock) ──
 
+    def _run_scan(self):
+        """Run targeted scan: user-selected directories + analysis types."""
+        body = self._read_json()
+        if not body:
+            self._json_response({"error": "invalid request body"}, status=400)
+            return
+
+        directories = body.get("directories", [])
+        checks = body.get("checks", [])
+        if not directories:
+            self._json_response({"error": "请至少选择一个目录"}, status=400)
+            return
+        if not checks:
+            self._json_response({"error": "请至少选择一种分析类型"}, status=400)
+            return
+
+        # Validate directories
+        home = Path.home()
+        valid_dirs = []
+        for d in directories:
+            p = Path(d).expanduser().resolve()
+            if p.is_dir() and p.is_relative_to(home):
+                valid_dirs.append(p)
+        if not valid_dirs:
+            self._json_response({"error": "没有有效的 skill 目录"}, status=400)
+            return
+
+        t0 = time.time()
+        result = {
+            "upstream_sources": [],
+            "overlap_groups": [],
+            "duplicates_same_name": [],
+            "duplicates_identical": [],
+            "agent_similar": {},
+            "content_changes": None,
+            "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "scanned_dirs": len(valid_dirs),
+        }
+
+        # Per-directory checks
+        for tdir in valid_dirs:
+            dir_skills = []
+            try:
+                for d in sorted(tdir.iterdir()):
+                    if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists():
+                        dir_skills.append({"name": d.name})
+            except Exception:
+                continue
+
+            if not dir_skills:
+                continue
+
+            # Similarity within this directory
+            if "similar" in checks and len(dir_skills) > 1:
+                groups = compute_tfidf_similarity(
+                    str(tdir), dir_skills, agent_name=_agent_from_path(str(tdir))
+                )
+                if groups:
+                    result["overlap_groups"].extend(groups)
+
+            # Upstream tracking
+            if "upstream" in checks:
+                for s in dir_skills:
+                    skill_dir = tdir / s["name"]
+                    try:
+                        status = check_upstream_status(skill_dir)
+                        if status.get("status") in ("current", "outdated"):
+                            result["upstream_sources"].append({
+                                "name": s["name"],
+                                "repo": status.get("repo", ""),
+                                "status": status["status"],
+                                "installed_commit": status.get("installed_commit", ""),
+                                "latest_commit": status.get("latest_commit", ""),
+                                "dir": str(tdir),
+                            })
+                    except Exception:
+                        pass
+
+            # Content changes
+            if "content-changes" in checks:
+                try:
+                    changes = check_content_changes(str(tdir))
+                    if changes and changes.get("total_changed", 0) > 0:
+                        if result["content_changes"] is None:
+                            result["content_changes"] = {"changed": [], "deleted": [], "total_tracked": 0, "total_changed": 0}
+                        result["content_changes"]["changed"].extend(changes.get("changed", []))
+                        result["content_changes"]["deleted"].extend(changes.get("deleted", []))
+                        result["content_changes"]["total_tracked"] += changes.get("total_tracked", 0)
+                        result["content_changes"]["total_changed"] += changes.get("total_changed", 0)
+                except Exception:
+                    pass
+
+        # Cross-directory checks (need 2+ dirs)
+        if len(valid_dirs) >= 2:
+            if "same-name" in checks:
+                dup_id, dup_sn = _find_same_name_duplicates(valid_dirs)
+                result["duplicates_identical"] = dup_id
+                result["duplicates_same_name"] = dup_sn
+            if "similar" in checks:
+                result["agent_similar"] = _find_agent_cross_dir_similar(valid_dirs)
+
+        result["duration_ms"] = int((time.time() - t0) * 1000)
+
+        # Cache result
+        try:
+            CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            (CACHE_DIR / "scan-result.json").write_text(
+                json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception:
+            pass
+
+        self._json_response(result)
+
     def _diagnose(self):
         """Trigger Python-only diagnosis in background. No dashboard needed."""
         global _diag_process, _diag_target, _diag_start, _diag_phase
@@ -2134,7 +2254,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         cf.write_text(json.dumps(paths, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def _list_targets(self):
-        """Scan common locations + nested subdirs + custom sources for skill directories.
+        """List all discovered skill directories grouped by agent.
         Uses shared _discover_skill_dirs for directory discovery.
         """
         home = Path.home()
@@ -2145,45 +2265,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
         targets = []
         for skills_dir in skill_dirs:
             count = sum(1 for d in skills_dir.iterdir()
-                       if d.is_dir() and (d / "SKILL.md").exists())
+                       if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists())
             if count == 0:
                 continue
             rel = str(skills_dir).replace(str(home), "~")
-            name = skills_dir.name if skills_dir.name != "skills" else skills_dir.parent.name
-            # Agent label detection
-            rel_lower = rel.lower()
-            if "claude" in rel_lower and ".claude" in rel_lower:
-                agent = "Claude Code"
-            elif "codex" in rel_lower:
-                agent = "Codex"
-            elif "agents" in rel_lower:
-                agent = "通用 Agents"
-            elif "alice" in rel_lower:
-                agent = "Alice"
-            elif "cc-switch" in rel_lower:
-                agent = "CC-Switch"
-            elif "workbuddy" in rel_lower:
-                agent = "WorkBuddy"
-            elif "codebuddy" in rel_lower:
-                agent = "CodeBuddy"
-            elif "hermes" in rel_lower:
-                agent = "Hermes"
-            elif "cursor" in rel_lower:
-                agent = "Cursor"
-            elif "openclaw" in rel_lower:
-                agent = "OpenClaw"
-            elif "qclaw" in rel_lower:
-                agent = "QClaw"
-            elif "cola" in rel_lower:
-                agent = "Cola"
-            elif "downloads" in rel_lower:
-                agent = "Downloads"
-            elif "projects" in rel_lower:
-                agent = "项目: " + skills_dir.parent.name
-            elif "hyperframes" in rel_lower:
-                agent = "HyperFrames"
-            else:
-                agent = name
+            # Use shared agent detection
+            agent = _agent_from_path(str(skills_dir))
             scope = "project" if "projects/" in rel else "global"
             targets.append({
                 "path": str(skills_dir),

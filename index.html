@@ -349,8 +349,11 @@ tbody tr:hover{background:var(--bg-hover)}
       </div>
 
 
-      <!-- Issues (with fix actions + similarity + all diagnostics) -->
-      <div class="view" id="view-issues"><div id="issues-list"></div></div>
+      <!-- Issues (scan config + analysis results) -->
+      <div class="view" id="view-issues">
+        <div id="scan-config"></div>
+        <div id="issues-list"></div>
+      </div>
 
       <!-- Sources -->
       <div class="view" id="view-sources"><div id="sources-list"></div></div>
@@ -452,10 +455,34 @@ async function loadFavDirs(){
   try{favDirs=await fetch('/api/favorite-dirs').then(r=>r.json())}catch{favDirs=[]}
 }
 let globalOverlap=null;
+let scanResult=null; // cached scan results from /api/scan-run
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
+}
+async function loadCachedScanResult(){
+  const r=await fetch('/api/scan-result').then(r=>r.json()).catch(()=>null);
+  if(r&&!r.error&&r.scanned_at){
+    scanResult=r;
+    // Map scan result into health/globalOverlap for renderIssues
+    health={
+      upstream_sources:r.upstream_sources||[],
+      overlap_groups:r.overlap_groups||[],
+      content_changes:r.content_changes,
+      structure_issues:[],
+      cleanup_candidates:[],
+      generated_at:r.scanned_at,
+    };
+    globalOverlap={
+      duplicates_same_name:r.duplicates_same_name||[],
+      duplicates_identical:r.duplicates_identical||[],
+      agent_similar:r.agent_similar||{},
+      total_identical:(r.duplicates_identical||[]).length,
+    };
+    renderIssues();
+    updateDiagBadges();
+  }
 }
 async function saveFavDirs(){
   await fetch('/api/favorite-dirs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(favDirs)});
@@ -489,8 +516,8 @@ async function loadData(){
     if(gs){globalStats=gs;renderStats();renderCategories()}
   });
   // Load global overlap data (cross-directory duplicates + similarity)
-  loadGlobalOverlap().then(()=>{if(globalOverlap)renderIssues()});
-  // Fallback: load targets as sources
+  // Removed: now user-triggered via scan panel
+  // Fallback: load targets as sources (directory list)
   if(!scan?.sources?.length){
     try{
       const td=await fetch('/api/targets').then(r=>r.json());
@@ -504,13 +531,8 @@ async function loadData(){
       }
     }catch(e){}
   }
-  // Layer 1: Python quick-check (structure issues + health score, ~10ms)
-  const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
-  if(qc&&!qc.error){
-    health=qc;renderIssues();
-  }
-  // Check if there's cached full diagnosis
-  checkCachedDiagnosis();
+  // Load cached scan results (if user previously ran a scan)
+  loadCachedScanResult();
   loadTrash();
 }
 
@@ -551,13 +573,18 @@ function render(){
 }
 
 function updateDiagBadges(){
+  if(!scanResult&&!health){
+    $('badge-health').textContent='-';
+    $('badge-issues').textContent='—';
+    return;
+  }
   const h=health;
   $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
-  const structIssues=h?.structure_issues?.length||0;
-  const contentChanges=h?.content_changes?.total_changed||0;
   const overlapGroups=h?.overlap_groups?.length||0;
+  const upstreamOutdated=(h?.upstream_sources||[]).filter(s=>s.status==='outdated').length;
   const globalDups=globalOverlap?.total_identical||0;
-  const totalIssues=structIssues+contentChanges+overlapGroups+(globalDups?1:0);
+  const sameName=(globalOverlap?.duplicates_same_name||[]).length;
+  const totalIssues=overlapGroups+upstreamOutdated+globalDups+sameName;
   $('badge-issues').textContent=totalIssues||'—';
 }
 
@@ -577,7 +604,7 @@ function renderStats(){
   const dups=globalOverlap?.total_identical||0;
   const similar=h?.overlap_groups?.length||0;
   const changes=h?.content_changes?.total_changed||0;
-  const actionable=issues+dups+similar+changes;
+  const actionable=scanResult?(issues+dups+similar+changes):0;
   $('stats-row').innerHTML=`
     <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全量 Skills</div></div>
     <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
@@ -821,26 +848,150 @@ async function previewSkill(dirPath,name){
   }catch(e){toast('预览失败','error')}
 }
 
+/* ── Scan Config Panel ── */
+function renderScanConfig(){
+  const el=$('scan-config');
+  if(!el) return;
+  // Ensure we have targets loaded
+  if(!targetGroups.length&&!targets.length){
+    el.innerHTML='<div class="card"><div class="card-head"><h3>🔍 360 Scanner</h3></div><div style="padding:8px;color:var(--text-muted);font-size:12px">加载目录中...</div></div>';
+    // Try loading targets now
+    fetch('/api/targets').then(r=>r.json()).catch(()=>null).then(td=>{
+      if(td){
+        const ts=td.targets||td;
+        if(ts?.length){targets=ts;targetGroups=td.groups||[];renderScanConfig();}
+      }
+    });
+    return;
+  }
+
+  // Build directory checkboxes from targetGroups
+  let dirHtml='';
+  const curTarget=targets.find(t=>t.is_current);
+  const curPath=curTarget?.path||'';
+
+  if(targetGroups.length){
+    targetGroups.forEach(g=>{
+      dirHtml+=`<div style="margin-bottom:6px"><div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:2px">${esc(g.agent)} (${g.dirs.length} 目录)</div>`;
+      g.dirs.forEach(d=>{
+        const checked=d.path===curPath||(!scanResult&&d.is_current)?'checked':'';
+        dirHtml+=`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(d.path)}">
+          <input type="checkbox" class="scan-dir-check" value="${esc(d.path)}" ${checked}>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(d.rel)}</span>
+          <span style="color:var(--text-muted);font-size:10px;flex-shrink:0">${d.count}</span>
+        </label>`;
+      });
+      dirHtml+='</div>';
+    });
+  }else{
+    targets.forEach(t=>{
+      const checked=t.is_current?'checked':'';
+      dirHtml+=`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer">
+        <input type="checkbox" class="scan-dir-check" value="${esc(t.path)}" ${checked}>
+        <span>${esc(t.rel)}</span>
+        <span style="color:var(--text-muted);font-size:10px">${t.count}</span>
+      </label>`;
+    });
+  }
+
+  const lastScan=scanResult?`<span style="font-size:10px;color:var(--text-muted)">上次: ${scanResult.scanned_at} (${scanResult.duration_ms}ms)</span>`:'';
+
+  el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
+    <div class="card-head"><h3>🔍 360 Scanner</h3><span class="sub">选择范围和分析类型</span></div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;padding-top:4px">
+      <div style="flex:1;min-width:220px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+          <div style="font-size:11px;font-weight:600;color:var(--text-muted)">扫描目录</div>
+          <div style="display:flex;gap:6px">
+            <button class="btn btn-sm" style="font-size:9px;padding:1px 6px" onclick="scanSelectAll(true)">全选</button>
+            <button class="btn btn-sm" style="font-size:9px;padding:1px 6px" onclick="scanSelectAll(false)">清空</button>
+          </div>
+        </div>
+        <div style="max-height:180px;overflow-y:auto">${dirHtml}</div>
+      </div>
+      <div style="min-width:150px">
+        <div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:4px">分析类型</div>
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer">
+          <input type="checkbox" class="scan-check-type" value="same-name" checked> 同名分析
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer">
+          <input type="checkbox" class="scan-check-type" value="similar" checked> 相似分析
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer">
+          <input type="checkbox" class="scan-check-type" value="upstream"> 上游追踪
+        </label>
+        <label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer">
+          <input type="checkbox" class="scan-check-type" value="content-changes"> 内容变更
+        </label>
+      </div>
+    </div>
+    <div style="margin-top:10px;display:flex;gap:8px;align-items:center">
+      <button class="btn btn-primary" id="scan-run-btn" onclick="runScan()">🔍 开始扫描</button>
+      ${lastScan}
+    </div>
+  </div>`;
+}
+
+function scanSelectAll(val){
+  document.querySelectorAll('.scan-dir-check').forEach(c=>c.checked=val);
+}
+
+async function runScan(){
+  const dirs=[...document.querySelectorAll('.scan-dir-check:checked')].map(c=>c.value);
+  const checks=[...document.querySelectorAll('.scan-check-type:checked')].map(c=>c.value);
+  if(!dirs.length){toast('请至少选择一个目录','error');return}
+  if(!checks.length){toast('请至少选择一种分析类型','error');return}
+  const btn=$('scan-run-btn');
+  btn.disabled=true;btn.textContent='⏳ 扫描中...';
+  try{
+    const r=await fetch('/api/scan-run',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({directories:dirs,checks})
+    }).then(r=>r.json());
+    if(r.error){toast(r.error,'error');return}
+    scanResult=r;
+    // Map scan result into health/globalOverlap for renderIssues
+    health={
+      upstream_sources:r.upstream_sources||[],
+      overlap_groups:r.overlap_groups||[],
+      content_changes:r.content_changes,
+      structure_issues:[],
+      cleanup_candidates:[],
+      generated_at:r.scanned_at,
+    };
+    globalOverlap={
+      duplicates_same_name:r.duplicates_same_name||[],
+      duplicates_identical:r.duplicates_identical||[],
+      agent_similar:r.agent_similar||{},
+      total_identical:(r.duplicates_identical||[]).length,
+    };
+    renderIssues();
+    updateDiagBadges();
+    toast(`扫描完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
+  }catch(e){toast('扫描失败: '+e.message,'error')}
+  finally{btn.disabled=false;btn.textContent='🔍 开始扫描'}
+}
+
 /* ── Issues with fix actions (redesigned) ── */
 function renderIssues(){
+  // Always render scan config panel
+  renderScanConfig();
+
   const issues=health?.structure_issues||[];
-  const cleanups=health?.cleanup_candidates||[];
   const changes=health?.content_changes;
   const overlaps=health?.overlap_groups||[];
   const upstreams=health?.upstream_sources||[];
-  const hs=health?.health_score;
+
+  // If no scan has been run, show empty state
+  if(!scanResult&&(!health||(!overlaps.length&&!upstreams.length&&!issues.length))){
+    $('issues-list').innerHTML='<div class="empty" style="padding:30px 0">👆 选择目录和分析类型，点击「开始扫描」</div>';
+    return;
+  }
 
   // Count total actionable items
-  const noDesc=cleanups.filter(c=>{
-    const sk=skills.find(s=>s.name===c);return sk&&!sk.description;
-  });
-  const oversized=cleanups.filter(c=>{
-    const sk=skills.find(s=>s.name===c);return sk&&sk.oversized;
-  });
-  const brokenOnly=issues.filter(i=>i.kind==='broken_symlink');
-  const noFmOnly=issues.filter(i=>i.kind==='no_frontmatter');
   const hasChanges=changes&&changes.changed?.length>0;
-  const totalItems=noFmOnly.length+brokenOnly.length+noDesc.length+overlaps.length+(hasChanges?changes.changed.length:0);
+  const totalItems=issues.length+overlaps.length+(hasChanges?changes.changed.length:0);
 
   let h='';
 
@@ -848,9 +999,9 @@ function renderIssues(){
   const dupCount=globalOverlap?(globalOverlap.duplicates_same_name?.length||0):0;
   const totalAll=totalItems+dupCount;
 
-  // Summary bar: actionable count + refresh button
-  if(totalAll===0&&!oversized.length){
-    h='<div class="empty">✅ 无问题，一切正常</div>';
+  // Summary bar: actionable count
+  if(totalAll===0){
+    h='<div class="empty">✅ 扫描完成，未发现问题</div>';
     $('issues-list').innerHTML=h;return;
   }
   h+=`<div class="card" style="border-left:3px solid var(--accent)">
@@ -858,9 +1009,8 @@ function renderIssues(){
       <div style="font-size:28px;font-weight:700;color:var(--accent)">${totalAll}</div>
       <div style="flex:1">
         <div style="font-size:13px;font-weight:600">待处理项</div>
-        <div style="font-size:11px;color:var(--text-muted)">${skills.length} skills · ${totalAll} 个可处理${dupCount?` · ${dupCount} 个重复`:''}</div>
+        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${totalAll} 个可处理${dupCount?` · ${dupCount} 个重复`:''}</div>
       </div>
-      <button class="btn btn-sm btn-primary" id="issues-diag-btn" onclick="runDiagnosis()">🔧 重新检测</button>
     </div>
   </div>`;
 
@@ -1761,15 +1911,13 @@ function safeDesc(d){return String(d||'').replace(/`/g,"'").replace(/\$\{/g,'{')
 async function refreshData(){
   $('refresh-btn').disabled=true;
   try{
-    // Quick refresh: reload fast-scan + quick-check
+    // Quick refresh: reload fast-scan only
     const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
     if(sr){
       scan=sr;skills=sr?.installed||[];
       skills.forEach(s=>{if(!s.category||s.category===''||!CAT_NAMES[s.category])s.category=classifySkillJS(s.name,s.description)});
       render();
     }
-    const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
-    if(qc&&!qc.error){health=qc;renderIssues();updateDiagBadges();}
     await loadSourcesFallback();
     toast('已刷新');
   }catch(e){toast('刷新失败','error')}
@@ -1886,11 +2034,6 @@ async function switchTarget(path){
     fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
       if(gs){globalStats=gs;renderStats();renderCategories()}
     });
-    // Quick-check the new target
-    const qc=await fetch('/api/quick-check').then(r=>r.json()).catch(()=>null);
-    if(qc&&!qc.error){health=qc;renderIssues();updateDiagBadges();}
-    // Check for cached full diagnosis
-    checkCachedDiagnosis();
   }catch(e){toast('切换失败: '+e.message,'error')}
   finally{$('refresh-btn').disabled=false}
 }
