@@ -193,9 +193,7 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
     target_agent = agent_name or _agent_from_path(target_path)
     if len(skills_data) <= 1:
         return []
-    # Skip for very large collections (let full diagnosis handle it)
-    if len(skills_data) > 300:
-        return []
+    # No cap — TF-IDF on a few hundred items is cheap enough
 
     # Check cache only when reading from disk (docs=None)
     tfidf_cache = None
@@ -458,7 +456,7 @@ def _find_agent_cross_dir_similar(dirs):
                     agent_skills.append({"name": skill_name})
                 except Exception:
                     pass
-        if 1 < len(agent_skills) <= 300:
+        if 1 < len(agent_skills):
             groups = compute_tfidf_similarity(
                 target_path=agent_dir_list[0],
                 skills_data=agent_skills,
