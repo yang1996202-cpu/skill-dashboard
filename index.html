@@ -1195,6 +1195,8 @@ function renderIssues(){
       const agents=new Set(dup.locations.map(l=>l.agent||'其他'));
       return agents.size>=2;
     });
+    // Collect cross-agent dup names so within-agent section won't duplicate them
+    const crossAgentNames=new Set(crossAgent.map(d=>d.name));
     if(crossAgent.length){
       h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 跨 Agent 同名</h3><span class="sub">${crossAgent.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">同名 skill 出现在 2 个以上不同 Agent 中</div>`;
@@ -1231,10 +1233,11 @@ function renderIssues(){
       h+=`</div>`;
     }
 
-    // Within-agent same-name: groups with 2+ locations for the SAME agent
+    // Within-agent same-name: groups with 2+ locations for the SAME agent (exclude cross-agent dups)
     const snByAgent={};
     filteredSameName.forEach(dup=>{
       if(dup.locations.length<2) return;
+      if(crossAgentNames.has(dup.name)) return; // skip cross-agent dups
       dup.locations.forEach(loc=>{
         const a=loc.agent||'其他';
         if(!snByAgent[a]) snByAgent[a]=new Set();
