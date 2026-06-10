@@ -872,13 +872,25 @@ const CAT_META={
 function renderScanConfig(){
   const el=$('scan-config');
   if(!el) return;
-  const lastScan=scanResult?`<span style="font-size:11px;color:var(--text-muted)">上次扫描: ${scanResult.scanned_at} · ${scanResult.scanned_dirs} 目录 · ${scanResult.duration_ms}ms</span>`:'';
+  let statusHtml='';
+  if(scanResult){
+    const sn=scanResult.duplicates_same_name?.length||0;
+    const ov=scanResult.overlap_groups?.length||0;
+    const ag=Object.values(scanResult.agent_similar||{}).reduce((s,g)=>s+g.length,0);
+    const up=scanResult.upstream_sources?.length||0;
+    statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:var(--green-bg);border:1px solid color-mix(in srgb,var(--green) 30%,transparent);border-radius:6px;font-size:11px;color:var(--green)">
+      <span>✅ 扫描完成</span>
+      <span style="color:var(--text-muted)">${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
+      <span style="color:var(--text-muted)">·</span>
+      <span>同名 ${sn}</span><span>相似 ${ov+ag}</span><span>上游 ${up}</span>
+    </div>`;
+  }
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="btn btn-primary" id="scan-run-btn" onclick="runScan()">🔍 全量扫描</button>
-      ${lastScan}
-      <span style="font-size:10px;color:var(--text-dim)">扫描所有已发现的 skill 目录（同名 + 相似 + 上游 + 内容变更）</span>
+      <span style="font-size:10px;color:var(--text-dim)">扫描所有 skill 目录 · 同名 + 相似 + 上游 + 变更</span>
     </div>
+    ${statusHtml}
   </div>`;
 }
 
