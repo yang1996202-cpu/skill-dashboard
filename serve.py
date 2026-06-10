@@ -2292,7 +2292,72 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+        # Lint: verify result consistency
+        result["lint"] = self._lint_scan_result(result)
+
         self._json_response(result)
+
+    def _lint_scan_result(self, result):
+        """Check scan result for logical inconsistencies. Returns list of warnings."""
+        warnings = []
+
+        # 1. Same-name: every group must have 2+ locations
+        sn = result.get("duplicates_same_name", [])
+        for dup in sn:
+            if len(dup.get("locations", [])) < 2:
+                warnings.append(f"same-name group '{dup.get('name','?')}' has {len(dup.get('locations',[]))} locations (need 2+)")
+
+        # 2. Overlap groups: each must have 2+ skills
+        ov = result.get("overlap_groups", [])
+        for g in ov:
+            if len(g.get("skills", [])) < 2:
+                warnings.append(f"overlap group has {len(g.get('skills',[]))} skills (need 2+)")
+
+        # 3. Agent-similar: each group must have 2+ skills
+        for agent, groups in result.get("agent_similar", {}).items():
+            for g in groups:
+                if len(g.get("skills", [])) < 2:
+                    warnings.append(f"agent_similar[{agent}] group has {len(g.get('skills',[]))} skills (need 2+)")
+
+        # 4. Upstream: each must have name and dir
+        for s in result.get("upstream_sources", []):
+            if not s.get("name"):
+                warnings.append(f"upstream entry missing name: {s}")
+            if not s.get("dir"):
+                warnings.append(f"upstream entry '{s.get('name','?')}' missing dir")
+
+        # 5. Cross-dir same-name: count groups that span 2+ agents
+        cross_agent_count = sum(1 for dup in sn if len(set(l.get("agent", "") for l in dup.get("locations", []))) >= 2)
+        within_agent_count = 0
+        sn_by_agent = {}
+        for dup in sn:
+            if len(dup.get("locations", [])) < 2:
+                continue
+            for loc in dup.get("locations", []):
+                a = loc.get("agent", "其他")
+                if a not in sn_by_agent:
+                    sn_by_agent[a] = set()
+                sn_by_agent[a].add(dup["name"])
+        for a, names in sn_by_agent.items():
+            # Count names where this agent has 2+ locations
+            for dup in sn:
+                agent_locs = [l for l in dup.get("locations", []) if l.get("agent", "其他") == a]
+                if len(agent_locs) >= 2:
+                    within_agent_count += 1
+
+        total_shown = cross_agent_count + within_agent_count
+        if total_shown != len(sn):
+            # Some groups might not be shown anywhere
+            pass  # This is expected if some dups only have 1 location per agent
+
+        return {"warnings": warnings, "checks": {
+            "same_name_groups": len(sn),
+            "cross_agent_groups": cross_agent_count,
+            "within_agent_groups": within_agent_count,
+            "overlap_groups": len(ov),
+            "upstream_sources": len(result.get("upstream_sources", [])),
+            "agent_similar_agents": len(result.get("agent_similar", {})),
+        }}
 
     def _diagnose(self):
         """Trigger Python-only diagnosis in background. No dashboard needed."""
