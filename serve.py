@@ -815,25 +815,17 @@ def _discover_skill_dirs():
         .vscode/agent-plugins/github.com/org/repo/plugins/name/skills/
         .antigravity/extensions/ms-python.../.github/skills/
 
-        When a skill container is found (dir with SKILL.md children), we still
-        recurse into NON-HIDDEN subdirectories (for marketplace structures like
-        plugins/*/skills/) but skip hidden ones (.cursor/, .agents/ etc. inside
-        skill packages like gstack that contain internal agent copies).
+        Fully recursive — discovers everything including internal copies (e.g.
+        gstack/.cursor/skills/).  These are real files on disk and should be shown.
         """
         if _depth >= max_depth:
             return
         try:
             for entry in root.iterdir():
-                if not entry.is_dir() or entry.name in _SKIP_DEEP or entry.name.startswith('.'):
+                if not entry.is_dir() or entry.name in _SKIP_DEEP:
                     continue
                 if _has_skill_md(entry):
                     add_dir(entry, _validated=True)
-                    # Recurse into non-hidden children only (marketplace structures)
-                    # Skip hidden children (.cursor, .agents, etc.) — internal copies
-                    for sub in entry.iterdir():
-                        if sub.is_dir() and not sub.name.startswith('.') and sub.name not in _SKIP_DEEP:
-                            _scan_agent_deep(sub, max_depth, _depth + 1)
-                    continue
                 _scan_agent_deep(entry, max_depth, _depth + 1)
         except (PermissionError, OSError):
             pass
@@ -853,11 +845,8 @@ def _discover_skill_dirs():
                     add_dir(skills_dir)
                     try:
                         for sub in skills_dir.iterdir():
-                            # Skip hidden dirs (gstack/.cursor etc.) and skip leaf skill dirs
-                            # (sub/SKILL.md means sub IS a skill, not a container)
-                            if sub.is_dir() and not sub.name.startswith('.'):
-                                if not (sub / "SKILL.md").exists():
-                                    add_dir(sub)
+                            if sub.is_dir():
+                                add_dir(sub)
                     except (PermissionError, OSError):
                         pass
                 # Deep scan for ALL .xxx dirs (not just confirmed agents)
