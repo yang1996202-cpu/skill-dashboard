@@ -950,13 +950,12 @@ function renderIssues(){
   const catCounts={}; catKeys.forEach(k=>catCounts[k]=0);
   catCounts['all']=0;
 
-  // Count same-name issues per category
+  // Count same-name issues per category (count GROUPS, not locations)
   sameName.forEach(dup=>{
     if(dup.locations.length<2) return;
-    dup.locations.forEach(loc=>{
-      const c=_dirCategory(loc.dir);
-      catCounts[c]=(catCounts[c]||0)+1;
-    });
+    const cats=new Set();
+    dup.locations.forEach(loc=>{cats.add(_dirCategory(loc.dir))});
+    cats.forEach(c=>{catCounts[c]=(catCounts[c]||0)+1});
     catCounts['all']++;
   });
 
