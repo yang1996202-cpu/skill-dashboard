@@ -2176,23 +2176,22 @@ class DashboardHandler(BaseHTTPRequestHandler):
     # ── Diagnosis (uses module-level globals + lock) ──
 
     def _run_scan(self):
-        """Run targeted scan: user-selected directories + analysis types."""
-        body = self._read_json()
-        if not body:
-            self._json_response({"error": "invalid request body"}, status=400)
-            return
+        """Run full scan across all discovered skill directories."""
+        body = self._read_json() or {}
 
         directories = body.get("directories", [])
-        checks = body.get("checks", [])
+        # If no directories specified, scan all discovered dirs
+        home = Path.home()
         if not directories:
-            self._json_response({"error": "请至少选择一个目录"}, status=400)
-            return
-        if not checks:
-            self._json_response({"error": "请至少选择一种分析类型"}, status=400)
-            return
+            skill_dirs = _discover_skill_dirs()
+            directories = [str(d) for d in skill_dirs
+                          if sum(1 for x in d.iterdir()
+                                if (x.is_dir() or x.is_symlink()) and (x / "SKILL.md").exists()) > 0]
+
+        # Always run all check types
+        checks = body.get("checks", ["same-name", "similar", "upstream", "content-changes"])
 
         # Validate directories
-        home = Path.home()
         valid_dirs = []
         for d in directories:
             p = Path(d).expanduser().resolve()
