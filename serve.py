@@ -669,36 +669,88 @@ def _discover_skill_dirs():
             seen_paths.add(str(d))
             candidates.append(d)
 
-    # 1. ~/.xxx/skills/ for any dot-prefixed hidden dir (generic — no hardcoded agent list)
+    # 1. ~/.xxx/ — any dot-prefixed agent directory
+    #    Checks: skills/ subdir + all sub-entries of skills/ + non-standard dirs (depth 2)
+    def _has_skill_md(d):
+        """Check if directory contains at least one */SKILL.md entry."""
+        try:
+            return any((c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists() for c in d.iterdir())
+        except Exception:
+            return False
+
     try:
         for entry in home.iterdir():
             if not entry.is_dir():
                 continue
             name = entry.name
             if name.startswith(".") and not name.startswith(".."):
+                # Standard: ~/.xxx/skills/ and its subdirs
                 skills_dir = entry / "skills"
                 if skills_dir.is_dir():
                     add_dir(skills_dir)
-                    # Also check sub-directories within skills/ (e.g., skills/marketplace/)
                     try:
                         for sub in skills_dir.iterdir():
                             if sub.is_dir():
                                 add_dir(sub)
                     except (PermissionError, OSError):
                         pass
+                # Non-standard: scan other subdirs of ~/.xxx/ for SKILL.md entries (depth 2)
+                # Catches: ~/.openclaw/extensions/, ~/.openclaw/workspace/, ~/.alice/backups/, etc.
+                try:
+                    for sub in entry.iterdir():
+                        if not sub.is_dir() or sub.name == "skills":
+                            continue
+                        if sub.name.startswith(".") and sub.name not in (".git",):
+                            continue
+                        if _has_skill_md(sub):
+                            add_dir(sub)
+                        # Depth 2: sub/sub/
+                        try:
+                            for sub2 in sub.iterdir():
+                                if sub2.is_dir() and not sub2.name.startswith("."):
+                                    if _has_skill_md(sub2):
+                                        add_dir(sub2)
+                        except (PermissionError, OSError):
+                            pass
+                except (PermissionError, OSError):
+                    pass
     except (PermissionError, OSError):
         pass
 
-    # 2. ~/first-level/skills/ for non-hidden directories
+    # 2. ~/first-level/ — non-hidden directories
+    #    Checks: skills/ subdir + dirs that directly contain SKILL.md entries
     try:
         for entry in home.iterdir():
             if not entry.is_dir() or entry.name.startswith("."):
                 continue
+            name = entry.name
             skills_dir = entry / "skills"
             if skills_dir.is_dir():
                 add_dir(skills_dir)
+            # Also check if the dir itself is a skills collection (e.g., ~/AI-Skills/)
+            if name not in ("Downloads", "Documents", "Desktop", "Movies", "Music", "Pictures", "Public"):
+                if _has_skill_md(entry):
+                    add_dir(entry)
     except (PermissionError, OSError):
         pass
+
+    # 2b. ~/Downloads/ — scan subdirs for skill collections (depth 2)
+    downloads = home / "Downloads"
+    if downloads.is_dir():
+        try:
+            for d in downloads.iterdir():
+                if not d.is_dir():
+                    continue
+                if _has_skill_md(d):
+                    add_dir(d)
+                try:
+                    for d2 in d.iterdir():
+                        if d2.is_dir() and _has_skill_md(d2):
+                            add_dir(d2)
+                except (PermissionError, OSError):
+                    pass
+        except (PermissionError, OSError):
+            pass
 
     # 3. ~/projects/*//skills/ — project-level skill directories
     for proj_root_name in ("projects", "Projects", "code", "Code", "workspace"):
