@@ -2260,8 +2260,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _diagnosis_status(self):
         """Poll diagnosis progress. If done, cache and return results."""
-        global _diag_process
-        target = self._current_target()
+        global _diag_process, _diag_target
+        # Use the target captured when diagnosis started, not the current one
+        # (user may have switched targets while diagnosis was running)
+        target = _diag_target or self._current_target()
 
         with _diag_lock:
             # If process is running, check if it just finished
