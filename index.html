@@ -1187,7 +1187,49 @@ function renderIssues(){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">📛 同名分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
-    // Group by agent — only count dups with 2+ locations FOR THAT AGENT
+    // Cross-agent same-name: groups that span 2+ different agents
+    const crossAgent=filteredSameName.filter(dup=>{
+      if(dup.locations.length<2) return false;
+      const agents=new Set(dup.locations.map(l=>l.agent||'其他'));
+      return agents.size>=2;
+    });
+    if(crossAgent.length){
+      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 跨 Agent 同名</h3><span class="sub">${crossAgent.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">同名 skill 出现在 2 个以上不同 Agent 中</div>`;
+      crossAgent.forEach(dup=>{
+        const uid='csn-'+Math.random().toString(36).slice(2,8);
+        _compareData[uid]=dup.locations.map(l=>({name:l.name||dup.name,dir:l.dir}));
+        const agents=[...new Set(dup.locations.map(l=>l.agent||'其他'))].sort().join(', ');
+        h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+            <span style="font-size:10px;color:var(--text-muted)">▶</span>
+            <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${dup.locations.length} 个目录</span>
+            <span style="font-size:10px;color:var(--text-muted)">${agents}</span>
+            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
+          </div>
+          <div style="display:none;padding:6px 12px 10px">
+            ${dup.locations.map(loc=>{
+              const sn=loc.name||dup.name;
+              const shortDir=loc.dir.replace(/^\/Users\/[^/]+/,'~');
+              const sKey=sn+'|'+loc.dir;
+              const sCat=_dirCategory(loc.dir);
+              const sCm=CAT_META[sCat]||CAT_META.unknown;
+              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+                <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
+                <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
+                <span style="font-size:9px;color:var(--text-muted)">${loc.agent||''} · ${shortDir}</span>
+                <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      });
+      h+=`</div>`;
+    }
+
+    // Within-agent same-name: groups with 2+ locations for the SAME agent
     const snByAgent={};
     filteredSameName.forEach(dup=>{
       if(dup.locations.length<2) return;
@@ -1197,7 +1239,6 @@ function renderIssues(){
         snByAgent[a].add(dup);
       });
     });
-    // Convert sets to arrays, filter to dups with 2+ locations for this agent
     const snAgentList=Object.entries(snByAgent)
       .map(([agent,dupSet])=>{
         const validDups=[...dupSet].filter(dup=>{
