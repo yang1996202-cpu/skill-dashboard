@@ -560,8 +560,11 @@ def _agent_from_path(dir_path):
         if prefix in p:
             return name
     parts = Path(p).parts
-    for part in reversed(parts):
+    # For .config/<agent>/skills, the real agent name is the child of .config
+    for i, part in enumerate(parts):
         if part.startswith(".") and not part.startswith(".."):
+            if part == ".config" and i + 1 < len(parts):
+                return parts[i + 1]
             return part.lstrip(".")
     return Path(p).name
 
@@ -672,7 +675,8 @@ def _discover_skill_dirs():
     # 1. ~/.xxx/ — any dot-prefixed agent directory
     #    Only skip genuine system junk. Everything else: let SKILL.md validation decide.
     _SKIP_DEEP = {".git", ".Trash", "node_modules", "__pycache__", "venv", ".venv",
-                  "env", "dist", "build", "logs", ".cache", ".npm", "Library"}
+                  "env", "dist", "build", "logs", ".cache", ".npm", "Library",
+                  ".snapshots", ".tmp", ".temp"}
     # Shallow skip: only dirs that are DEFINITELY not agents (system caches, build tools)
     _SHALLOW_SKIP = {".Trash", ".cache", ".git"}
 
@@ -683,8 +687,13 @@ def _discover_skill_dirs():
         except Exception:
             return False
 
-    def _scan_agent_deep(root, max_depth=3, _depth=0):
-        """Deep scan within confirmed agent dirs for marketplaces/backups/etc."""
+    def _scan_agent_deep(root, max_depth=7, _depth=0):
+        """Deep scan within agent dirs for marketplaces/backups/extensions/plugins.
+
+        depth=7 covers deeply nested structures like:
+        .vscode/agent-plugins/github.com/org/repo/plugins/name/skills/
+        .antigravity/extensions/ms-python.../.github/skills/
+        """
         if _depth >= max_depth:
             return
         try:
@@ -693,8 +702,7 @@ def _discover_skill_dirs():
                     continue
                 if _has_skill_md(entry):
                     add_dir(entry)
-                if not entry.name.startswith("."):
-                    _scan_agent_deep(entry, max_depth, _depth + 1)
+                _scan_agent_deep(entry, max_depth, _depth + 1)
         except (PermissionError, OSError):
             pass
 
@@ -720,7 +728,7 @@ def _discover_skill_dirs():
                 # Deep scan for ALL .xxx dirs (not just confirmed agents)
                 # This catches: .config/opencode/skills/, .antigravity/extensions/,
                 # .alice/backups/, .openclaw/workspace/, etc.
-                _scan_agent_deep(entry, max_depth=3)
+                _scan_agent_deep(entry, max_depth=7)
     except (PermissionError, OSError):
         pass
 
