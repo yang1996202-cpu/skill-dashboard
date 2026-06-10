@@ -1708,7 +1708,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _serve_preview(self, dir_path, name):
         """Preview SKILL.md from any directory (no target switch needed).
         Query param ?full=1 returns full content instead of 500-char preview."""
-        skill_md = Path(dir_path) / name / "SKILL.md"
+        resolved = Path(dir_path).resolve()
+        if not resolved.is_relative_to(Path.home()):
+            self._json_response({"error": "dir must be under home directory"}, status=403)
+            return
+        skill_md = resolved / name / "SKILL.md"
         if not skill_md.exists():
             self._json_response({"error": "not found"}, status=404)
             return
@@ -1832,7 +1836,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         source_path = source_path.replace("${HOME}", home).replace("$HOME", home)
         if source_path.startswith("~"):
             source_path = str(Path.home() / source_path[2:])
-        source_dir = Path(source_path)
+        source_dir = Path(source_path).resolve()
+        if not source_dir.is_relative_to(Path.home()):
+            self._json_response({"error": "path must be under home directory"}, status=403)
+            return
         if not source_dir.is_dir():
             self._json_response({"error": f"not a dir: {source_path}"}, status=400)
             return
