@@ -1004,18 +1004,20 @@ function renderIssues(){
   const tab=_issueCategoryTab;
   const matchCat=tab==='all'?()=>true:(dir)=>_dirCategory(dir)===tab;
 
-  // Filter same-name duplicates: keep groups where at least one location matches
+  // Filter same-name duplicates: scoped to selected category
+  // On "all" tab: show everything (cross-agent + within-agent)
+  // On specific tab: only groups whose locations ALL belong to this category
   const filteredSameName=tab==='all'?sameName:sameName.filter(dup=>
-    dup.locations.length>=2 && dup.locations.some(l=>matchCat(l.dir))
+    dup.locations.length>=2 && dup.locations.every(l=>matchCat(l.dir))
   );
 
-  // Filter overlaps (current dir similar)
+  // Filter overlaps (current dir similar): scoped to directory's category
   const filteredOverlaps=tab==='all'?overlaps:overlaps.filter(g=>{
     const meta=g.skills_meta||{};
     return g.skills.some(s=>matchCat((meta[s]||{}).dir||''));
   });
 
-  // Filter per-agent similar
+  // Filter per-agent similar: scoped to selected category
   const filteredAgentSimilar={};
   if(tab==='all'){
     Object.assign(filteredAgentSimilar,agentSimilar);
@@ -1023,7 +1025,8 @@ function renderIssues(){
     Object.entries(agentSimilar).forEach(([agent,groups])=>{
       const filtered=groups.filter(g=>{
         const meta=g.skills_meta||{};
-        return g.skills.some(s=>matchCat((meta[s]||{}).dir||''));
+        // All skills in the group must belong to this category
+        return g.skills.every(s=>matchCat((meta[s]||{}).dir||''));
       });
       if(filtered.length) filteredAgentSimilar[agent]=filtered;
     });
@@ -1191,12 +1194,14 @@ function renderIssues(){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">📛 同名分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
-    // Cross-agent same-name: groups that span 2+ different agents
-    const crossAgent=filteredSameName.filter(dup=>{
+    // Cross-agent same-name: only show on "all" tab
+    // On specific category tabs, all locations belong to the same category
+    // so cross-agent doesn't make sense there
+    const crossAgent=tab==='all'?filteredSameName.filter(dup=>{
       if(dup.locations.length<2) return false;
       const agents=new Set(dup.locations.map(l=>l.agent||'其他'));
       return agents.size>=2;
-    });
+    }):[];
     // Collect cross-agent dup names so within-agent section won't duplicate them
     const crossAgentNames=new Set(crossAgent.map(d=>d.name));
     if(crossAgent.length){

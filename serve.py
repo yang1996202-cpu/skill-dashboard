@@ -815,8 +815,11 @@ def _discover_skill_dirs():
         .vscode/agent-plugins/github.com/org/repo/plugins/name/skills/
         .antigravity/extensions/ms-python.../.github/skills/
 
-        Stops recursing into skill directories (dirs containing SKILL.md)
-        to avoid picking up nested agent copies inside skill packages (e.g., gstack).
+        We keep recursing past skill directories because legitimate nested
+        structures exist (e.g. awesome-copilot/plugins/*/skills/,
+        gstack/.factory/skills/).  The consumer's name-based dedup handles
+        gstack-style internal copies; the trade-off is a few extra "same name"
+        entries which the scan result already surfaces as informational groups.
         """
         if _depth >= max_depth:
             return
@@ -826,9 +829,8 @@ def _discover_skill_dirs():
                     continue
                 if _has_skill_md(entry):
                     add_dir(entry, _validated=True)
-                    # Don't recurse INTO skill directories — their sub-dirs are
-                    # internal structure (e.g., gstack/.cursor/skills/), not independent dirs
-                    continue
+                    # Still recurse — nested structures like plugins/*/skills/
+                    # are legitimate skill containers, not internal copies.
                 _scan_agent_deep(entry, max_depth, _depth + 1)
         except (PermissionError, OSError):
             pass
