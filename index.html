@@ -581,10 +581,11 @@ function updateDiagBadges(){
   const h=health;
   $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
   const overlapGroups=h?.overlap_groups?.length||0;
-  const upstreamOutdated=(h?.upstream_sources||[]).filter(s=>s.status==='outdated').length;
-  const globalDups=globalOverlap?.total_identical||0;
   const sameName=(globalOverlap?.duplicates_same_name||[]).length;
-  const totalIssues=overlapGroups+upstreamOutdated+globalDups+sameName;
+  const agentSimilarCount=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.length,0);
+  const upstreamCount=(h?.upstream_sources||[]).length;
+  const changesCount=h?.content_changes?.changed?.length||0;
+  const totalIssues=overlapGroups+sameName+agentSimilarCount+upstreamCount+changesCount;
   $('badge-issues').textContent=totalIssues||'—';
 }
 
