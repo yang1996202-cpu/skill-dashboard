@@ -2060,7 +2060,14 @@ async function refreshData(){
     const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
     if(sr){
       scan=sr;skills=sr?.installed||[];
-      skills.forEach(s=>{if(!s.category||s.category===''||!CAT_NAMES[s.category])s.category=classifySkillJS(s.name,s.description)});
+      skills.forEach(s=>{if(s.description)s.description=safeDesc(s.description)});
+      loadCategoryOverrides();
+      skills.forEach(s=>{
+        if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
+        else if(!s.category||s.category===''||!CAT_NAMES[s.category]){
+          s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'
+        }else{s.categorySource='frontmatter'}
+      });
       render();
     }
     await loadSourcesFallback();
@@ -2153,6 +2160,7 @@ function toggleTgSub(id,head){
 async function switchTarget(path){
   $('target-dropdown').classList.remove('open');
   if(!path)return;
+  selectedSkills.clear();_issueSelected.clear();srcSelectedSkills.clear();
   $('refresh-btn').disabled=true;
   try{
     const r=await fetch('/api/target',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:path})});
@@ -2160,7 +2168,13 @@ async function switchTarget(path){
     if(d.error){toast(d.error,'error');return}
     scan=d;skills=d?.installed||[];
     skills.forEach(s=>{if(s.description)s.description=safeDesc(s.description)});
-    skills.forEach(s=>{if(!s.category||s.category===''||!CAT_NAMES[s.category])s.category=classifySkillJS(s.name,s.description)});
+    loadCategoryOverrides();
+    skills.forEach(s=>{
+      if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
+      else if(!s.category||s.category===''||!CAT_NAMES[s.category]){
+        s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'
+      }else{s.categorySource='frontmatter'}
+    });
     render();
     toast(`已切换 (${d.duration_ms}ms)`);
     // Refresh targets + groups so dashboard/sources stay in sync
