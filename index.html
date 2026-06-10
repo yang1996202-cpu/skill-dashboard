@@ -453,6 +453,7 @@ async function loadFavDirs(){
 }
 let globalOverlap=null;
 let _compareData={};
+let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
 }
@@ -893,7 +894,7 @@ function renderIssues(){
     const overlapNames=[...new Set(overlaps.flatMap(g=>g.skills))];
     // Build targets from skills_meta
     const overlapTargets=overlapNames.map(n=>{const m=(overlaps.find(g=>g.skills_meta&&g.skills_meta[n])||{}).skills_meta||{};return m[n]?.dir||'';});
-    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${curLabel} 内相似</h3><span class="sub">${overlaps.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${overlapNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill',[${overlapTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${curLabel} 内相似</h3><span class="sub">${overlaps.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
       <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">当前目录内 TF-IDF 全文比对，相似度 ≥45%</div>`;
     overlaps.forEach(g=>{
       const pct=Math.round((g.score||0)*100);
@@ -912,7 +913,9 @@ function renderIssues(){
           ${g.skills.map(s=>{
             const m=meta[s]||{};
             const sDir=m.dir||'';
-            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+            const sKey=s+'|'+sDir;
+            return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
               <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
               <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
@@ -933,7 +936,7 @@ function renderIssues(){
     const groupNames=[...new Set(groups.flatMap(g=>g.skills))];
     // Build targets from skills_meta
     const groupTargets=groupNames.map(n=>{const m=(groups.find(g=>g.skills_meta&&g.skills_meta[n])||{}).skills_meta||{};return m[n]?.dir||'';});
-    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${groupNames.map(n=>`'${esc(n)}'`).join(',')}],'相似 skill',[${groupTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+    agentSimilarCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
       <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录 TF-IDF 全文比对，相似度 ≥45%</div>`;
     groups.forEach(g=>{
       const pct=Math.round((g.score||0)*100);
@@ -952,7 +955,9 @@ function renderIssues(){
           ${g.skills.map(s=>{
             const m=meta[s]||{};
             const sDir=m.dir||'';
-            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+            const sKey=s+'|'+sDir;
+            return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
               <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
               <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
@@ -983,7 +988,7 @@ function renderIssues(){
       const agentLocsAll=dups.flatMap(d=>d.locations.filter(l=>(l.agent||'其他')===agent).map(l=>({name:l.name||d.name,dir:l.dir})));
       const batchNames=agentLocsAll.map(l=>l.name);
       const batchTargets=agentLocsAll.map(l=>l.dir);
-      sameNameCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${batchNames.map(n=>`'${esc(n)}'`).join(',')}],'同名 skill',[${batchTargets.map(t=>`'${esc(t)}'`).join(',')}])" style="font-size:10px;padding:2px 8px">批量删除</button></div>
+      sameNameCards+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 下同名 skill 分析</div>`;
       dups.forEach(dup=>{
         const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
@@ -998,12 +1003,15 @@ function renderIssues(){
           </div>
           <div id="${uid}" style="display:none;padding:6px 12px 10px">
             ${agentLocs.map(loc=>{
+              const sn=loc.name||dup.name;
               const shortDir=loc.dir.replace(/^\/Users\/[^/]+/,'~');
+              const sKey=sn+'|'+loc.dir;
               return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(loc.name||dup.name)}','${esc(loc.dir)}')">${loc.name||dup.name}</span>
+                <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 <span style="font-size:9px;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(loc.dir)}">${shortDir}</span>
-                <button class="btn btn-sm" onclick="showSkill('${esc(loc.name||dup.name)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(loc.name||dup.name)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
+                <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
             }).join('')}
           </div>
@@ -1667,7 +1675,7 @@ async function removeCustomSource(path){
 const ALL_CATS=['code-dev','content','image-gen','video-audio','data','web-search','social','doc','comms','design','translate','sysadmin','persona','finance','other'];
 async function showSkill(name,dir){
   try{
-    const url=dir?`/api/preview?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/skill/${name}/content`;
+    const url=dir?`/api/preview?full=1&dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/skill/${name}/content`;
     const r=await fetch(url);const d=await r.json();
     const sk=skills.find(s=>s.name===name);
     const cat=sk?.category||'other';
@@ -1701,7 +1709,7 @@ async function compareSkills(btn,dataKey){
   try{
     const results=await Promise.all(locs.map(async l=>{
       try{
-        const r=await fetch(`/api/preview?dir=${encodeURIComponent(l.dir)}&name=${encodeURIComponent(l.name)}`);
+        const r=await fetch(`/api/preview?full=1&dir=${encodeURIComponent(l.dir)}&name=${encodeURIComponent(l.name)}`);
         const d=await r.json();
         return{dir:l.dir,name:l.name,content:d.preview||d.content||'(无内容)',ok:true};
       }catch(e){return{dir:l.dir,name:l.name,content:'加载失败',ok:false};}
@@ -1720,6 +1728,28 @@ async function compareSkills(btn,dataKey){
     btn.textContent='收起对比';
   }catch(e){btn.textContent='并排对比';}
   finally{btn.disabled=false;}
+}
+function toggleIssueSelect(cb){
+  const key=cb.dataset.skey;
+  if(cb.checked)_issueSelected.add(key);else _issueSelected.delete(key);
+}
+async function deleteSelectedIssues(){
+  if(!_issueSelected.size){toast('请先勾选要删除的 skill','error');return;}
+  const checks=document.querySelectorAll('.issue-check:checked');
+  if(!checks.length){toast('请先勾选要删除的 skill','error');return;}
+  const names=[...new Set([...checks].map(c=>c.dataset.sname))];
+  if(!confirm(`确认删除选中的 ${checks.length} 个 skill？\n\n${names.join(', ')}`))return;
+  let ok=0,fail=0;
+  for(const cb of checks){
+    const name=cb.dataset.sname;
+    const dir=cb.dataset.sdir;
+    const url=dir?`/api/skill/${name}?target=${encodeURIComponent(dir)}`:`/api/skill/${name}`;
+    try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
+    catch{fail++;}
+  }
+  _issueSelected.clear();
+  toast(`已删除 ${ok} 个${fail>0?`，${fail} 个失败`:''}`);
+  await loadData();
 }
 function escapeHtml(t){return t.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 // Escape for use inside HTML attributes and JS string literals

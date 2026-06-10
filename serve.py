@@ -1646,7 +1646,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response({"error": f"Skill '{name}' not found"}, status=404)
 
     def _serve_preview(self, dir_path, name):
-        """Preview SKILL.md from any directory (no target switch needed)."""
+        """Preview SKILL.md from any directory (no target switch needed).
+        Query param ?full=1 returns full content instead of 500-char preview."""
         skill_md = Path(dir_path) / name / "SKILL.md"
         if not skill_md.exists():
             self._json_response({"error": "not found"}, status=404)
@@ -1663,13 +1664,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         if line.strip().startswith("description:"):
                             desc = line.split(":", 1)[1].strip().strip("'\"")
                             break
-            # First 500 chars of body (skip frontmatter)
+            # Body (skip frontmatter)
             body = content
             if content.startswith("---"):
                 end = content.find("---", 3)
                 if end > 0:
                     body = content[end + 3:].strip()
-            preview = body[:500] + ("…" if len(body) > 500 else "")
+            qs = parse_qs(urlparse(self.path).query)
+            if qs.get("full", [""])[0] == "1":
+                preview = body
+            else:
+                preview = body[:500] + ("…" if len(body) > 500 else "")
             self._json_response({
                 "name": name,
                 "dir": dir_path,
