@@ -569,6 +569,62 @@ def _agent_from_path(dir_path):
     return Path(p).name
 
 
+def _classify_skill_dir(dir_path):
+    """Classify a skill directory by its nature based on path patterns.
+
+    Returns one of:
+    - 'user'       : User-created skills (main skills/ dir, no marketplace/cache/backup patterns)
+    - 'marketplace': Ecosystem/plugin marketplace skills (marketplace, plugins, agent-plugins, extensions)
+    - 'cache'      : Installation artifacts (snapshots, backups, cache, plugins-backup, vendor_imports)
+    - 'cross-copy' : Cross-agent copies (e.g., gstack/.cursor/skills inside a skill dir)
+    - 'project'    : Project-level skills (under ~/projects/)
+    """
+    p = str(dir_path).lower()
+    home = str(Path.home()).lower()
+    rel = p.replace(home + "/", "").replace(home + "\\", "")
+
+    # Cache/backup: snapshots, backups, plugin caches, vendor imports
+    cache_signals = [".snapshots", "backup", "plugins-backup", "plugins/cache",
+                     "/cache/", "vendor_imports", ".tmp", ".temp",
+                     "bundled-marketplaces", "/install/cache/"]
+    for sig in cache_signals:
+        if sig in p:
+            return "cache"
+
+    # Project-level: under ~/projects/ — check BEFORE cross-copy
+    # because ~/projects/xz/.claude/skills is project-level, not cross-copy
+    if "/projects/" in p or "\\projects\\" in p:
+        return "project"
+
+    # Cross-agent copy: .<agent>/skills at depth > 0 from home
+    # Pattern: any .xxx/skills that is NOT the agent's own root skills dir.
+    # Root: ~/.claude/skills (i=0 in rel_parts)
+    # Cross-copy: ~/.skillslm/gstack/.cursor/skills (.cursor/skills at depth > 0)
+    parts = Path(dir_path).parts
+    home_parts = Path(Path.home()).parts
+    rel_parts = parts[len(home_parts):]
+    for i, pt in enumerate(rel_parts):
+        if pt.startswith(".") and not pt.startswith("..") and i + 1 < len(rel_parts) and rel_parts[i + 1] == "skills":
+            if i > 0:  # Not at agent root level (i=0 means ~/.agent/skills)
+                return "cross-copy"
+
+    # Marketplace: plugin stores, extension stores, agent-plugin repos
+    market_signals = ["marketplace", "agent-plugins", "/plugins/", "\\plugins\\",
+                      "extensions/", "\\extensions\\"]
+    for sig in market_signals:
+        if sig in p:
+            if sig == "/plugins/" or sig == "\\plugins\\":
+                idx = p.find(sig)
+                after = p[idx + len(sig):]
+                if after and ("/skills" in after or "\\skills" in after):
+                    return "marketplace"
+            else:
+                return "marketplace"
+
+    # Default: user-created
+    return "user"
+
+
 # ── Content hash tracking ──
 
 CONTENT_HASH_FILE = STATE_DIR / "content-hashes.json"
@@ -2336,6 +2392,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Use shared agent detection
             agent = _agent_from_path(str(skills_dir))
             scope = "project" if "projects/" in rel else "global"
+            category = _classify_skill_dir(skills_dir)
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,
@@ -2343,6 +2400,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "scope": scope,
                 "count": count,
                 "is_current": str(skills_dir) == current,
+                "category": category,
             })
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 

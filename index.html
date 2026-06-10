@@ -871,13 +871,21 @@ function renderScanConfig(){
   const curPath=curTarget?.path||'';
 
   if(targetGroups.length){
+    const catLabel={user:'⭐',marketplace:'📦',cache:'🗑️','cross-copy':'🔁',project:'📁',unknown:'❓'};
+    const catTip={user:'用户自建',marketplace:'生态/Marketplace',cache:'缓存/备份','cross-copy':'跨Agent副本',project:'项目级',unknown:'未知'};
     targetGroups.forEach(g=>{
-      dirHtml+=`<div style="margin-bottom:6px"><div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:2px">${esc(g.agent)} (${g.dirs.length} 目录)</div>`;
+      // Count categories in this group
+      const catCounts={};
+      g.dirs.forEach(d=>{const c=d.category||'user';catCounts[c]=(catCounts[c]||0)+1;});
+      const catBadges=Object.entries(catCounts).map(([c,n])=>`<span title="${catTip[c]||c}" style="font-size:10px;cursor:help">${catLabel[c]||''}${n>1?n:''}</span>`).join(' ');
+      dirHtml+=`<div style="margin-bottom:6px"><div style="font-size:11px;font-weight:600;color:var(--text-muted);margin-bottom:2px;display:flex;align-items:center;gap:6px">${esc(g.agent)} <span style="color:var(--text-muted);font-weight:400">(${g.dirs.length})</span> ${catBadges}</div>`;
       g.dirs.forEach(d=>{
         const checked=d.path===curPath||(!scanResult&&d.is_current)?'checked':'';
+        const cat=d.category||'user';
+        const badge=catLabel[cat]||'';
         dirHtml+=`<label style="display:flex;align-items:center;gap:6px;padding:2px 0;font-size:12px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(d.path)}">
           <input type="checkbox" class="scan-dir-check" value="${esc(d.path)}" ${checked}>
-          <span style="flex:1;overflow:hidden;text-overflow:ellipsis">${esc(d.rel)}</span>
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis" title="${catTip[cat]||''}">${badge} ${esc(d.rel)}</span>
           <span style="color:var(--text-muted);font-size:10px;flex-shrink:0">${d.count}</span>
         </label>`;
       });
@@ -898,6 +906,9 @@ function renderScanConfig(){
 
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div class="card-head"><h3>🔍 二哥扫描</h3><span class="sub">选择范围和分析类型</span></div>
+    <div style="font-size:10px;color:var(--text-muted);padding:2px 0 4px;display:flex;gap:10px;flex-wrap:wrap">
+      <span>⭐ 用户自建</span><span>📦 Marketplace</span><span>🗑️ 缓存/备份</span><span>🔁 跨Agent副本</span><span>📁 项目级</span>
+    </div>
     <div style="display:flex;gap:16px;flex-wrap:wrap;padding-top:4px">
       <div style="flex:1;min-width:220px">
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
