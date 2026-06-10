@@ -863,7 +863,7 @@ function renderIssues(){
   </div>`;
 
   // Build cards per group
-  let upstreamCard='', fixCards='', otherCards='';
+  let upstreamCard='', otherCards='';
 
   // UPSTREAM (put first)
   if(upstreams.length){
@@ -880,37 +880,6 @@ function renderIssues(){
       upstreamCard+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${upstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
     }
     upstreamCard+=`</div>`;
-  }
-
-  // FIX group
-  if(noFmOnly.length){
-    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📋 缺少 frontmatter</h3><span class="sub">${noFmOnly.length} 个</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="batchDeleteNames([${noFmOnly.map(i=>`'${esc(i.name)}'`).join(',')}],'缺 frontmatter')" style="font-size:10px;padding:2px 8px">批量删除</button></div>`;
-    noFmOnly.forEach(i=>{
-      fixCards+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
-        <div style="flex:1"><div style="font-size:13px;font-weight:500">${i.name}</div><div style="font-size:11px;color:var(--text-muted)">SKILL.md 没有 frontmatter 头部</div></div>
-        <button class="btn btn-sm btn-primary" onclick="fixSkill('${esc(i.name)}','add_frontmatter',this)">修复</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(i.name)}',this)">删除</button></div>`;
-    });
-    fixCards+=`</div>`;
-  }
-  if(noDesc.length){
-    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📝 缺少描述</h3><span class="sub">${noDesc.length} 个</span><span style="flex:1"></span></div>`;
-    noDesc.forEach(name=>{
-      fixCards+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
-        <div style="flex:1"><div style="font-size:13px;font-weight:500">${name}</div><div style="font-size:11px;color:var(--text-muted)">没有 description 字段</div></div>
-        <button class="btn btn-sm btn-primary" onclick="promptAddDesc('${esc(name)}',this)">补描述</button>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(name)}',this)">删除</button></div>`;
-    });
-    fixCards+=`</div>`;
-  }
-  if(brokenOnly.length){
-    fixCards+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔗 损坏的链接</h3><span class="sub">${brokenOnly.length} 个</span><span style="flex:1"></span></div>`;
-    brokenOnly.forEach(i=>{
-      fixCards+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
-        <div style="flex:1"><div style="font-size:13px;font-weight:500">${i.name}</div><div style="font-size:11px;color:var(--text-muted)">符号链接指向不存在的目标</div></div>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(i.name)}',this)">删除</button></div>`;
-    });
-    fixCards+=`</div>`;
   }
 
   // Similarity analysis cards (overlaps + per-agent + same-name)
@@ -940,9 +909,9 @@ function renderIssues(){
             const m=meta[s]||{};
             const sDir=m.dir||'';
             return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
-              <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}')">${s}</span>
+              <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
-              <button class="btn btn-sm" onclick="showSkill('${esc(s)}')" style="font-size:9px;padding:2px 6px">查看</button>
+              <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
               <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
@@ -977,9 +946,9 @@ function renderIssues(){
             const m=meta[s]||{};
             const sDir=m.dir||'';
             return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
-              <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}')">${s}</span>
+              <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
               <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
-              <button class="btn btn-sm" onclick="showSkill('${esc(s)}')" style="font-size:9px;padding:2px 6px">查看</button>
+              <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
               <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
@@ -1022,9 +991,9 @@ function renderIssues(){
             ${agentLocs.map(loc=>{
               const shortDir=loc.dir.replace(/^\/Users\/[^/]+/,'~');
               return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(loc.name||dup.name)}')">${loc.name||dup.name}</span>
+                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(loc.name||dup.name)}','${esc(loc.dir)}')">${loc.name||dup.name}</span>
                 <span style="font-size:9px;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(loc.dir)}">${shortDir}</span>
-                <button class="btn btn-sm" onclick="showSkill('${esc(loc.name||dup.name)}')" style="font-size:9px;padding:2px 6px">查看</button>
+                <button class="btn btn-sm" onclick="showSkill('${esc(loc.name||dup.name)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(loc.name||dup.name)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
             }).join('')}
@@ -1053,10 +1022,6 @@ function renderIssues(){
   if(upstreamCard){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔗 上游追踪</div>
       <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px">${upstreamCard}</div></div>`;
-  }
-  if(fixCards){
-    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔧 问题修复</div>
-      <div style="display:flex;gap:10px;overflow-x:auto;padding-bottom:4px">${fixCards}</div></div>`;
   }
   if(agentSimilarCards){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔍 相似分析</div>
@@ -1691,9 +1656,10 @@ async function removeCustomSource(path){
 
 /* ── Modal ── */
 const ALL_CATS=['code-dev','content','image-gen','video-audio','data','web-search','social','doc','comms','design','translate','sysadmin','persona','finance','other'];
-async function showSkill(name){
+async function showSkill(name,dir){
   try{
-    const r=await fetch(`/api/skill/${name}/content`);const d=await r.json();
+    const url=dir?`/api/preview?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/skill/${name}/content`;
+    const r=await fetch(url);const d=await r.json();
     const sk=skills.find(s=>s.name===name);
     const cat=sk?.category||'other';
     const catSrc=sk?.categorySource||'';
@@ -1709,7 +1675,7 @@ async function showSkill(name){
           ${ALL_CATS.map(c=>`<option value="${c}" ${categoryOverrides[name]===c?'selected':''}>${CAT_NAMES[c]||c}</option>`).join('')}
         </select>
       </div>
-      <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-dim);background:var(--bg-card-alt);padding:12px;border-radius:8px;border:1px solid var(--border);max-height:50vh;overflow-y:auto">${escapeHtml(d.content||d.error||'(无内容)')}</pre>
+      <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-dim);background:var(--bg-card-alt);padding:12px;border-radius:8px;border:1px solid var(--border);max-height:50vh;overflow-y:auto">${escapeHtml(d.preview||d.content||d.error||'(无内容)')}</pre>
     </div>`;
     $('modal').classList.remove('hidden')
   }
