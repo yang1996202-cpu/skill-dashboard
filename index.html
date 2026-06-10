@@ -1417,24 +1417,63 @@ function renderSources(){
           <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用 — 从侧边栏移除':'设为常用 — 添加到侧边栏'}">${hasFav?'⭐ 常用':'☆ 设常用'}</button>
         </div>
         <div style="display:none;border-top:1px solid var(--border)">`;
-      g.dirs.forEach((t,di)=>{
-        const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
-        const safeId='sd-'+Math.random().toString(36).slice(2,8);
-        const fav=isFav(t.path);
-        h+=`<div style="border-top:1px solid var(--border-subtle)">
-          <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
-            <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
-            <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
-            ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
-            <span class="to-count">${t.count}</span>
-            ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
-            ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
-                 :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
-            <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
-          </div>
-          <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
-        </div>`;
+      // Group dirs by category within this agent
+      const catOrder=['user','marketplace','cache','cross-copy','project','unknown'];
+      const dirsByCat={};
+      g.dirs.forEach(t=>{
+        const c=t.category||'unknown';
+        if(!dirsByCat[c]) dirsByCat[c]=[];
+        dirsByCat[c].push(t);
       });
+      // Render category sub-groups
+      const catKeys=catOrder.filter(c=>dirsByCat[c]);
+      if(catKeys.length<=1){
+        // Single or no category — render flat (original style)
+        g.dirs.forEach((t,di)=>{
+          const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
+          const safeId='sd-'+Math.random().toString(36).slice(2,8);
+          const fav=isFav(t.path);
+          h+=`<div style="border-top:1px solid var(--border-subtle)">
+            <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
+              <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
+              <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+              ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
+              <span class="to-count">${t.count}</span>
+              ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
+              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
+                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
+              <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
+            </div>
+            <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
+          </div>`;
+        });
+      }else{
+        // Multiple categories — render with category sub-headers
+        catKeys.forEach(cat=>{
+          const cm=CAT_META[cat]||CAT_META.unknown;
+          const catDirs=dirsByCat[cat];
+          const catCount=catDirs.reduce((s,d)=>s+d.count,0);
+          h+=`<div style="border-top:1px solid var(--border-subtle)">
+            <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt)">
+              <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
+            </div>`;
+          catDirs.forEach(t=>{
+            const safeId='sd-'+Math.random().toString(36).slice(2,8);
+            const fav=isFav(t.path);
+            h+=`<div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:6px 14px 6px 52px" title="${t.rel}">
+              <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
+              <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+              <span class="to-count">${t.count}</span>
+              ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
+              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
+                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
+              <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
+            </div>
+            <div id="${safeId}" style="display:none;padding:4px 14px 8px 64px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
+          });
+          h+=`</div>`;
+        });
+      }
       h+=`</div></div>`;
     });
   }else{
