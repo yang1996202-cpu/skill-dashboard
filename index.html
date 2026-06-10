@@ -1084,44 +1084,61 @@ function renderIssues(){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔍 相似分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
-    // Current directory overlaps
+    // Per-directory overlaps — group by source directory/agent
     if(filteredOverlaps.length){
-      const curLabel=targets.find(t=>t.is_current)?.name||'当前目录';
-      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${curLabel} 内相似</h3><span class="sub">${filteredOverlaps.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
-        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">当前目录内 TF-IDF 全文比对，相似度 ≥45%</div>`;
+      // Group overlaps by their source directory (from skills_meta)
+      const overlapsByDir={};
       filteredOverlaps.forEach(g=>{
-        const pct=Math.round((g.score||0)*100);
-        const catLabel2=CAT_NAMES[g.category]||g.category||'';
         const meta=g.skills_meta||{};
-        const uid='ov-'+Math.random().toString(36).slice(2,8);
-        _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
-        h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-            <span style="font-size:10px;color:var(--text-muted)">▶</span>
-            <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
-            ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
-            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
-          </div>
-          <div style="display:none;padding:6px 12px 10px">
-            ${g.skills.map(s=>{
-              const m=meta[s]||{};
-              const sDir=m.dir||'';
-              const sKey=s+'|'+sDir;
-              const sCat=_dirCategory(sDir);
-              const sCm=CAT_META[sCat]||CAT_META.unknown;
-              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
-                <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
-                <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
-                <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
-                <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
-              </div>`;
-            }).join('')}
-          </div>
-        </div>`;
+        // Get the first skill's dir as the source directory
+        const firstSkill=g.skills[0];
+        const srcDir=(meta[firstSkill]||{}).dir||'';
+        const srcAgent=(meta[firstSkill]||{}).agent||'未知';
+        const key=srcDir||'unknown';
+        if(!overlapsByDir[key]) overlapsByDir[key]={agent:srcAgent,dir:srcDir,groups:[]};
+        overlapsByDir[key].groups.push(g);
       });
-      h+=`</div>`;
+      // Render one card per source directory
+      const overlapDirs=Object.values(overlapsByDir).sort((a,b)=>b.groups.length-a.groups.length);
+      overlapDirs.forEach(({agent,dir,groups})=>{
+        const shortDir=dir.replace(/^\/Users\/[^/]+/,'~');
+        const dirCat=_dirCategory(dir);
+        const dirCm=CAT_META[dirCat]||CAT_META.unknown;
+        h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+          <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px;display:flex;align-items:center;gap:4px">${dirCm.emoji} ${shortDir}</div>`;
+        groups.forEach(g=>{
+          const pct=Math.round((g.score||0)*100);
+          const catLabel2=CAT_NAMES[g.category]||g.category||'';
+          const meta=g.skills_meta||{};
+          const uid='ov-'+Math.random().toString(36).slice(2,8);
+          _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
+          h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+              <span style="font-size:10px;color:var(--text-muted)">▶</span>
+              <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
+              ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
+              <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
+            </div>
+            <div style="display:none;padding:6px 12px 10px">
+              ${g.skills.map(s=>{
+                const m=meta[s]||{};
+                const sDir=m.dir||'';
+                const sKey=s+'|'+sDir;
+                const sCat=_dirCategory(sDir);
+                const sCm=CAT_META[sCat]||CAT_META.unknown;
+                return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+                  <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
+                  <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+                  <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
+                  <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
+                  <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>`;
+        });
+        h+=`</div>`;
+      });
     }
 
     // Per-agent similar
