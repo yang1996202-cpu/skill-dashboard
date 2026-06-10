@@ -1121,11 +1121,21 @@ function renderIssues(){
   });
 
   // Same-name different content — one card per agent, only 2+ dirs
+  // Split into cross-agent dups (2+ agents) and pure within-agent dups
   let sameNameCards='';
   const snByAgent={};
   if(sameName.length){
+    // Collect cross-agent dup names (locations span 2+ different agents)
+    const crossAgentNames=new Set(
+      sameName.filter(dup=>{
+        if(dup.locations.length<2) return false;
+        const agents=new Set(dup.locations.map(l=>l.agent||'其他'));
+        return agents.size>=2;
+      }).map(d=>d.name)
+    );
     sameName.forEach(dup=>{
       if(dup.locations.length<2)return; // only 2+ dirs
+      if(crossAgentNames.has(dup.name))return; // skip cross-agent dups here
       dup.locations.forEach(loc=>{
         const a=loc.agent||'其他';
         if(!snByAgent[a])snByAgent[a]=[];
