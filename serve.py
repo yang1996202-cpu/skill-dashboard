@@ -670,7 +670,16 @@ def _discover_skill_dirs():
             candidates.append(d)
 
     # 1. ~/.xxx/ — any dot-prefixed agent directory
-    #    Checks: skills/ subdir + all sub-entries of skills/ + non-standard dirs (depth 2)
+    #    For dirs with skills/ subdir: also scan deeper for marketplaces/backups/etc.
+    #    For other dirs: shallow scan only.
+    _SKIP_DEEP = {".git", ".Trash", "node_modules", "__pycache__", "venv", ".venv",
+                  "env", "dist", "build", "logs", ".cache", ".npm", ".bun", ".local",
+                  ".vscode", ".config", ".antigravity", "Library"}
+    _SHALLOW_SKIP = {".Trash", ".cache", ".npm", ".bun", ".local", ".vscode",
+                     ".config", ".antigravity", ".git", ".cargo", ".rustup",
+                     ".docker", ".minikube", ".terraform", ".gradle", ".m2",
+                     ".cocoapods", ".swift", ".nix-defexpr"}
+
     def _has_skill_md(d):
         """Check if directory contains at least one */SKILL.md entry."""
         try:
@@ -678,15 +687,32 @@ def _discover_skill_dirs():
         except Exception:
             return False
 
+    def _scan_agent_deep(root, max_depth=3, _depth=0):
+        """Deep scan within confirmed agent dirs for marketplaces/backups/etc."""
+        if _depth >= max_depth:
+            return
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir() or entry.name in _SKIP_DEEP:
+                    continue
+                if _has_skill_md(entry):
+                    add_dir(entry)
+                if not entry.name.startswith("."):
+                    _scan_agent_deep(entry, max_depth, _depth + 1)
+        except (PermissionError, OSError):
+            pass
+
     try:
         for entry in home.iterdir():
             if not entry.is_dir():
                 continue
             name = entry.name
-            if name.startswith(".") and not name.startswith(".."):
-                # Standard: ~/.xxx/skills/ and its subdirs
+            if name in _SHALLOW_SKIP or (name.startswith(".") and name.startswith("..")):
+                continue
+            if name.startswith("."):
                 skills_dir = entry / "skills"
                 if skills_dir.is_dir():
+                    # Confirmed agent dir — standard skills/ + subdirs + deep scan
                     add_dir(skills_dir)
                     try:
                         for sub in skills_dir.iterdir():
@@ -694,26 +720,16 @@ def _discover_skill_dirs():
                                 add_dir(sub)
                     except (PermissionError, OSError):
                         pass
-                # Non-standard: scan other subdirs of ~/.xxx/ for SKILL.md entries (depth 2)
-                # Catches: ~/.openclaw/extensions/, ~/.openclaw/workspace/, ~/.alice/backups/, etc.
-                try:
-                    for sub in entry.iterdir():
-                        if not sub.is_dir() or sub.name == "skills":
-                            continue
-                        if sub.name.startswith(".") and sub.name not in (".git",):
-                            continue
-                        if _has_skill_md(sub):
-                            add_dir(sub)
-                        # Depth 2: sub/sub/
-                        try:
-                            for sub2 in sub.iterdir():
-                                if sub2.is_dir() and not sub2.name.startswith("."):
-                                    if _has_skill_md(sub2):
-                                        add_dir(sub2)
-                        except (PermissionError, OSError):
-                            pass
-                except (PermissionError, OSError):
-                    pass
+                    # Deep scan for marketplaces, backups, extensions, etc.
+                    _scan_agent_deep(entry, max_depth=3)
+                else:
+                    # No skills/ — check if it has SKILL.md entries directly (depth 1)
+                    try:
+                        for sub in entry.iterdir():
+                            if sub.is_dir() and not sub.name.startswith(".") and _has_skill_md(sub):
+                                add_dir(sub)
+                    except (PermissionError, OSError):
+                        pass
     except (PermissionError, OSError):
         pass
 
@@ -734,7 +750,7 @@ def _discover_skill_dirs():
     except (PermissionError, OSError):
         pass
 
-    # 2b. ~/Downloads/ — scan subdirs for skill collections (depth 2)
+    # 2b. ~/Downloads/ — scan subdirs for skill collections (depth 3)
     downloads = home / "Downloads"
     if downloads.is_dir():
         try:
@@ -743,12 +759,7 @@ def _discover_skill_dirs():
                     continue
                 if _has_skill_md(d):
                     add_dir(d)
-                try:
-                    for d2 in d.iterdir():
-                        if d2.is_dir() and _has_skill_md(d2):
-                            add_dir(d2)
-                except (PermissionError, OSError):
-                    pass
+                _scan_agent_deep(d, max_depth=2, _depth=1)
         except (PermissionError, OSError):
             pass
 
@@ -806,9 +817,11 @@ def _discover_skill_dirs():
     except Exception:
         pass
 
-    # Filter to dirs that actually contain SKILL.md entries
+    # Filter: must contain SKILL.md entries, exclude Trash
     return [d for d in candidates
-            if d.is_dir() and any(
+            if d.is_dir()
+            and ".Trash" not in str(d)
+            and any(
                 (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
                 for c in d.iterdir()
             )]
