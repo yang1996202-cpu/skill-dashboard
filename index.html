@@ -1159,23 +1159,32 @@ function renderIssues(){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">📛 同名分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
-    // Group by agent
+    // Group by agent — only count dups with 2+ locations FOR THAT AGENT
     const snByAgent={};
     filteredSameName.forEach(dup=>{
       if(dup.locations.length<2) return;
       dup.locations.forEach(loc=>{
         const a=loc.agent||'其他';
-        if(!snByAgent[a]) snByAgent[a]=[];
-        if(!snByAgent[a].includes(dup)) snByAgent[a].push(dup);
+        if(!snByAgent[a]) snByAgent[a]=new Set();
+        snByAgent[a].add(dup);
       });
     });
-    const snAgentList=Object.entries(snByAgent).sort((a,b)=>b[1].length-a[1].length);
+    // Convert sets to arrays, filter to dups with 2+ locations for this agent
+    const snAgentList=Object.entries(snByAgent)
+      .map(([agent,dupSet])=>{
+        const validDups=[...dupSet].filter(dup=>{
+          const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
+          return agentLocs.length>=2;
+        });
+        return [agent,validDups];
+      })
+      .filter(([,dups])=>dups.length>0)
+      .sort((a,b)=>b[1].length-a[1].length);
     snAgentList.forEach(([agent,dups])=>{
       h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 下同名 skill 分析</div>`;
       dups.forEach(dup=>{
         const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
-        if(agentLocs.length<2) return;
         const uid='sn-'+Math.random().toString(36).slice(2,8);
         _compareData[uid]=agentLocs.map(l=>({name:l.name||dup.name,dir:l.dir}));
         h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
