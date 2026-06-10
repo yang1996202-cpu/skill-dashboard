@@ -452,6 +452,7 @@ async function loadFavDirs(){
   try{favDirs=await fetch('/api/favorite-dirs').then(r=>r.json())}catch{favDirs=[]}
 }
 let globalOverlap=null;
+let _compareData={};
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
 }
@@ -898,11 +899,14 @@ function renderIssues(){
       const pct=Math.round((g.score||0)*100);
       const catLabel=CAT_NAMES[g.category]||g.category||'';
       const meta=g.skills_meta||{};
+      const uid='ov-'+Math.random().toString(36).slice(2,8);
+      _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
       agentSimilarCards+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
           <span style="font-size:10px;color:var(--text-muted)">▶</span>
           <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
           ${catLabel?`<span style="font-size:10px;color:var(--text-muted)">${catLabel}</span>`:''}
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
         </div>
         <div style="display:none;padding:6px 12px 10px">
           ${g.skills.map(s=>{
@@ -935,11 +939,14 @@ function renderIssues(){
       const pct=Math.round((g.score||0)*100);
       const catLabel=CAT_NAMES[g.category]||g.category||'';
       const meta=g.skills_meta||{};
+      const uid='as-'+Math.random().toString(36).slice(2,8);
+      _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
       agentSimilarCards+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
           <span style="font-size:10px;color:var(--text-muted)">▶</span>
           <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
           ${catLabel?`<span style="font-size:10px;color:var(--text-muted)">${catLabel}</span>`:''}
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
         </div>
         <div style="display:none;padding:6px 12px 10px">
           ${g.skills.map(s=>{
@@ -982,12 +989,12 @@ function renderIssues(){
         const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
         if(agentLocs.length<2)return; // only 2+ dirs
         const uid='sn-'+Math.random().toString(36).slice(2,8);
-        const locsJson=JSON.stringify(agentLocs.map(l=>({name:l.name||dup.name,dir:l.dir}))).replace(/'/g,"&#39;");
+        _compareData[uid]=agentLocs.map(l=>({name:l.name||dup.name,dir:l.dir}));
         sameNameCards+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="$('${uid}').style.display=$('${uid}').style.display==='none'?'block':'none'">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
             <span style="font-size:10px;color:var(--text-muted)">▶</span>
             <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${agentLocs.length} 个目录</span>
-            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${esc(uid)}',${locsJson})" style="font-size:9px;padding:2px 8px">并排对比</button>
+            <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
           </div>
           <div id="${uid}" style="display:none;padding:6px 12px 10px">
             ${agentLocs.map(loc=>{
@@ -1683,12 +1690,13 @@ async function showSkill(name,dir){
   }
   catch(e){$('modal-title').textContent=name;$('modal-body').textContent='加载失败';$('modal').classList.remove('hidden')}
 }
-async function compareSkills(btn,targetId,locs){
-  const container=$(targetId);
-  if(!container)return;
+async function compareSkills(btn,dataKey){
+  const container=btn.closest('[style*="border:1px"]')||btn.parentElement.parentElement;
   // Toggle: if already showing compare, collapse
   const existing=container.querySelector('.compare-panel');
   if(existing){existing.remove();btn.textContent='并排对比';return;}
+  const locs=_compareData[dataKey];
+  if(!locs||!locs.length)return;
   btn.textContent='加载中...';btn.disabled=true;
   try{
     const results=await Promise.all(locs.map(async l=>{
@@ -1705,8 +1713,10 @@ async function compareSkills(btn,targetId,locs){
         <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:10px;line-height:1.5;color:var(--text-dim);padding:8px;max-height:300px;overflow-y:auto;margin:0">${escapeHtml(r.content)}</pre>
       </div>`).join('')}
     </div>`;
-    container.insertAdjacentHTML('beforeend',html);
-    container.style.display='block';
+    // Insert after the skills list (the second child div)
+    const listDiv=container.querySelector('div[style*="display:none"]')||container.children[1];
+    if(listDiv){listDiv.style.display='block';listDiv.insertAdjacentHTML('afterend',html);}
+    else{container.insertAdjacentHTML('beforeend',html);}
     btn.textContent='收起对比';
   }catch(e){btn.textContent='并排对比';}
   finally{btn.disabled=false;}
