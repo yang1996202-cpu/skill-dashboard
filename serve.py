@@ -1556,6 +1556,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     self.send_error(400, "Expected JSON array")
             except Exception as e:
                 self._json_response({"error": str(e)}, 400)
+        elif path.startswith("/api/trash/") and path.endswith("/restore"):
+            self._restore_trash(path)
         elif path.startswith("/api/skill/") and path.endswith("/rehash"):
             name = self._validate_skill_name(path.split("/")[3])
             if not name:
