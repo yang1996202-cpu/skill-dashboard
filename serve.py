@@ -662,12 +662,15 @@ def _discover_skill_dirs():
     home = Path.home()
     candidates = []
     seen_paths = set()
+    validated_paths = set()  # dirs already confirmed by _has_skill_md
 
-    def add_dir(d):
+    def add_dir(d, _validated=False):
         d = d.resolve()
         if d.is_dir() and str(d) not in seen_paths:
             seen_paths.add(str(d))
             candidates.append(d)
+            if _validated:
+                validated_paths.add(str(d))
 
     # 1. ~/.xxx/ — any dot-prefixed agent directory
     #    Only skip genuine system junk. Everything else: let SKILL.md validation decide.
@@ -692,7 +695,7 @@ def _discover_skill_dirs():
                 if not entry.is_dir() or entry.name in _SKIP_DEEP:
                     continue
                 if _has_skill_md(entry):
-                    add_dir(entry)
+                    add_dir(entry, _validated=True)
                 if not entry.name.startswith("."):
                     _scan_agent_deep(entry, max_depth, _depth + 1)
         except (PermissionError, OSError):
@@ -737,7 +740,7 @@ def _discover_skill_dirs():
             # Also check if the dir itself is a skills collection (e.g., ~/AI-Skills/)
             if name not in ("Downloads", "Documents", "Desktop", "Movies", "Music", "Pictures", "Public"):
                 if _has_skill_md(entry):
-                    add_dir(entry)
+                    add_dir(entry, _validated=True)
     except (PermissionError, OSError):
         pass
 
@@ -749,7 +752,7 @@ def _discover_skill_dirs():
                 if not d.is_dir():
                     continue
                 if _has_skill_md(d):
-                    add_dir(d)
+                    add_dir(d, _validated=True)
                 _scan_agent_deep(d, max_depth=2, _depth=1)
         except (PermissionError, OSError):
             pass
@@ -809,13 +812,14 @@ def _discover_skill_dirs():
         pass
 
     # Filter: must contain SKILL.md entries, exclude Trash
+    # Skip re-check for dirs already validated by _has_skill_md during scan
     return [d for d in candidates
             if d.is_dir()
             and ".Trash" not in str(d)
-            and any(
+            and (str(d) in validated_paths or any(
                 (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
                 for c in d.iterdir()
-            )]
+            ))]
 
 
 def _scan_global_categories():

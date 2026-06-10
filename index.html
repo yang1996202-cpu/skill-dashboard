@@ -1601,7 +1601,8 @@ async function batchDeleteSrcSkills(){
     srcSelectedSkills.delete(path+'::'+name);
   }
   toast(`${ok} 个已移入垃圾站${fail?`，${fail} 个失败`:''}`);
-  delete sourceSkillsCache[sel[0].path];
+  const _paths=new Set(sel.map(s=>s.path));
+  _paths.forEach(p=>delete sourceSkillsCache[p]);
   renderSources();loadTrash();
 }
 async function batchSyncSrcSkills(){
