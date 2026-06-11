@@ -83,6 +83,33 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .stat .val{font-size:26px;font-weight:600;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
 .stat .lbl{font-size:11px;color:var(--text-muted);margin-top:8px;text-transform:uppercase;letter-spacing:.06em;font-weight:500}
 
+/* ── Governance workbench ── */
+.workbench{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:12px;margin-bottom:12px}
+.focus-panel{background:linear-gradient(135deg,var(--accent-bg),var(--bg-card));border-color:color-mix(in srgb,var(--accent) 22%,var(--border))}
+.focus-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
+.focus-kicker{font-size:11px;color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
+.focus-title{font-size:20px;font-weight:700;letter-spacing:-.02em;line-height:1.2}
+.focus-sub{font-size:12px;color:var(--text-dim);margin-top:5px}
+.focus-score{min-width:88px;text-align:right}
+.focus-score .num{font-size:34px;font-weight:700;letter-spacing:-.04em;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
+.focus-score .lbl{font-size:11px;color:var(--text-muted);margin-top:4px}
+.queue-list{display:grid;gap:8px}
+.queue-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--border-subtle);border-radius:8px;background:color-mix(in srgb,var(--bg-card) 78%,transparent)}
+.queue-rank{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:12px;font-weight:700}
+.queue-title{font-size:13px;font-weight:650}
+.queue-desc{font-size:11px;color:var(--text-muted);margin-top:1px}
+.queue-count{font-size:12px;font-weight:650;color:var(--text-dim);font-variant-numeric:tabular-nums}
+.scope-grid{display:grid;gap:8px}
+.scope-card{padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt)}
+.scope-card.primary{border-color:color-mix(in srgb,var(--green) 28%,var(--border));background:var(--green-bg)}
+.scope-card.warn{border-color:color-mix(in srgb,var(--amber) 28%,var(--border));background:var(--amber-bg)}
+.scope-card.muted{background:var(--bg-card);color:var(--text-dim)}
+.scope-name{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:650;margin-bottom:4px}
+.scope-name b{font-size:16px;font-variant-numeric:tabular-nums}
+.scope-desc{font-size:11px;color:var(--text-muted);line-height:1.45}
+.workbench-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+.notice-line{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt);padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--text-dim)}
+
 /* ── Cards — Linear clean ── */
 .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:12px;transition:border-color .15s ease}
 .card:hover{border-color:color-mix(in srgb,var(--accent) 20%,var(--border))}
@@ -328,6 +355,7 @@ tbody tr:hover{background:var(--bg-hover)}
       <!-- Dashboard -->
       <div class="view active" id="view-dashboard">
         <div class="stats-row" id="stats-row"></div>
+        <div id="workbench-card"></div>
         <div id="cat-card"></div>
       </div>
 
@@ -449,6 +477,9 @@ function switchView(v,el){
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
+function goView(v){
+  switchView(v,document.querySelector(`.nav-item[onclick*="${v}"]`));
+}
 
 /* ── Data ── */
 let globalStats=null;
@@ -460,6 +491,9 @@ let globalOverlap=null;
 let scanResult=null; // cached scan results from /api/scan-run
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
+let _issueShowAll=false;
+let _sourcesShowAll=false;
+let _expandedSourceAgent=null;
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
 }
@@ -483,6 +517,7 @@ async function loadCachedScanResult(){
       total_identical:(r.duplicates_identical||[]).length,
     };
     renderIssues();
+    renderStats();renderWorkbench();
     updateDiagBadges();
   }
 }
@@ -515,7 +550,7 @@ async function loadData(){
   render();
   // Load global category stats (cached, fast on repeat)
   fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
-    if(gs){globalStats=gs;renderStats();renderCategories()}
+    if(gs){globalStats=gs;renderStats();renderWorkbench();renderCategories()}
   });
   // Load global overlap data (cross-directory duplicates + similarity)
   // Removed: now user-triggered via scan panel
@@ -536,7 +571,7 @@ async function loadData(){
           $('badge-sources').textContent=td.groups?.length||ts.length;
           updateTargetSelector();
         }
-        renderStats();
+        renderStats();renderWorkbench();
       }
     }catch(e){}
   }
@@ -573,12 +608,52 @@ function classifySkillJS(name,desc){
 }
 
 function render(){
-  renderTarget();renderStats();renderCategories();
+  renderTarget();renderStats();renderWorkbench();renderCategories();
   renderIssues();renderSources();renderSkillsList();
   updateTargetSelector();
   $('badge-skills').textContent=skills.length;
   // badge-sources is maintained by updateTargetSelector / loadData targets fetch
   updateDiagBadges();
+}
+
+function getTriageMetrics(){
+  const sameName=(globalOverlap?.duplicates_same_name||[]).length;
+  const overlapGroups=health?.overlap_groups?.length||0;
+  const agentSimilar=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.length,0);
+  const similar=overlapGroups+agentSimilar;
+  const upstreams=health?.upstream_sources||[];
+  const outdated=upstreams.filter(s=>s.status==='outdated').length;
+  const changes=health?.content_changes?.changed?.length||0;
+  const actionable=sameName+similar+outdated+changes;
+  const observed=sameName+similar+upstreams.length+changes;
+  return {
+    sameName,overlapGroups,agentSimilar,similar,upstreams,outdated,changes,
+    actionable,observed,
+    scannedDirs:scanResult?.scanned_dirs||globalStats?.targets_scanned||targetGroups.length||0,
+    durationMs:scanResult?.duration_ms||0,
+    scannedAt:scanResult?.scanned_at||health?.generated_at||null,
+  };
+}
+
+function getCategoryActionCounts(){
+  const counts={user:0,marketplace:0,cache:0,'cross-copy':0,project:0,unknown:0};
+  const bump=(dir)=>{
+    const c=_dirCategory(dir);
+    counts[c]=(counts[c]||0)+1;
+  };
+  (globalOverlap?.duplicates_same_name||[]).forEach(dup=>{
+    const cats=new Set((dup.locations||[]).map(l=>_dirCategory(l.dir)));
+    cats.forEach(c=>{counts[c]=(counts[c]||0)+1});
+  });
+  const simGroups=[...(health?.overlap_groups||[]),...Object.values(globalOverlap?.agent_similar||{}).flat()];
+  simGroups.forEach(g=>{
+    const meta=g.skills_meta||{};
+    const cats=new Set();
+    (g.skills||[]).forEach(s=>cats.add(_dirCategory((meta[s]||{}).dir||'')));
+    cats.forEach(c=>{counts[c]=(counts[c]||0)+1});
+  });
+  (health?.upstream_sources||[]).filter(s=>s.status==='outdated').forEach(s=>bump(s.dir));
+  return counts;
 }
 
 function updateDiagBadges(){
@@ -589,13 +664,8 @@ function updateDiagBadges(){
   }
   const h=health;
   $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
-  const overlapGroups=h?.overlap_groups?.length||0;
-  const sameName=(globalOverlap?.duplicates_same_name||[]).length;
-  const agentSimilarCount=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.length,0);
-  const upstreamCount=(h?.upstream_sources||[]).length;
-  const changesCount=h?.content_changes?.changed?.length||0;
-  const totalIssues=overlapGroups+sameName+agentSimilarCount+upstreamCount+changesCount;
-  $('badge-issues').textContent=totalIssues||'—';
+  const m=getTriageMetrics();
+  $('badge-issues').textContent=m.actionable||'—';
 }
 
 function renderTarget(){
@@ -604,21 +674,81 @@ function renderTarget(){
   if(ts)$('last-update').textContent=new Date(ts).toLocaleString('zh-CN');
 }
 
+function renderWorkbench(){
+  const el=$('workbench-card');
+  if(!el)return;
+  const m=getTriageMetrics();
+  const catCounts=getCategoryActionCounts();
+  const current=targets.find(t=>t.is_current)||scan?.target;
+  const currentName=current?.name||scan?.target?.label||'当前目录';
+  const scanMeta=scanResult
+    ? `${m.scannedDirs} 个目录 · ${(m.durationMs/1000).toFixed(1)}s · ${new Date(m.scannedAt).toLocaleString('zh-CN')}`
+    : health
+    ? `最近诊断 · ${m.scannedDirs||'?'} 个目录 · ${m.scannedAt?new Date(m.scannedAt).toLocaleString('zh-CN'):''}`
+    : `轻量模式 · ${globalStats?.targets_scanned||targetGroups.length||'?'} 个目录已发现`;
+  const queue=[
+    {
+      title:m.outdated?`更新过时来源`:'先做一次深度扫描',
+      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'生成同名、相似、上游和内容变更的统一基线',
+      count:m.outdated||'未扫描',
+      action:'issues'
+    },
+    {
+      title:m.sameName?`合并同名重复`:'检查当前常用目录',
+      desc:m.sameName?`先看用户自建和跨 Agent 副本，不急着碰 marketplace`:`${currentName} 当前 ${skills.length} 个 skills`,
+      count:m.sameName||skills.length,
+      action:m.sameName?'issues':'skills'
+    },
+    {
+      title:m.similar?`复核相似功能`:'整理目录地图',
+      desc:m.similar?`相似不等于重复，默认只展示需要人工复核的线索`:`${targetGroups.length||'?'} 个应用分组，按常用目录优先`,
+      count:m.similar||targetGroups.length||'--',
+      action:m.similar?'issues':'sources'
+    }
+  ];
+  el.innerHTML=`<div class="workbench">
+    <div class="card focus-panel">
+      <div class="focus-head">
+        <div>
+          <div class="focus-kicker">Triage</div>
+          <div class="focus-title">${m.actionable?`先复核 ${m.actionable} 条整理线索`:'先建立整理基线'}</div>
+          <div class="focus-sub">${scanMeta}</div>
+        </div>
+        <div class="focus-score"><div class="num">${m.actionable||'--'}</div><div class="lbl">待复核</div></div>
+      </div>
+      <div class="queue-list">${queue.map((q,i)=>`<div class="queue-row">
+        <div class="queue-rank">${i+1}</div>
+        <div><div class="queue-title">${q.title}</div><div class="queue-desc">${q.desc}</div></div>
+        <div class="queue-count">${q.count}</div>
+      </div>`).join('')}</div>
+      <div class="workbench-actions">
+        <button class="btn btn-primary" onclick="goView('issues')">${scanResult?'查看重点':'开始扫描'}</button>
+        <button class="btn" onclick="goView('sources')">目录地图</button>
+        <button class="btn" onclick="goView('skills')">当前目录</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>整理范围</h3><span class="sub">${currentName}</span></div>
+      <div class="scope-grid">
+        <div class="scope-card primary"><div class="scope-name"><span>日常处理</span><b>${catCounts.user||skills.length}</b></div><div class="scope-desc">用户自建、当前常用目录、过时来源优先。</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>整理合并</span><b>${(catCounts['cross-copy']||0)+(catCounts.project||0)}</b></div><div class="scope-desc">跨 Agent 副本和项目级 skill，先对比再删除。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>全量审计</span><b>${(catCounts.marketplace||0)+(catCounts.cache||0)}</b></div><div class="scope-desc">marketplace 与缓存默认观察，不作为首轮负担。</div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
 /* ── Stats ── */
 function renderStats(){
   const h=health;
   const gUnique=globalStats?.unique_skills||0;
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
-  // Count actionable items (issues + duplicates + similar + changes)
-  const issues=h?.summary?.structure_issues||0;
-  const dups=globalOverlap?.total_identical||0;
-  const similar=h?.overlap_groups?.length||0;
-  const changes=h?.content_changes?.total_changed||0;
-  const actionable=scanResult?(issues+dups+similar+changes):0;
+  const m=getTriageMetrics();
+  const actionable=(scanResult||health)?m.actionable:0;
   $('stats-row').innerHTML=`
     <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全量 Skills</div></div>
     <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
-    <div class="stat s-issues" title="结构问题 + 重复 + 相似 + 内容变更"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">可处理</div></div>`;
+    <div class="stat s-issues" title="同名、相似、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;
 }
 
 /* ── Categories ── */
@@ -860,7 +990,7 @@ async function previewSkill(dirPath,name){
 
 /* ── Scan Config Panel ── */
 // Category tab state
-let _issueCategoryTab='all'; // 'all' | 'user' | 'marketplace' | 'cache' | 'cross-copy' | 'project'
+let _issueCategoryTab='user'; // 'all' | 'user' | 'marketplace' | 'cache' | 'cross-copy' | 'project'
 
 // Map a directory path to its category using cached targets
 function _dirCategory(dirPath){
@@ -931,7 +1061,8 @@ async function runScan(){
       agent_similar:r.agent_similar||{},
       total_identical:(r.duplicates_identical||[]).length,
     };
-    _issueCategoryTab='all';
+    _issueCategoryTab='user';
+    _issueShowAll=false;
     renderIssues();
     updateDiagBadges();
     toast(`扫描完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
@@ -980,8 +1111,8 @@ function renderIssues(){
     catCounts['all']++;
   });
 
-  // Count upstream issues
-  upstreams.forEach(s=>{
+  // Count actionable upstream issues only
+  upstreams.filter(s=>s.status==='outdated').forEach(s=>{
     const c=_dirCategory(s.dir);
     catCounts[c]=(catCounts[c]||0)+1;
     catCounts['all']++;
@@ -1003,7 +1134,7 @@ function renderIssues(){
     const count=catCounts[key]||0;
     const bg=isActive?'var(--accent)':'transparent';
     const fg=isActive?'#fff':'var(--text-muted)';
-    tabHtml+=`<button onclick="_issueCategoryTab='${key}';renderIssues()" style="display:flex;align-items:center;gap:4px;padding:6px 12px;font-size:12px;font-weight:${isActive?600:400};color:${fg};background:${bg};border:none;border-radius:6px 6px 0 0;cursor:pointer;transition:all .15s;${isActive?'border-bottom:2px solid var(--accent);margin-bottom:-2px':''}">${meta.emoji} ${meta.label}${count?` <span style="font-size:10px;opacity:.8">${count}</span>`:''}</button>`;
+    tabHtml+=`<button onclick="_issueCategoryTab='${key}';_issueShowAll=false;renderIssues()" style="display:flex;align-items:center;gap:4px;padding:6px 12px;font-size:12px;font-weight:${isActive?600:400};color:${fg};background:${bg};border:none;border-radius:6px 6px 0 0;cursor:pointer;transition:all .15s;${isActive?'border-bottom:2px solid var(--accent);margin-bottom:-2px':''}">${meta.emoji} ${meta.label}${count?` <span style="font-size:10px;opacity:.8">${count}</span>`:''}</button>`;
   });
   tabHtml+='</div>';
 
@@ -1048,10 +1179,33 @@ function renderIssues(){
     return true; // content changes are per-current-dir, keep as-is for now
   })}:null);
 
+  const limitAgentGroups=(groupsByAgent,maxAgents=4,maxGroups=6)=>{
+    if(_issueShowAll)return {groups:groupsByAgent,hidden:0};
+    const entries=Object.entries(groupsByAgent).sort((a,b)=>b[1].length-a[1].length);
+    const out={};let shown=0,total=0;
+    entries.forEach(([agent,groups],idx)=>{
+      total+=groups.length;
+      if(idx<maxAgents){
+        out[agent]=groups.slice(0,maxGroups);
+        shown+=out[agent].length;
+      }
+    });
+    return {groups:out,hidden:Math.max(0,total-shown)};
+  };
+  const agentSimilarLimited=limitAgentGroups(filteredAgentSimilar);
+  const visibleUpstreams=_issueShowAll?filteredUpstreams:filteredUpstreams.filter(s=>s.status==='outdated').slice(0,8);
+  const visibleOverlaps=_issueShowAll?filteredOverlaps:filteredOverlaps.slice(0,12);
+  const visibleAgentSimilar=agentSimilarLimited.groups;
+  const visibleSameName=_issueShowAll?filteredSameName:filteredSameName.slice(0,24);
+  const visibleChanges=_issueShowAll?filteredChanges:(filteredChanges?{...filteredChanges,changed:(filteredChanges.changed||[]).slice(0,8)}:null);
+  const originalActionable=filteredSameName.length+filteredOverlaps.length+Object.values(filteredAgentSimilar).reduce((s,g)=>s+g.length,0)+filteredUpstreams.filter(s=>s.status==='outdated').length+(filteredChanges?.changed?.length||0);
+  const visibleActionable=visibleSameName.length+visibleOverlaps.length+Object.values(visibleAgentSimilar).reduce((s,g)=>s+g.length,0)+visibleUpstreams.filter(s=>s.status==='outdated').length+(visibleChanges?.changed?.length||0);
+  const hiddenActionable=Math.max(0,originalActionable-visibleActionable);
+
   // ── Build HTML ──
   let h=tabHtml;
 
-  const hasFilteredData=filteredSameName.length||Object.values(filteredAgentSimilar).some(g=>g.length)||filteredOverlaps.length||filteredUpstreams.length||filteredChanges?.changed?.length;
+  const hasFilteredData=originalActionable>0;
   if(!hasFilteredData){
     const meta=tab==='all'?{emoji:'📋',label:'全部'}:CAT_META[tab]||{emoji:'❓',label:tab};
     h+=`<div class="empty">✅ ${meta.emoji} ${meta.label} 分类下未发现问题</div>`;
@@ -1059,22 +1213,26 @@ function renderIssues(){
   }
 
   // Summary
-  const totalFiltered=filteredSameName.length+filteredOverlaps.length+Object.values(filteredAgentSimilar).reduce((s,g)=>s+g.length,0)+(filteredChanges?.changed?.length||0);
+  const totalFiltered=originalActionable;
   h+=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;padding:4px 0">
       <div style="font-size:28px;font-weight:700;color:var(--accent)">${totalFiltered}</div>
       <div style="flex:1">
-        <div style="font-size:13px;font-weight:600">待处理项</div>
-        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${totalFiltered} 个可处理</div>
+        <div style="font-size:13px;font-weight:600">待复核线索</div>
+        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${_issueShowAll?'全量展示':'重点预览'}</div>
       </div>
+      ${hiddenActionable?`<button class="btn btn-sm" onclick="_issueShowAll=true;renderIssues()">显示全量 ${totalFiltered}</button>`:`${_issueShowAll?'<button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">回到重点</button>':''}`}
     </div>
   </div>`;
+  if(hiddenActionable&&!_issueShowAll){
+    h+=`<div class="notice-line"><span>当前仅渲染 ${visibleActionable} 个重点线索，其余 ${hiddenActionable} 个留在全量视图。相似和同名不等于可删除。</span><button class="btn btn-sm" onclick="_issueShowAll=true;renderIssues()">显示全部</button></div>`;
+  }
 
   // ── Upstream section ──
-  if(filteredUpstreams.length){
-    const outdated=filteredUpstreams.filter(s=>s.status==='outdated');
+  if(visibleUpstreams.length){
+    const outdated=visibleUpstreams.filter(s=>s.status==='outdated');
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔗 上游追踪</div>`;
-    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head"><h3>上游追踪</h3><span class="sub">${filteredUpstreams.length} 个有来源${outdated.length?` · ${outdated.length} 个过时`:''}</span></div>`;
+    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head"><h3>上游追踪</h3><span class="sub">${outdated.length} 个过时</span></div>`;
     if(outdated.length){
       outdated.forEach(s=>{
         const cat=_dirCategory(s.dir);
@@ -1086,22 +1244,22 @@ function renderIssues(){
           <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this})">更新</button></div>`;
       });
     }else{
-      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${filteredUpstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
+      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${visibleUpstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
     }
     h+=`</div></div>`;
   }
 
   // ── Similar section (overlaps + per-agent) ──
-  const hasSimilar=filteredOverlaps.length||Object.keys(filteredAgentSimilar).length;
+  const hasSimilar=visibleOverlaps.length||Object.keys(visibleAgentSimilar).length;
   if(hasSimilar){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔍 相似分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
     // Per-directory overlaps — group by source directory/agent
-    if(filteredOverlaps.length){
+    if(visibleOverlaps.length){
       // Group overlaps by their source directory (from skills_meta)
       const overlapsByDir={};
-      filteredOverlaps.forEach(g=>{
+      visibleOverlaps.forEach(g=>{
         const meta=g.skills_meta||{};
         // Get the first skill's dir as the source directory
         const firstSkill=g.skills[0];
@@ -1155,7 +1313,7 @@ function renderIssues(){
     }
 
     // Per-agent similar
-    Object.entries(filteredAgentSimilar).sort((a,b)=>b[1].length-a[1].length).forEach(([agent,groups])=>{
+    Object.entries(visibleAgentSimilar).sort((a,b)=>b[1].length-a[1].length).forEach(([agent,groups])=>{
       h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录 TF-IDF 全文比对，相似度 ≥45%</div>`;
       groups.forEach(g=>{
@@ -1197,13 +1355,13 @@ function renderIssues(){
   }
 
   // ── Same-name section ──
-  if(filteredSameName.length){
+  if(visibleSameName.length){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">📛 同名分析</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
     // Within-agent same-name: groups with 2+ locations for the SAME agent
     const snByAgent={};
-    filteredSameName.forEach(dup=>{
+    visibleSameName.forEach(dup=>{
       if(dup.locations.length<2) return;
       dup.locations.forEach(loc=>{
         const a=loc.agent||'其他';
@@ -1260,12 +1418,12 @@ function renderIssues(){
   }
 
   // ── Content changes section ──
-  if(filteredChanges?.changed?.length){
-    const changeNames=filteredChanges.changed.map(c=>c.name);
+  if(visibleChanges?.changed?.length){
+    const changeNames=visibleChanges.changed.map(c=>c.name);
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔄 内容变更</div>`;
-    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>内容变更</h3><span class="sub">${filteredChanges.changed.length} 个已变更</span><span style="flex:1"></span><button class="btn btn-sm btn-primary" onclick="batchRehash([${changeNames.map(n=>`'${esc(n)}'`).join(',')}],'内容变更')" style="font-size:10px;padding:2px 8px">全部重新记录</button></div>
+    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>内容变更</h3><span class="sub">${visibleChanges.changed.length} 个已变更</span><span style="flex:1"></span><button class="btn btn-sm btn-primary" onclick="batchRehash([${changeNames.map(n=>`'${esc(n)}'`).join(',')}],'内容变更')" style="font-size:10px;padding:2px 8px">全部重新记录</button></div>
       <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">SKILL.md 内容与安装时记录的哈希不同</div>`;
-    filteredChanges.changed.forEach(c=>{
+    visibleChanges.changed.forEach(c=>{
       h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${c.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">上次记录: ${c.last_recorded||'未知'}</div></div>
@@ -1470,15 +1628,27 @@ function renderSources(){
       });
       targetGroups.splice(0,targetGroups.length,...ordered);
     }
-    targetGroups.forEach(g=>{
+    let groupsToRender=targetGroups;
+    if(!_sourcesShowAll&&targetGroups.length>12){
+      const priority=targetGroups.filter(g=>g.dirs.some(t=>t.is_current||isFav(t.path)));
+      const used=new Set(priority.map(g=>g.agent));
+      const rest=targetGroups.filter(g=>!used.has(g.agent));
+      groupsToRender=[...priority,...rest].slice(0,12);
+      const hidden=targetGroups.length-groupsToRender.length;
+      h+=`<div class="notice-line"><span>默认显示当前/常用和高频应用，共 ${groupsToRender.length} 个；其余 ${hidden} 个应用先收起。</span><button class="btn btn-sm" onclick="_sourcesShowAll=true;renderSources()">显示全部</button></div>`;
+    }else if(_sourcesShowAll&&targetGroups.length>12){
+      h+=`<div class="notice-line"><span>已显示全部 ${targetGroups.length} 个应用分组。</span><button class="btn btn-sm" onclick="_sourcesShowAll=false;renderSources()">回到重点</button></div>`;
+    }
+    groupsToRender.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
       const hasFav=g.dirs.some(t=>isFav(t.path));
       const favDir=g.dirs.find(t=>isFav(t.path));
       const mainDir=g.dirs.find(t=>t.is_current)||g.dirs[0];
       const favPath=favDir?favDir.path:mainDir.path;
+      const isExpanded=_expandedSourceAgent===g.agent;
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
-          <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
+          <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
           <span class="drag-handle" draggable="true" title="拖拽排序">⋮⋮</span>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">
             <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
@@ -1490,7 +1660,11 @@ function renderSources(){
           <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用目录':'设为常用目录'}">${hasFav?'⭐ 常用目录':'☆ 设为常用目录'}</button>
           <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 8px;flex-shrink:0" onclick="event.stopPropagation();deleteAgentSkills('${esc(g.agent)}')" title="删除此应用下所有 skills">🗑 删除全部</button>
         </div>
-        <div style="display:none;border-top:1px solid var(--border)">`;
+        <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
+      if(!isExpanded){
+        h+=`<div style="padding:10px 14px 10px 36px;font-size:11px;color:var(--text-muted);background:var(--bg-card-alt)">展开后加载 ${g.dirs.length} 个目录</div></div></div>`;
+        return;
+      }
       // Group dirs by category within this agent
       const catOrder=['user','marketplace','cache','cross-copy','project','unknown'];
       const dirsByCat={};
@@ -1648,11 +1822,9 @@ function applySmartFolding(){
 }
 
 function toggleSrcCard(card){
-  const header=card.querySelector('.src-arrow').parentElement;
-  const body=card.querySelector('.src-arrow').closest('div').nextElementSibling;
-  const isOpen=body.style.display!=='none';
-  body.style.display=isOpen?'none':'block';
-  card.querySelector('.src-arrow').style.transform=isOpen?'':'rotate(90deg)';
+  const agent=card.dataset.agent;
+  _expandedSourceAgent=_expandedSourceAgent===agent?null:agent;
+  renderSources();
 }
 
 function initSourceDrag(){
@@ -2288,7 +2460,7 @@ async function updateTargetSelector(){
       <div style="font-size:11px">去 <span style="color:var(--accent);cursor:pointer" onclick="switchView('sources',document.querySelector('.nav-item:nth-child(2)'));document.getElementById('target-dropdown').classList.remove('open')">📚 全部目录技能</span> 里标记 ⭐</div>
     </div>`;
     $('badge-sources').textContent=targetGroups.length||targets.length;
-    renderStats();renderSources();
+    renderStats();renderWorkbench();renderSources();
     return;
   }
   // Sort: current group first, then by skill count
@@ -2328,7 +2500,7 @@ async function updateTargetSelector(){
     </div>`;
   }).join('');
   $('badge-sources').textContent=targetGroups.length||targets.length;
-  renderStats();renderSources();
+  renderStats();renderWorkbench();renderSources();
 }
 
 function toggleTgSub(id,head){
@@ -2369,12 +2541,12 @@ async function switchTarget(path){
         if(!scan?.sources?.length) scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
         renderSources();
         $('badge-sources').textContent=targetGroups.length||ts.length;
-        renderStats();
+        renderStats();renderWorkbench();
       }
     }catch(e){}
     // Refresh global stats
     fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
-      if(gs){globalStats=gs;renderStats();renderCategories()}
+      if(gs){globalStats=gs;renderStats();renderWorkbench();renderCategories()}
     });
   }catch(e){toast('切换失败: '+e.message,'error')}
   finally{$('refresh-btn').disabled=false}
@@ -2410,7 +2582,7 @@ function applyFullDiagnosis(d){
   if(d.sources?.length && !scan.sources?.length){
     scan.sources=d.sources;
   }
-  renderIssues();renderSources();
+  renderIssues();renderSources();renderStats();renderWorkbench();
   updateDiagBadges();
   const btn=$('diag-btn');
   const issuesBtn=$('issues-diag-btn');
