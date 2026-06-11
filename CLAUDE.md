@@ -16,9 +16,9 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端：HTTP handler + 业务逻辑（~2500 行）
+serve.py           — 后端：HTTP handler + 业务逻辑（~2960 行）
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
-index.html         — 前端：HTML + CSS + JS 单文件（~2100 行）
+index.html         — 前端：HTML + CSS + JS 单文件（~2380 行）
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
 docs/              — 项目文档（troubleshooting.md）
 README.md
@@ -73,6 +73,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/skill/{name}/update` | PATCH | 从上游更新 skill |
 | `/api/skill/{name}/fix` | PATCH | 修复 skill 结构问题 |
 | `/api/preview` | GET | 跨目录预览 skill 内容（?dir=xxx&name=xxx） |
+| `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
 | `/api/openapi` | GET | 返回路由清单（调试用） |
 
 ## 设计决策
@@ -110,6 +111,19 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - `renderIssues()` 复用现有的卡片渲染逻辑
 - `loadCachedScanResult()` 在页面加载时检查缓存
 
+### 全部目录技能页 UX
+
+- 按钮标签用完整动作描述：`☆ 设为常用目录` / `⭐ 常用目录` / `切换为当前目录`（蓝色高亮）/ `复制到当前目录`
+- Agent 卡片级别有 `🗑 删除全部` 按钮，调 `/api/batch-delete`
+- 每个目录行有 `🗑` 按钮，调 `deleteDirSkills()`
+- 删除后不重跑 `loadData()`，只清缓存 + `renderSources()` + `loadTrash()`
+
+### /api/targets 缓存
+
+`_list_targets()` 带 3 分钟 TTL 内存缓存（`_targets_cache` / `_targets_cache_ts`）。冷启动 ~6s，缓存命中 ~0.1s。缓存期间 `is_current` 标志实时刷新（对比 state 里存的当前目标）。
+
+前端 `loadData()` 的异步 targets 回调：如果 sources DOM 已有内容（用户已展开过），跳过 `renderSources()` 只更新 badge 数字，避免覆盖用户交互状态。
+
 ## 数据目录
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
@@ -124,3 +138,10 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
+
+## 下一步方向
+
+**"问题与整理"页的分类展示与扫描规则优化**：
+- 当前分类 tab（5 类：user/marketplace/cache/cross-copy/project）的展示逻辑和切换体验
+- 二哥扫描的规则调优（同名检测、相似度阈值、上游比对策略）
+- 分类标签与扫描结果的联动展示

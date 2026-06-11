@@ -1503,6 +1503,8 @@ def check_upstream_status(skill_dir):
 # ── GitHub API helpers with rate-limit protection ──
 _github_cache = {}  # (url,) -> (timestamp, result)
 _github_cache_ttl = 300  # 5 minutes
+_targets_cache = None  # cached /api/targets response
+_targets_cache_ts = 0  # timestamp of last targets cache
 _github_rate_limited = False  # global flag: stop querying after hitting rate limit
 
 
@@ -1731,6 +1733,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._steal_skill()
         elif path == "/api/copy-skill":
             self._copy_skill()
+        elif path == "/api/batch-delete":
+            self._batch_delete()
         elif path == "/api/custom-sources":
             self._add_custom_source()
         elif path == "/api/favorite-dirs":
@@ -2518,7 +2522,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _list_targets(self):
         """List all discovered skill directories grouped by agent.
         Uses shared _discover_skill_dirs for directory discovery.
+        Results are cached for 3 minutes to avoid repeated filesystem scans.
         """
+        global _targets_cache, _targets_cache_ts
+        now = time.time()
+        if _targets_cache and (now - _targets_cache_ts) < 180:
+            # Refresh is_current flag against current target
+            current = self._current_target()
+            cached = json.loads(json.dumps(_targets_cache))  # deep copy
+            for t in cached.get("targets", []):
+                t["is_current"] = t["path"] == current
+            self._json_response(cached)
+            return
+
         home = Path.home()
         current = self._current_target()
 
@@ -2561,7 +2577,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                         key=lambda g: (0 if g["agent"] == current_agent else 1, -g["total_skills"]))
 
         # Flat list for backward compat + grouped view
-        self._json_response({"targets": targets, "groups": groups})
+        result = {"targets": targets, "groups": groups}
+        _targets_cache = result
+        _targets_cache_ts = time.time()
+        self._json_response(result)
 
     def _current_target(self):
         """Read current target from dedicated state file, fallback to latest-scan.json, fallback to ~/.claude/skills."""
@@ -2675,6 +2694,50 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"ok": True, "name": name, "trashed": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
+
+    def _batch_delete(self):
+        """Batch-delete skills from specified directories.
+        Body: {"items": [{"target": "/path/to/dir", "name": "skill-name"}, ...]}
+        """
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length).decode('utf-8') if length else '{}'
+            body = json.loads(raw)
+        except Exception:
+            self._json_response({"error": "Invalid JSON"}, 400)
+            return
+
+        items = body.get("items", [])
+        if not items:
+            self._json_response({"error": "items is empty"}, 400)
+            return
+
+        ok, fail, details = 0, 0, []
+        home = Path.home()
+        for item in items[:500]:  # safety cap
+            name = item.get("name", "")
+            target = item.get("target", "")
+            if not name or not target:
+                fail += 1
+                continue
+            # Validate path safety
+            target_path = Path(target).expanduser().resolve()
+            if not target_path.is_relative_to(home):
+                fail += 1
+                details.append({"name": name, "error": "path outside home"})
+                continue
+            skill_dir = target_path / name
+            if not skill_dir.is_dir():
+                fail += 1
+                continue
+            try:
+                dest = self._trash_dir(skill_dir)
+                ok += 1
+            except Exception as e:
+                fail += 1
+                details.append({"name": name, "error": str(e)})
+
+        self._json_response({"ok": True, "deleted": ok, "failed": fail, "details": details})
 
     def _resolve_skill_dir(self, name):
         """Find skill directory on disk. Uses current target first."""

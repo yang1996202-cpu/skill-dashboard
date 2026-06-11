@@ -527,8 +527,15 @@ async function loadData(){
       if(ts?.length){
         targets=ts;targetGroups=td.groups||[];
         scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
-        renderSources();
-        $('badge-sources').textContent=td.groups?.length||ts.length;
+        // Only rebuild if sources view hasn't been rendered yet by render()
+        // (avoids destroying user's expanded state during slow /api/targets)
+        if(!$('sources-list')?.children?.length){
+          renderSources();
+        }else{
+          // Just update badges and sidebar — don't touch the DOM
+          $('badge-sources').textContent=td.groups?.length||ts.length;
+          updateTargetSelector();
+        }
         renderStats();
       }
     }catch(e){}
@@ -1408,7 +1415,7 @@ function renderSources(){
   const autoDirs=allDirs.filter(d=>!isFav(d.path)).sort((a,b)=>b.count-a.count);
   const chipDirs=favDirsList.length?[...favDirsList,...autoDirs].slice(0,8):autoDirs.slice(0,6);
   if(chipDirs.length){
-    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${favDirsList.length?'⚡ 快速切换 · ⭐ 常用优先':'⚡ 推荐切换'}</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
+    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${favDirsList.length?'⚡ 快速切换 · ⭐ 常用目录优先':'⚡ 推荐切换'}</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
     chipDirs.forEach(d=>{
       const fav=isFav(d.path);
       h+=`<button class="btn btn-sm" onclick="switchTarget('${d.path}')" title="${d.rel}" style="display:inline-flex;align-items:center;gap:4px;${fav?'border-color:var(--amber);background:var(--amber-bg)':''}">
@@ -1448,7 +1455,8 @@ function renderSources(){
             </div>
             <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
           </div>
-          <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用 — 从侧边栏移除':'设为常用 — 添加到侧边栏'}">${hasFav?'⭐ 常用':'☆ 设常用'}</button>
+          <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用目录':'设为常用目录'}">${hasFav?'⭐ 常用目录':'☆ 设为常用目录'}</button>
+          <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 8px;flex-shrink:0" onclick="event.stopPropagation();deleteAgentSkills('${esc(g.agent)}')" title="删除此应用下所有 skills">🗑 删除全部</button>
         </div>
         <div style="display:none;border-top:1px solid var(--border)">`;
       // Group dirs by category within this agent
@@ -1473,9 +1481,10 @@ function renderSources(){
               <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
               ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
               <span class="to-count">${t.count}</span>
-              ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
-              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
-                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
+              ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
+              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
+                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
+              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此目录下所有 skills">🗑</button>
               <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
             </div>
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -1498,9 +1507,10 @@ function renderSources(){
               <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
               <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
               <span class="to-count">${t.count}</span>
-              ${!t.is_current?`<button class="btn btn-sm" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换</button>`:''}
-              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用">✕</button></span>`
-                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用</button>`}
+              ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
+              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
+                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
+              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此目录下所有 skills">🗑</button>
               <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
             </div>
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 64px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
@@ -1649,7 +1659,7 @@ function renderBrowseDir(path,skillList,container){
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>
-      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">同步</button>`:''}
+      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">复制到当前目录</button>`:''}
       ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
       <button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>
     </div>`;
@@ -1684,6 +1694,61 @@ function updateSrcBatchUI(){
   if(syncBtn)syncBtn.disabled=sel.length===0;
   if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
 }
+async function deleteAgentSkills(agentName){
+  const group=targetGroups.find(g=>g.agent===agentName);
+  if(!group)return;
+  const dirCount=group.dirs.length;
+  const skillCount=group.total_skills;
+  if(!confirm(`确认删除「${agentName}」下所有 skills？\n\n${dirCount} 个目录 · ${skillCount} 个 skill\n将移入垃圾站，可恢复。`))return;
+  // Collect all skills from all directories under this agent
+  const items=[];
+  for(const d of group.dirs){
+    try{
+      const r=await fetch('/api/source/skills?path='+encodeURIComponent(d.path));
+      const data=await r.json();
+      const list=data.skills||data;
+      list.forEach(s=>items.push({target:d.path,name:s.name}));
+    }catch(e){console.error('fetch skills failed for',d.path,e)}
+  }
+  if(!items.length){toast('未找到可删除的 skill','error');return}
+  if(!confirm(`即将删除 ${items.length} 个 skill，确认？`))return;
+  try{
+    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
+    const d=await r.json();
+    if(d.ok){
+      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
+      // Clear cache for affected dirs
+      group.dirs.forEach(d=>delete sourceSkillsCache[d.path]);
+      loadTrash();
+      renderSources();
+    }else{toast(d.error||'删除失败','error')}
+  }catch(e){toast('删除失败: '+e.message,'error')}
+}
+async function deleteDirSkills(path,count){
+  if(!confirm(`确认删除此目录下所有 ${count} 个 skill？\n将移入垃圾站，可恢复。`))return;
+  // Use cache if available, otherwise fetch
+  let list=sourceSkillsCache[path];
+  if(!list){
+    try{
+      const r=await fetch('/api/source/skills?path='+encodeURIComponent(path));
+      const d=await r.json();
+      list=d.skills||d;
+      sourceSkillsCache[path]=list;
+    }catch(e){toast('获取 skill 列表失败','error');return}
+  }
+  if(!list.length){toast('目录为空');return}
+  const items=list.map(s=>({target:path,name:s.name}));
+  try{
+    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
+    const d=await r.json();
+    if(d.ok){
+      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
+      delete sourceSkillsCache[path];
+      loadTrash();
+      renderSources();
+    }else{toast(d.error||'删除失败','error')}
+  }catch(e){toast('删除失败: '+e.message,'error')}
+}
 async function deleteSrcSkill(path,name){
   if(!confirm(`确认删除 ${name}？将移入垃圾站`))return;
   try{
@@ -1713,7 +1778,7 @@ async function batchSyncSrcSkills(){
   if(!sel.length)return;
   const curTarget=targets.find(t=>t.is_current);
   if(!curTarget)return toast('未选择目标目录','error');
-  if(!confirm(`确认将 ${sel.length} 个 skill 同步到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
+  if(!confirm(`确认将 ${sel.length} 个 skill 复制到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
   let ok=0,fail=0;
   for(const{name,path}of sel){
     try{
@@ -1721,7 +1786,7 @@ async function batchSyncSrcSkills(){
       const d=await r.json();d.ok?ok++:fail++;
     }catch{fail++}
   }
-  toast(`已同步 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  toast(`已复制到当前目录 ${ok} 个${fail?`，${fail} 个失败`:''}`);
   srcSelectedSkills.clear();
   await loadData();
 }
