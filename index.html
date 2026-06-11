@@ -2077,41 +2077,67 @@ async function syncSelected(){
 function showAddSourceDialog(){
   $('modal-title').textContent='添加技能库来源';
   $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
-    <div style="margin-bottom:12px;color:var(--text-muted)">输入包含 skills/ 子目录的路径</div>
-    <input id="add-source-path" type="text" placeholder="/Users/yang/.custom/skills 或 ~/my-skills" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:12px">
+    <details style="margin-bottom:10px;border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+      <summary style="padding:8px 10px;font-size:12px;font-weight:600;cursor:pointer;background:var(--bg-card-alt);color:var(--text)">怎么找到 skill 目录路径？</summary>
+      <div style="padding:10px;font-size:11px;color:var(--text-muted);line-height:1.7">
+        <div style="margin-bottom:10px">
+          <b style="color:var(--text)">👤 你自己找</b><br>
+          Agent 的 skill 目录通常在 <code style="background:var(--bg-card);padding:1px 4px;border-radius:3px">~/.xxx/skills/</code>，比如：<br>
+          <code style="background:var(--bg-card);padding:1px 4px;border-radius:3px">~/.claude/skills</code>、
+          <code style="background:var(--bg-card);padding:1px 4px;border-radius:3px">~/.augment/skills</code>、
+          <code style="background:var(--bg-card);padding:1px 4px;border-radius:3px">~/.cursor/skills-cursor</code><br>
+          在终端 <code style="background:var(--bg-card);padding:1px 4px;border-radius:3px">ls ~/.xxx/skills/</code> 看看有没有，有就复制路径粘贴到下面。
+        </div>
+        <div>
+          <b style="color:var(--text)">🤖 让 Agent 帮你找</b><br>
+          复制下面这段话发给你的 Agent：<br>
+          <div style="margin:4px 0;padding:6px 8px;background:var(--bg-card);border-radius:6px;font-family:monospace;white-space:pre-wrap;user-select:text;cursor:text;border:1px solid var(--border-subtle)">请列出你所有的 skill 目录的完整路径，每行一个，只输出路径不要其他内容。格式示例：/Users/你的用户名/.claude/skills</div>
+          把 Agent 返回的路径粘贴到下面即可。
+        </div>
+      </div>
+    </details>
+    <textarea id="add-source-path" rows="5" placeholder="粘贴路径，一行一个：\n~/.my-agent/skills\n/Users/you/custom-skills\n~/work/project-a/.claude/skills" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:monospace;margin-bottom:12px;resize:vertical"></textarea>
     <div id="add-source-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
-      <button class="btn btn-primary" id="add-source-btn" onclick="addCustomSource()">添加</button>
+      <button class="btn btn-primary" id="add-source-btn" onclick="addCustomSource()">批量添加</button>
     </div>
   </div>`;
   $('modal').classList.remove('hidden');
 }
 async function addCustomSource(){
   const btn=$('add-source-btn');const result=$('add-source-result');
-  const path=$('add-source-path').value.trim();
-  if(!path){toast('请输入路径','error');return}
+  const raw=$('add-source-path').value.trim();
+  if(!raw){toast('请输入路径','error');return}
+  const paths=raw.split('\n').map(p=>p.trim()).filter(Boolean);
+  if(!paths.length){toast('请输入路径','error');return}
   btn.disabled=true;btn.textContent='添加中...';
   result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
-  result.textContent='验证路径...';
-  try{
-    const r=await fetch('/api/custom-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
-    const d=await r.json();
-    if(d.ok){
-      result.style.background='var(--green-bg)';result.style.color='var(--green)';
-      result.textContent='✅ 添加成功';
-      toast('来源已添加');
-      await loadData();
-      setTimeout(()=>$('modal').classList.add('hidden'),800);
-    }else{
-      result.style.background='var(--red-bg)';result.style.color='var(--red)';
-      result.textContent='❌ '+(d.error||'添加失败');
-    }
-  }catch(e){
-    result.style.background='var(--red-bg)';result.style.color='var(--red)';
-    result.textContent='❌ '+e.message;
+  result.textContent=`正在验证 ${paths.length} 个路径...`;
+  let ok=0,fail=0,details=[];
+  for(const path of paths){
+    try{
+      const r=await fetch('/api/custom-sources',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path})});
+      const d=await r.json();
+      if(d.ok){
+        if(d.skipped){details.push('⏭️ '+path+' — 已存在');ok++}
+        else{ok++;details.push('✅ '+path)}
+      }
+      else{fail++;details.push('❌ '+path+' — '+(d.error||'失败'))}
+    }catch(e){fail++;details.push('❌ '+path+' — '+e.message)}
   }
-  btn.disabled=false;btn.textContent='添加';
+  if(fail===0){
+    result.style.background='var(--green-bg)';result.style.color='var(--green)';
+    result.innerHTML=`全部添加成功 ✅（${ok} 个）`;
+    toast(`已添加 ${ok} 个来源`);
+    await loadData();
+    setTimeout(()=>$('modal').classList.add('hidden'),1200);
+  }else{
+    result.style.background='var(--bg-card-alt)';result.style.color='var(--text)';
+    result.innerHTML=`<div>成功 ${ok} 个，失败 ${fail} 个</div><div style="margin-top:6px;font-size:11px;color:var(--text-muted)">${details.join('<br>')}</div>`;
+    if(ok>0)await loadData();
+  }
+  btn.disabled=false;btn.textContent='批量添加';
 }
 async function removeCustomSource(path){
   if(!confirm(`确认移除来源 "${path}"？`))return;
