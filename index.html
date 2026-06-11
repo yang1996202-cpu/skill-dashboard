@@ -1399,6 +1399,38 @@ async function permanentDeleteTrash(id,name){
 
 /* ── Sources (穿透浏览 + 常用目录) ── */
 let sourceSkillsCache={};
+
+// Lightweight refresh after delete: re-fetch targets, update counts in-place, preserve expand state
+async function refreshAfterDelete(changedPaths){
+  // Clear skill caches for changed paths
+  (changedPaths||[]).forEach(p=>delete sourceSkillsCache[p]);
+  // Re-fetch targets
+  try{
+    const r=await fetch('/api/targets');
+    const d=await r.json();
+    const newTargets=d.targets||[];
+    targets.length=0;
+    targets.push(...newTargets);
+    targetGroups.length=0;
+    if(d.groups) targetGroups.push(...d.groups);
+  }catch(e){console.error('refreshAfterDelete targets fail',e)}
+  // Save current expand state
+  const expandedAgents=new Set();
+  document.querySelectorAll('.src-card').forEach(card=>{
+    const arrow=card.querySelector('.src-arrow');
+    if(arrow&&arrow.style.transform.includes('rotate')) expandedAgents.add(card.dataset.agent);
+  });
+  // Re-render
+  renderSources();
+  // Restore expand state
+  document.querySelectorAll('.src-card').forEach(card=>{
+    if(expandedAgents.has(card.dataset.agent)){
+      const body=card.querySelector('.src-arrow').closest('div').nextElementSibling;
+      if(body){body.style.display='block';card.querySelector('.src-arrow').style.transform='rotate(90deg)'}
+    }
+  });
+}
+
 function renderSources(){
   if(!targets.length){$('sources-list').innerHTML='';return}
   try{
@@ -1444,10 +1476,10 @@ function renderSources(){
       const favDir=g.dirs.find(t=>isFav(t.path));
       const mainDir=g.dirs.find(t=>t.is_current)||g.dirs[0];
       const favPath=favDir?favDir.path:mainDir.path;
-      h+=`<div class="src-card" draggable="true" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
+      h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
-          <span class="drag-handle" title="拖拽排序">⋮⋮</span>
+          <span class="drag-handle" draggable="true" title="拖拽排序">⋮⋮</span>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">
             <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
               ${g.agent}
@@ -1470,7 +1502,19 @@ function renderSources(){
       // Render category sub-groups
       const catKeys=catOrder.filter(c=>dirsByCat[c]);
       if(catKeys.length<=1){
-        // Single or no category — render flat (original style)
+        // Single or no category — show one collapsible category header + dirs
+        const cat=catKeys[0]||'unknown';
+        const cm=CAT_META[cat]||CAT_META.unknown;
+        const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
+        const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
+        h+=`<div style="border-top:1px solid var(--border-subtle)">
+          <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+            <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
+            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${catCount} skills)</span>
+            <span style="flex:1"></span>
+            <button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="删除此分类下所有 skills">🗑 删除全部</button>
+          </div>
+          <div id="${catFoldId}">`;
         g.dirs.forEach((t,di)=>{
           const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
           const safeId='sd-'+Math.random().toString(36).slice(2,8);
@@ -1490,16 +1534,22 @@ function renderSources(){
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
           </div>`;
         });
+        h+=`</div></div>`;
       }else{
         // Multiple categories — render with category sub-headers
         catKeys.forEach(cat=>{
           const cm=CAT_META[cat]||CAT_META.unknown;
           const catDirs=dirsByCat[cat];
           const catCount=catDirs.reduce((s,d)=>s+d.count,0);
+          const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
           h+=`<div style="border-top:1px solid var(--border-subtle)">
-            <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt)">
+            <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+              <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
               <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
-            </div>`;
+              <span style="flex:1"></span>
+              <button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="删除此分类下所有 skills">🗑 删除全部</button>
+            </div>
+            <div id="${catFoldId}">`;
           catDirs.forEach(t=>{
             const safeId='sd-'+Math.random().toString(36).slice(2,8);
             const fav=isFav(t.path);
@@ -1515,7 +1565,7 @@ function renderSources(){
             </div>
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 64px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
           });
-          h+=`</div>`;
+          h+=`</div></div>`;
         });
       }
       h+=`</div></div>`;
@@ -1546,6 +1596,57 @@ async function loadCategoryOrder(){
 }
 loadCategoryOrder();
 
+// Smart folding: hide extra dirs per agent card, show top N + current + favorites
+function applySmartFolding(){
+  const MAX_SHOW=3;
+  document.querySelectorAll('.src-card').forEach(card=>{
+    const body=card.querySelector('.src-arrow').closest('div').nextElementSibling;
+    if(!body||body.dataset.folded)return;
+    // Collect all direct directory rows (target-opt or border-top dividers)
+    const rows=[];
+    body.querySelectorAll(':scope > div').forEach(row=>{
+      // Skip if it's our own toggle button
+      if(row.dataset.moreToggle)return;
+      // Category sub-headers count as a row but we keep them
+      const isDirRow=row.querySelector('.target-opt');
+      const isCatHeader=!isDirRow&&row.querySelector('div[style*="font-weight:600"]');
+      if(isDirRow||isCatHeader) rows.push({el:row,isDir:!!isDirRow});
+    });
+    if(rows.length<=MAX_SHOW+1){body.dataset.folded='1';return}
+    // Determine which to keep visible: current target, favorites, first N
+    let shown=0;
+    const visible=[],hidden=[];
+    rows.forEach(r=>{
+      if(!r.isDir){visible.push(r);return} // keep category headers
+      const opt=r.el.querySelector('.target-opt');
+      const isCurrent=opt&&opt.classList.contains('active');
+      const isFav_=opt&&opt.querySelector('button[onclick*="toggleFav"]')&&opt.textContent.includes('⭐');
+      if(isCurrent||isFav_||shown<MAX_SHOW){visible.push(r);shown++}
+      else hidden.push(r);
+    });
+    if(!hidden.length){body.dataset.folded='1';return}
+    // Hide extras
+    hidden.forEach(r=>{r.el.style.display='none'});
+    // Insert toggle button
+    const totalSkills=hidden.reduce((s,r)=>{
+      const cnt=r.el.querySelector('.to-count');
+      return s+(cnt?parseInt(cnt.textContent)||0:0);
+    },0);
+    const btn=document.createElement('div');
+    btn.dataset.moreToggle='1';
+    btn.style.cssText='border-top:1px solid var(--border-subtle);padding:6px 14px 6px 36px;cursor:pointer;font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px;user-select:none';
+    btn.innerHTML='<span style="font-size:8px;transition:transform .15s">▶</span><span>还有 '+hidden.length+' 个目录</span><span style="font-size:9px;color:var(--text-dim)">('+totalSkills+' skills)</span>';
+    btn.onclick=function(){
+      const expanded=hidden[0].el.style.display!=='none';
+      hidden.forEach(r=>{r.el.style.display=expanded?'none':''});
+      this.children[0].style.transform=expanded?'':'rotate(90deg)';
+      this.children[1].textContent=expanded?'还有 '+hidden.length+' 个目录':'收起';
+    };
+    body.appendChild(btn);
+    body.dataset.folded='1';
+  });
+}
+
 function toggleSrcCard(card){
   const header=card.querySelector('.src-arrow').parentElement;
   const body=card.querySelector('.src-arrow').closest('div').nextElementSibling;
@@ -1558,14 +1659,16 @@ function initSourceDrag(){
   const container=$('sources-list');
   if(!container)return;
   container.querySelectorAll('.src-card').forEach(card=>{
-    card.addEventListener('dragstart',e=>{
-      // Only allow drag from handle
-      if(!e.target.closest('.src-card'))return;
+    // Drag only from handle, not from card body (fixes text selection conflict)
+    const handle=card.querySelector('.drag-handle');
+    if(handle){
+      handle.addEventListener('dragstart',e=>{
       e.dataTransfer.effectAllowed='move';
       e.dataTransfer.setData('text/plain',card.dataset.agent||'');
       card.classList.add('dragging');
       requestAnimationFrame(()=>card.style.opacity='0.4');
     });
+    }
     card.addEventListener('dragover',e=>{
       e.preventDefault();
       e.dataTransfer.dropEffect='move';
@@ -1658,7 +1761,7 @@ function renderBrowseDir(path,skillList,container){
     const selKey=path+'::'+s.name;
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--accent)" onclick="showSkill('${esc(s.name)}','${esc(path)}')">${s.name}</span>
       ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">复制到当前目录</button>`:''}
       ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
       <button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>
@@ -1694,6 +1797,38 @@ function updateSrcBatchUI(){
   if(syncBtn)syncBtn.disabled=sel.length===0;
   if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
 }
+
+// Delete all skills under a specific category within an agent group
+async function deleteCategoryDirs(agentName,category){
+  const group=targetGroups.find(g=>g.agent===agentName);
+  if(!group)return;
+  const catDirs=group.dirs.filter(d=>(d.category||'unknown')===category);
+  if(!catDirs.length){toast('该分类下无目录');return}
+  const catCount=catDirs.reduce((s,d)=>s+d.count,0);
+  const cm=CAT_META[category]||CAT_META.unknown;
+  if(!confirm(`确认删除「${agentName}」下 ${cm.emoji} ${cm.label} 分类的所有 skills？\n\n${catDirs.length} 个目录 · ${catCount} 个 skill\n将移入垃圾站，可恢复。`))return;
+  const items=[];
+  for(const d of catDirs){
+    try{
+      const r=await fetch('/api/source/skills?path='+encodeURIComponent(d.path));
+      const data=await r.json();
+      const list=data.skills||data;
+      list.forEach(s=>items.push({target:d.path,name:s.name}));
+    }catch(e){console.error('fetch skills failed for',d.path,e)}
+  }
+  if(!items.length){toast('未找到可删除的 skill','error');return}
+  if(!confirm(`即将删除 ${items.length} 个 skill，确认？`))return;
+  try{
+    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
+    const d=await r.json();
+    if(d.ok){
+      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
+      refreshAfterDelete(catDirs.map(d=>d.path));
+      loadTrash();
+    }else{toast(d.error||'删除失败','error')}
+  }catch(e){toast('删除失败: '+e.message,'error')}
+}
+
 async function deleteAgentSkills(agentName){
   const group=targetGroups.find(g=>g.agent===agentName);
   if(!group)return;
@@ -1717,10 +1852,8 @@ async function deleteAgentSkills(agentName){
     const d=await r.json();
     if(d.ok){
       toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
-      // Clear cache for affected dirs
-      group.dirs.forEach(d=>delete sourceSkillsCache[d.path]);
+      refreshAfterDelete(group.dirs.map(d=>d.path));
       loadTrash();
-      renderSources();
     }else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败: '+e.message,'error')}
 }
@@ -1744,8 +1877,8 @@ async function deleteDirSkills(path,count){
     if(d.ok){
       toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
       delete sourceSkillsCache[path];
+      refreshAfterDelete([path]);
       loadTrash();
-      renderSources();
     }else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败: '+e.message,'error')}
 }
@@ -1754,7 +1887,7 @@ async function deleteSrcSkill(path,name){
   try{
     const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});
     const d=await r.json();
-    if(d.ok){toast(`${name} 已移入垃圾站`);delete sourceSkillsCache[path];renderSources();loadTrash()}
+    if(d.ok){toast(`${name} 已移入垃圾站`);delete sourceSkillsCache[path];refreshAfterDelete([path]);loadTrash()}
     else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败','error')}
 }
@@ -1771,7 +1904,7 @@ async function batchDeleteSrcSkills(){
   toast(`${ok} 个已移入垃圾站${fail?`，${fail} 个失败`:''}`);
   const _paths=new Set(sel.map(s=>s.path));
   _paths.forEach(p=>delete sourceSkillsCache[p]);
-  renderSources();loadTrash();
+  refreshAfterDelete([..._paths]);loadTrash();
 }
 async function batchSyncSrcSkills(){
   const sel=[...srcSelectedSkills].map(k=>({path:k.split('::')[0],name:k.split('::').slice(1).join('::')}));

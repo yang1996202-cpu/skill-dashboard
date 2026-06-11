@@ -784,14 +784,25 @@ def _discover_skill_dirs():
     candidates = []
     seen_paths = set()
     validated_paths = set()  # dirs already confirmed by _has_skill_md
+    _resolved_inodes = set()  # (st_dev, st_ino) for samefile dedup (macOS case-insensitive FS)
 
     def add_dir(d, _validated=False):
         d = d.resolve()
-        if d.is_dir() and str(d) not in seen_paths:
-            seen_paths.add(str(d))
-            candidates.append(d)
-            if _validated:
-                validated_paths.add(str(d))
+        if not d.is_dir() or str(d) in seen_paths:
+            return
+        # Dedup by inode — catches macOS case-insensitive aliases (projects/ vs Projects/)
+        try:
+            st = d.stat()
+            inode_key = (st.st_dev, st.st_ino)
+            if inode_key in _resolved_inodes:
+                return
+            _resolved_inodes.add(inode_key)
+        except OSError:
+            return
+        seen_paths.add(str(d))
+        candidates.append(d)
+        if _validated:
+            validated_paths.add(str(d))
 
     # 1. ~/.xxx/ — any dot-prefixed agent directory
     #    Only skip genuine system junk. Everything else: let SKILL.md validation decide.
@@ -811,12 +822,9 @@ def _discover_skill_dirs():
     def _scan_agent_deep(root, max_depth=7, _depth=0):
         """Deep scan within agent dirs for marketplaces/backups/extensions/plugins.
 
-        depth=7 covers deeply nested structures like:
-        .vscode/agent-plugins/github.com/org/repo/plugins/name/skills/
-        .antigravity/extensions/ms-python.../.github/skills/
-
-        Fully recursive — discovers everything including internal copies (e.g.
-        gstack/.cursor/skills/).  These are real files on disk and should be shown.
+        Only stops at container dirs (own SKILL.md + children with SKILL.md)
+        and max depth. All other recursion proceeds normally.
+        Noise filtering is handled in _list_targets post-processing.
         """
         if _depth >= max_depth:
             return
@@ -824,8 +832,17 @@ def _discover_skill_dirs():
             for entry in root.iterdir():
                 if not entry.is_dir() or entry.name in _SKIP_DEEP:
                     continue
+                is_container = (
+                    (entry / "SKILL.md").exists() and _has_skill_md(entry)
+                )
                 if _has_skill_md(entry):
+                    # Container inside skills/ -> skip (parent already shows it)
+                    if is_container and root.name == "skills":
+                        continue
                     add_dir(entry, _validated=True)
+                # Don't recurse into containers — sub-skills are internal
+                if is_container:
+                    continue
                 _scan_agent_deep(entry, max_depth, _depth + 1)
         except (PermissionError, OSError):
             pass
@@ -845,8 +862,20 @@ def _discover_skill_dirs():
                     add_dir(skills_dir)
                     try:
                         for sub in skills_dir.iterdir():
-                            if sub.is_dir():
-                                add_dir(sub)
+                            if not sub.is_dir():
+                                continue
+                            # Container check: if a dir has its own SKILL.md AND
+                            # children with SKILL.md, it's a skill package (e.g.
+                            # gstack/ with 53 sub-skills).  Skip it — the package
+                            # is already visible as a skill within the parent
+                            # target, and its sub-skills shouldn't be flattened.
+                            if ((sub / "SKILL.md").exists()
+                                    and any(
+                                        (c.is_dir() and (c / "SKILL.md").exists())
+                                        for c in sub.iterdir()
+                                    )):
+                                continue
+                            add_dir(sub)
                     except (PermissionError, OSError):
                         pass
                 # Deep scan for ALL .xxx dirs (not just confirmed agents)
@@ -887,12 +916,26 @@ def _discover_skill_dirs():
             pass
 
     # 3. ~/projects/*//skills/ — project-level skill directories
-    for proj_root_name in ("projects", "Projects", "code", "Code", "workspace"):
-        proj_root = home / proj_root_name
-        if not proj_root.is_dir():
+    #    Discover non-hidden project roots dynamically instead of hardcoding
+    #    case variants (projects/Projects, code/Code) which cause duplicates
+    #    on case-insensitive filesystems (macOS).
+    _project_roots_seen = set()  # inode dedup for project root dirs
+    for entry in home.iterdir():
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        # Only scan common project root names (case-insensitive match)
+        if entry.name.lower() not in ("projects", "code", "workspace"):
             continue
         try:
-            for proj in proj_root.iterdir():
+            st = entry.stat()
+            inode_key = (st.st_dev, st.st_ino)
+            if inode_key in _project_roots_seen:
+                continue
+            _project_roots_seen.add(inode_key)
+        except OSError:
+            continue
+        try:
+            for proj in entry.iterdir():
                 if not proj.is_dir():
                     continue
                 add_dir(proj / "skills")
@@ -912,12 +955,20 @@ def _discover_skill_dirs():
                 add_dir(Path(p).expanduser())
         except Exception:
             pass
-    for proj_root_name in ("projects", "Projects", "code", "Code", "workspace"):
-        proj_root = home / proj_root_name
-        if not proj_root.is_dir():
+    for entry in home.iterdir():
+        if not entry.is_dir() or entry.name.startswith("."):
+            continue
+        if entry.name.lower() not in ("projects", "code", "workspace"):
             continue
         try:
-            for proj in proj_root.iterdir():
+            st = entry.stat()
+            inode_key = (st.st_dev, st.st_ino)
+            if inode_key in _project_roots_seen:
+                continue
+        except OSError:
+            continue
+        try:
+            for proj in entry.iterdir():
                 if not proj.is_dir():
                     continue
                 cfg_file = proj / ".skill-dashboard.json"
@@ -2017,7 +2068,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response(self._load_custom_sources())
 
     def _add_custom_source(self):
-        """Add a custom source path."""
+        """Add a custom source path. Checks for duplicates against auto-discovered dirs."""
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length).decode('utf-8') if length else '{}'
         try:
@@ -2031,7 +2082,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Expand ~
         if new_path.startswith("~"):
             new_path = str(Path.home() / new_path[2:])
-        p = Path(new_path)
+        p = Path(new_path).resolve()
         if not p.exists():
             self._json_response({"error": f"path does not exist: {new_path}"}, status=400)
             return
@@ -2040,6 +2091,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not skills_dir.is_dir():
             self._json_response({"error": f"no skills/ subdir found in {new_path}"}, status=400)
             return
+        # Check duplicate against auto-discovered directories (inode-level)
+        try:
+            new_stat = p.stat()
+            new_inode = (new_stat.st_dev, new_stat.st_ino)
+            discovered = _discover_skill_dirs()
+            for d in discovered:
+                try:
+                    if d.resolve().stat().st_dev == new_inode[0] and d.resolve().stat().st_ino == new_inode[1]:
+                        self._json_response({"ok": True, "path": new_path, "skipped": True,
+                                             "message": f"已在自动发现中: {d}"})
+                        return
+                except OSError:
+                    continue
+        except OSError:
+            pass
         paths = self._load_custom_sources()
         if new_path not in paths:
             paths.append(new_path)
@@ -2540,6 +2606,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Reuse shared discovery
         skill_dirs = _discover_skill_dirs()
+
         targets = []
         for skills_dir in skill_dirs:
             count = sum(1 for d in skills_dir.iterdir()
