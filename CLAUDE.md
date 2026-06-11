@@ -18,7 +18,7 @@ python3 serve.py
 ```
 serve.py           — 后端：HTTP handler + 业务逻辑（~2960 行）
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
-index.html         — 前端：HTML + CSS + JS 单文件（~2380 行）
+index.html         — 前端：HTML + CSS + JS 单文件（~2400 行）
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
 docs/              — 项目文档（troubleshooting.md）
 README.md
@@ -113,10 +113,18 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### 全部目录技能页 UX
 
-- 按钮标签用完整动作描述：`☆ 设为常用目录` / `⭐ 常用目录` / `切换为当前目录`（蓝色高亮）/ `复制到当前目录`
-- Agent 卡片级别有 `🗑 删除全部` 按钮，调 `/api/batch-delete`
-- 每个目录行有 `🗑` 按钮，调 `deleteDirSkills()`
-- 删除后不重跑 `loadData()`，只清缓存 + `renderSources()` + `loadTrash()`
+- **分类折叠**：每个 Agent 卡片内，按 5 分类（user/marketplace/cache/cross-copy/project）分组显示，每个分类标题可点击展开/收起
+- **分类一键删除**：分类子标题有 `🗑 删除全部` 按钮，调 `deleteCategoryDirs()`
+- **Agent 级操作**：卡片头部有 `🗑 删除全部` 按钮和 `⭐ 常用目录` 切换
+- **目录级操作**：每个目录行有 `切换为当前目录`、`设为常用目录`、`🗑` 按钮
+- **拖拽排序**：仅从 `⋮⋮` 手柄触发拖拽（`draggable` 在 handle 上），不干扰文字选择/复制
+- **删除后保留展开状态**：`refreshAfterDelete()` 重拉 targets 后恢复已展开卡片
+- **Skill 内容查看**：点击 skill 名或"查看"按钮，调 `showSkill(name, dir)` 通过 `/api/preview` 跨目录查看
+
+### 批量添加来源
+
+- 对话框支持多行路径（一行一个），带引导说明（自己找 / 让 Agent 找）
+- `addCustomSource()` 逐个验证路径，汇总结果（成功/失败/已存在）
 
 ### /api/targets 缓存
 
@@ -138,6 +146,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
+- **前端 JS 调试**：模板字符串嵌套 HTML 属性时注意引号冲突，优先抽全局函数而非内联 onclick
 
 ## 下一步方向
 
@@ -145,3 +154,8 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - 当前分类 tab（5 类：user/marketplace/cache/cross-copy/project）的展示逻辑和切换体验
 - 二哥扫描的规则调优（同名检测、相似度阈值、上游比对策略）
 - 分类标签与扫描结果的联动展示
+- 问题页的删除操作与全部目录技能页的分类删除联动
+
+**竞品调研与差异化**：
+- skillslm、cc-switch 等同类工具的方法论对比
+- 数据存储策略（纯文件 vs 数据库 vs 混合）
