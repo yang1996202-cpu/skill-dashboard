@@ -22,10 +22,24 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端：HTTP handler + 业务逻辑（~4100 行）
-skilldash/         — 后端轻量模块（当前包含 signature 相似度）
+serve.py           — 后端入口：HTTP handler + 路由编排（~2400 行）
+skilldash/paths.py          — 共享路径、端口、缓存文件定位
+skilldash/classification.py — skill 分类关键词和描述读取
+skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
+skilldash/overlap.py        — 跨目录同名、完全重复、轻量相似扫描
+skilldash/cleanup.py        — 清理计划、执行预案、重复 skill 处理准则
+skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
+skilldash/decisions.py      — 本地运行态决策（多端部署/标记不相似）
+skilldash/similarity.py     — signature 相似度 + TF-IDF 深度审计能力
+skilldash/understanding.py  — 离线理解层
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
-index.html         — 前端：HTML + CSS + JS 单文件（~3400 行）
+index.html         — 前端 HTML 骨架（~150 行）
+static/skill-dashboard.css — 前端样式
+static/app-core.js         — 前端状态、数据加载、仪表盘、当前目录技能
+static/issues-cleanup.js   — 问题与整理、清理计划、垃圾站
+static/sources.js          — 全部目录技能、来源浏览、批量同步/删除
+static/skill-detail.js     — skill 详情、对比、分类编辑
+static/app-bootstrap.js    — 刷新、目标切换、诊断、安装入口、启动加载
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
 docs/              — 项目文档（troubleshooting.md）
 README.md
@@ -36,11 +50,11 @@ screenshots/       — 截图（当前只有 .gitkeep）
 ## 架构
 
 ```
-浏览器 → index.html (静态)
+浏览器 → index.html + static/* (静态)
           ↓ fetch API
        serve.py (HTTPServer, 端口 3457)
           ↓ 调用本地模块
-       skilldash/similarity.py
+       skilldash/{discovery,cleanup,overlap,similarity,understanding,...}
           ↓ 读文件系统
        本地 skill 目录 (如 ~/.codex/skills/)
           ↓ GitHub REST API (无认证)

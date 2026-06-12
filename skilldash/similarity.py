@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
+import time
 import re
 from collections import Counter
 from pathlib import Path
 from typing import Callable, Iterable
 
+from .classification import _classify_skill
+from .discovery import _agent_from_path
+from .paths import _cache_path
 from .skill_parser import parse_frontmatter
 
 
@@ -247,3 +253,252 @@ def compute_signature_similarity(
 
     groups.sort(key=lambda g: (g["score"], len(g["skills"])), reverse=True)
     return groups
+
+
+# -- Deep TF-IDF similarity retained for full audit mode --
+
+_TFIDF_STOP = frozenset((
+    # English
+    "the","be","to","of","and","a","in","that","have","i","it","for","not","on","with",
+    "he","as","you","do","at","this","but","his","by","from","they","we","say","her",
+    "she","or","an","will","my","one","all","would","there","their","what","so","up",
+    "out","if","about","who","get","which","go","me","when","make","can","like","time",
+    "no","just","him","know","take","people","into","year","your","good","some","could",
+    "them","see","other","than","then","now","look","only","come","its","over","think",
+    "also","back","after","use","two","how","our","work","first","well","way","even",
+    "new","want","because","any","these","give","day","most","us","is","are","was",
+    "were","been","being","has","had","did","does","done","shall","should","may",
+    "might","must","need","let","very","much","more","many","such","each","every",
+    "own","same","both","few","too","here","where","why","while","during","before",
+    "between","after","above","below","through","under","again","further","once",
+    # Skill-specific noise
+    "skill","claude","code","agent","tool","use","using","used","file","files","run",
+    "running","command","commands","help","when","ask","this","that","will","task",
+    "set","based","add","create","write","read","update","check","example","review",
+    "test","build","autom","automat","perform","allows","provide","supports",
+    "including","default","following","specific","via","user","users","project",
+    "note","the","and","for","with","from","your","also","can","run","all","code",
+    # Chinese
+    "的","了","在","是","我","有","和","就","不","人","都","一","一个","上","也","很",
+    "到","说","要","去","你","会","着","没有","看","好","自己","这","他","她","它","们",
+    "那","些","什么","怎么","如果","因为","所以","但","但是","而且","或者","可以","已经",
+    "这个","那个","还是","就是","不是","可能","需要","应该","使用","进行","可以","以及",
+    "通过","根据","关于","对于","由于","之间","一些","这些","那些","然后","此外",
+    "功能","工具","使用","提供","支持","运行","执行","操作","命令","文件","目录",
+    "项目","设置","配置","自动","管理","分析","检查","处理","生成","创建","修改",
+    "包括","默认","指定","相关","确保","建议","参考","文档","注意","代码",
+))
+
+def _tfidf_tokenize(text):
+    """Mixed Chinese/English tokenizer for TF-IDF."""
+    text = text.lower()
+    # English words (2+ letters)
+    en_tokens = re.findall(r'[a-z]{2,}', text)
+    # Chinese segments (2+ chars) → bigram split for long segments
+    cn_tokens = []
+    for seg in re.findall(r'[一-鿿]{2,}', text):
+        if len(seg) == 2:
+            cn_tokens.append(seg)
+        else:
+            # sliding bigram
+            for i in range(len(seg) - 1):
+                cn_tokens.append(seg[i:i + 2])
+    tokens = [t for t in en_tokens + cn_tokens if t not in _TFIDF_STOP]
+    return tokens
+
+def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=None):
+    """Compute pairwise TF-IDF cosine similarity between skills.
+    Returns list of overlap groups with scores.
+    If docs is provided, use it instead of reading from disk.
+    If agent_name is provided, use it instead of inferring from target_path.
+    """
+    target_dir = Path(target_path)
+    target_agent = agent_name or _agent_from_path(target_path)
+    if len(skills_data) <= 1:
+        return []
+    # No cap — TF-IDF on a few hundred items is cheap enough
+
+    # Check cache only when reading from disk (docs=None)
+    tfidf_cache = None
+    if docs is None:
+        cache_key = _cache_path(target_path)
+        tfidf_cache = cache_key.parent / f"tfidf-{cache_key.name}"
+        if tfidf_cache.exists():
+            try:
+                cached = json.loads(tfidf_cache.read_text("utf-8"))
+                if time.time() - cached.get("_ts", 0) < 300:
+                    return cached.get("groups", [])
+            except Exception:
+                pass
+
+    # Step 1: Read full SKILL.md content for each skill
+    if docs is None:
+        docs = {}
+        for s in skills_data:
+            name = s["name"]
+            skill_md = target_dir / name / "SKILL.md"
+            if skill_md.exists():
+                try:
+                    content = skill_md.read_text("utf-8", errors="ignore")
+                    docs[name] = content
+                except Exception:
+                    docs[name] = ""
+            else:
+                docs[name] = ""
+
+    if len(docs) <= 1:
+        return []
+
+    # Step 2: Tokenize
+    tokenized = {name: _tfidf_tokenize(text) for name, text in docs.items()}
+    # Filter out docs with no tokens
+    tokenized = {k: v for k, v in tokenized.items() if v}
+    if len(tokenized) <= 1:
+        return []
+
+    names = list(tokenized.keys())
+    N = len(names)
+
+    # Step 3: Build TF-IDF vectors
+    # Document frequency
+    df = Counter()
+    for tokens in tokenized.values():
+        unique_tokens = set(tokens)
+        for t in unique_tokens:
+            df[t] += 1
+
+    # IDF
+    idf = {t: math.log(N / (cnt + 1)) for t, cnt in df.items()}
+
+    # TF-IDF vectors (sparse: dict of token -> weight)
+    vectors = {}
+    for name in names:
+        tf = Counter(tokenized[name])
+        total_terms = sum(tf.values())
+        if total_terms == 0:
+            vectors[name] = {}
+            continue
+        vec = {}
+        for t, cnt in tf.items():
+            tfidf = (cnt / total_terms) * idf.get(t, 0)
+            if tfidf > 0:
+                vec[t] = tfidf
+        # Normalize to unit length
+        norm = math.sqrt(sum(v * v for v in vec.values()))
+        if norm > 0:
+            vec = {t: v / norm for t, v in vec.items()}
+        vectors[name] = vec
+
+    # Step 4: Pairwise cosine similarity (dot product of unit vectors)
+    THRESHOLD = 0.50
+    # Build similar pairs only (no transitive grouping — prevents chain inflation)
+    pairs = []
+    for i in range(N):
+        vi = vectors[names[i]]
+        if not vi:
+            continue
+        for j in range(i + 1, N):
+            vj = vectors[names[j]]
+            if not vj:
+                continue
+            common_keys = vi.keys() & vj.keys()
+            sim = sum(vi[k] * vj[k] for k in common_keys)
+            if sim >= THRESHOLD:
+                pairs.append((names[i], names[j], sim))
+
+    # Step 5: Group pairs that share a skill (compact groups, no long chains)
+    # Use Union-Find but with a max-group-size cap
+    parent = {n: n for n in names}
+    group_size = {n: 1 for n in names}
+    MAX_GROUP = 6
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb and group_size.get(ra, 1) + group_size.get(rb, 1) <= MAX_GROUP:
+            parent[ra] = rb
+            group_size[rb] = group_size.get(ra, 1) + group_size.get(rb, 1)
+
+    # Sort pairs by score descending so strongest pairs form the core groups
+    pairs.sort(key=lambda p: p[2], reverse=True)
+    pair_scores = {}
+    for a, b, sim in pairs:
+        pair_scores[(a, b)] = sim
+        union(a, b)
+
+    groups_map = {}
+    for n in names:
+        root = find(n)
+        groups_map.setdefault(root, []).append(n)
+
+    # Step 6: Assemble result with scores
+    result = []
+    for root, members in groups_map.items():
+        if len(members) < 2:
+            continue
+        scores = []
+        for i in range(len(members)):
+            for j in range(i + 1, len(members)):
+                key = (members[i], members[j])
+                rev_key = (members[j], members[i])
+                s = pair_scores.get(key, pair_scores.get(rev_key, 0))
+                scores.append(s)
+        avg_score = sum(scores) / len(scores) if scores else 0
+        shared_terms = []
+        try:
+            shared = set(tokenized.get(members[0], []))
+            for member in members[1:]:
+                shared &= set(tokenized.get(member, []))
+            weighted = sorted(
+                shared,
+                key=lambda t: idf.get(t, 0) * sum(Counter(tokenized.get(m, [])).get(t, 0) for m in members),
+                reverse=True,
+            )
+            shared_terms = weighted[:10]
+        except Exception:
+            shared_terms = []
+        strongest_pair = None
+        if members and scores:
+            best = (None, None, 0)
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    key = (members[i], members[j])
+                    rev_key = (members[j], members[i])
+                    s = pair_scores.get(key, pair_scores.get(rev_key, 0))
+                    if s > best[2]:
+                        best = (members[i], members[j], s)
+            if best[0]:
+                strongest_pair = {"skills": [best[0], best[1]], "score": round(best[2], 4)}
+        # Category: use _classify_skill for primary category
+        cats = Counter(_classify_skill(m, "") for m in members)
+        primary_cat = cats.most_common(1)[0][0] if cats else "other"
+        result.append({
+            "skills": sorted(members),
+            "skills_meta": {m: {"agent": target_agent, "dir": str(target_dir)} for m in members},
+            "score": round(avg_score, 4),
+            "avg_score": round(avg_score, 4),
+            "category": primary_cat,
+            "source": "tfidf",
+            "scope": "current_dir",
+            "shared_terms": shared_terms,
+            "strongest_pair": strongest_pair,
+        })
+
+    # Sort by score descending
+    result.sort(key=lambda g: g["score"], reverse=True)
+
+    # Save cache
+    try:
+        tfidf_cache.write_text(
+            json.dumps({"_ts": time.time(), "groups": result}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+    return result

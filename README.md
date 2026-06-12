@@ -103,8 +103,26 @@ python3 serve.py
 ## 技术栈
 
 - **后端**：Python 3 标准库（`serve.py` + `skilldash/` 轻量模块），零依赖
-- **前端**：单文件 HTML + CSS + JS，无框架
+- **前端**：HTML + CSS + 多个 classic JS 静态文件，无框架、无构建步骤
 - **数据源**：直接读文件系统 + GitHub REST API
+
+后端模块边界：
+
+- `serve.py`：HTTP 路由和请求/响应编排
+- `skilldash/discovery.py`：目录发现、Agent 推断、目录治理分层
+- `skilldash/cleanup.py`：清理计划和可执行 dry-run 预案
+- `skilldash/overlap.py` / `skilldash/similarity.py`：同名、完全重复、可解释相似度和 TF-IDF 深度审计
+- `skilldash/decisions.py` / `skilldash/content_hash.py`：本地运行态决策和内容 hash 追踪
+
+前端模块边界：
+
+- `index.html`：页面骨架和静态挂载点
+- `static/skill-dashboard.css`：样式
+- `static/app-core.js`：状态、数据加载、仪表盘、当前目录技能
+- `static/issues-cleanup.js`：问题与整理、清理计划、垃圾站
+- `static/sources.js`：全部目录技能、来源浏览、批量同步/删除
+- `static/skill-detail.js`：详情、对比、分类编辑
+- `static/app-bootstrap.js`：刷新、目标切换、诊断、安装入口、启动加载
 
 ---
 
