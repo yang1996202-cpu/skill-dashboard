@@ -493,6 +493,8 @@ async function loadFavDirs(){
 let globalOverlap=null;
 let scanResult=null; // cached scan results from /api/scan-run
 let cleanupPlan=null; // dry-run governance plan from /api/cleanup-plan
+let executionPlan=null; // executable-shaped preview; does not run actions
+let cleanupExcludedActions=new Set();
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
@@ -1184,24 +1186,45 @@ function renderScanConfig(){
     const policyText=(pc.manage||pc.review||pc.observe||pc.hidden)
       ? ` · 可管理 ${pc.manage||0} / 待复核 ${pc.review||0} / 观察隐藏 ${(pc.observe||0)+(pc.hidden||0)}`
       : '';
-    statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:var(--green-bg);border:1px solid color-mix(in srgb,var(--green) 30%,transparent);border-radius:6px;font-size:11px;color:var(--green)">
-      <span>✅ ${scopeLabel}完成</span>
-      <span style="color:var(--text-muted)">${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s${policyText}</span>
-      <span style="color:var(--text-muted)">·</span>
+    statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
+      <span>上次线索扫描：${scopeLabel}</span>
+      <span>${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s${policyText}</span>
       <span>同名 ${sn}</span><span>相似 ${ov+ag}</span><span>上游 ${up}</span>
-      ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">⚠ ${scanResult.lint.warnings.length} 个数据异常</span>`:''}
+      ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">${scanResult.lint.warnings.length} 个数据异常</span>`:''}
     </div>`;
   }
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
-    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <button class="btn btn-primary" id="scan-run-btn" onclick="runScan('daily')">🔍 扫描日常目录</button>
-      <button class="btn" id="scan-run-deep-btn" onclick="runScan('deep')">全量审计</button>
-      <button class="btn" id="cleanup-plan-btn" onclick="runCleanupPlan('daily')">🧭 生成清理计划</button>
-      <button class="btn btn-sm" id="cleanup-plan-deep-btn" onclick="runCleanupPlan('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量清理审计</button>
-      <span style="font-size:10px;color:var(--text-dim)">默认只扫可管理/待复核目录；全量审计才包含 marketplace、缓存和内置包</span>
+    <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
+      <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始整理</button>
+      <span style="font-size:11px;color:var(--text-muted)">先给出可执行推荐；只进垃圾站，不永久删除。相似线索放到高级证据里。</span>
+      <details style="margin-left:auto">
+        <summary style="font-size:11px;color:var(--text-muted);cursor:pointer">高级证据</summary>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
+          <button class="btn btn-sm" id="cleanup-plan-btn" onclick="runCleanupPlan('daily')">目录依据</button>
+          <button class="btn btn-sm" id="cleanup-plan-deep-btn" onclick="runCleanupPlan('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量目录依据</button>
+          <button class="btn btn-sm" id="scan-run-btn" onclick="runScan('daily')">同名/相似线索</button>
+          <button class="btn btn-sm" id="scan-run-deep-btn" onclick="runScan('deep')">全量线索</button>
+        </div>
+        ${statusHtml}
+      </details>
     </div>
-    ${statusHtml}
   </div>`;
+}
+
+async function startCleanupFlow(){
+  const btn=$('cleanup-start-btn');
+  if(btn){btn.disabled=true;btn.textContent='整理中...'}
+  const list=$('issues-list');
+  if(list){
+    list.innerHTML='<div class="empty" style="padding:30px 0">正在生成推荐清理，当前只做预案，不会移动文件。</div>';
+  }
+  try{
+    await runCleanupPlan('daily',{silent:true,deferRender:true});
+    await runExecutionPlan('declutter',{silent:true});
+    toast('整理建议已生成：可直接移入垃圾站，也可先排除个别项');
+  }finally{
+    if(btn){btn.disabled=false;btn.textContent='开始整理'}
+  }
 }
 
 async function runScan(scope='daily'){
@@ -1242,12 +1265,12 @@ async function runScan(scope='daily'){
     toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
   }catch(e){toast('扫描失败: '+e.message,'error')}
   finally{
-    if(btn){btn.disabled=false;btn.textContent='🔍 扫描日常目录'}
+    if(btn){btn.disabled=false;btn.textContent='同名/相似线索'}
     if(deepBtn)deepBtn.disabled=false;
   }
 }
 
-async function runCleanupPlan(scope='daily'){
+async function runCleanupPlan(scope='daily',opts={}){
   const btn=$('cleanup-plan-btn');
   const deepBtn=$('cleanup-plan-deep-btn');
   if(btn)btn.disabled=true;
@@ -1257,18 +1280,42 @@ async function runCleanupPlan(scope='daily'){
     const r=await fetch(`/api/cleanup-plan?scope=${encodeURIComponent(scope)}`).then(r=>r.json());
     if(r.error){toast(r.error,'error');return}
     cleanupPlan=r;
-    renderIssues();
-    toast(`${scope==='deep'?'全量清理审计':'清理计划'}完成: ${r.summary?.directories||0} 目录`);
+    executionPlan=null;
+    cleanupExcludedActions.clear();
+    if(!opts.deferRender)renderIssues();
+    if(!opts.silent)toast(`${scope==='deep'?'全量目录审计':'日常治理计划'}完成: ${r.summary?.directories||0} 目录`);
   }catch(e){toast('清理计划失败: '+e.message,'error')}
   finally{
-    if(btn){btn.disabled=false;btn.textContent='🧭 生成清理计划'}
+    if(btn){btn.disabled=false;btn.textContent='目录依据'}
     if(deepBtn)deepBtn.disabled=false;
+  }
+}
+
+async function runExecutionPlan(strategy='conservative',opts={}){
+  const scope=cleanupPlan?.scope||'daily';
+  const btn=$('execution-plan-btn');
+  const declutterBtn=$('execution-plan-declutter-btn');
+  if(btn)btn.disabled=true;
+  if(declutterBtn)declutterBtn.disabled=true;
+  if(btn)btn.textContent=strategy==='declutter'?'⏳ 生成断舍离预案...':'⏳ 生成执行预案...';
+  try{
+    const r=await fetch(`/api/cleanup-execution-plan?scope=${encodeURIComponent(scope)}&strategy=${encodeURIComponent(strategy)}`).then(r=>r.json());
+    if(r.error){toast(r.error,'error');return}
+    executionPlan=r;
+    cleanupExcludedActions.clear();
+    renderIssues();
+    if(!opts.silent)toast(`${strategy==='declutter'?'断舍离预案':'执行预案'}完成: ${r.summary?.actions||0} 个动作`);
+  }catch(e){toast('执行预案失败: '+e.message,'error')}
+  finally{
+    if(btn){btn.disabled=false;btn.textContent='生成执行预案'}
+    if(declutterBtn)declutterBtn.disabled=false;
   }
 }
 
 function renderCleanupPlan(){
   if(!cleanupPlan)return '';
   const s=cleanupPlan.summary||{};
+  const compact=!!executionPlan;
   const scopeLabel=cleanupPlan.scope==='deep'?'全量清理审计':'日常清理计划';
   const groupTone={protect:'var(--green)',review:'var(--amber)',observe:'var(--accent)',hide:'var(--text-muted)'};
   const groupIcon={protect:'🛡️',review:'🔎',observe:'👁️',hide:'🚫'};
@@ -1312,9 +1359,9 @@ function renderCleanupPlan(){
       <div class="card-head">
         <div>
           <h3>🧭 ${scopeLabel}</h3>
-          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">dry-run · 不执行删除 · ${cleanupPlan.duration_ms||0}ms · ${cleanupPlan.generated_at||''}</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">高级依据 · 不执行删除 · ${cleanupPlan.duration_ms||0}ms · ${cleanupPlan.generated_at||''}</div>
         </div>
-        <button class="btn btn-sm" onclick="cleanupPlan=null;renderIssues()">收起计划</button>
+        <button class="btn btn-sm" onclick="cleanupPlan=null;executionPlan=null;renderIssues()">收起计划</button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px">
         <div class="scope-card primary"><div class="scope-name"><span>目录</span><b>${s.directories||0}</b></div><div class="scope-desc">${s.skills||0} skills</div></div>
@@ -1324,8 +1371,160 @@ function renderCleanupPlan(){
       </div>
       <details><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">查看清理准则</summary><div style="margin-top:8px">${ruleHtml}</div></details>
     </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${groupHtml}</div>
+    ${compact
+      ? `<details><summary style="font-size:12px;color:var(--text-muted);cursor:pointer;margin:8px 0 0 4px">查看完整治理明细</summary><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:8px">${groupHtml}</div></details>`
+      : `<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${groupHtml}</div>`}
   </div>`;
+}
+
+function renderExecutionPlan(){
+  if(!executionPlan)return '';
+  const s=executionPlan.summary||{};
+  const phaseTone={protect:'var(--green)',review:'var(--amber)',organize:'var(--accent)',candidate:'var(--red)'};
+  const phaseIcon={protect:'锁定',review:'复核',organize:'收纳',candidate:'候选'};
+  const strategyLabel=executionPlan.strategy==='declutter'?'断舍离策略':'保守策略';
+  const candidateActions=cleanupCandidateActions();
+  const executableActions=candidateActions.filter(a=>!cleanupExcludedActions.has(a.id));
+  const excludedCount=candidateActions.length-executableActions.length;
+  const executableSkillCount=executableActions.reduce((sum,a)=>sum+(a.count||0),0);
+  const directoryCandidateCount=executableActions.filter(a=>a.operation==='move_skills_to_trash').length;
+  const exactDuplicateCount=executableActions.filter(a=>a.operation==='move_skill_to_trash').length;
+  const phaseOrder=executionPlan.strategy==='declutter'?{candidate:0,review:1,organize:2,protect:3}:{protect:0,review:1,organize:2,candidate:3};
+  const sortedPhases=[...(executionPlan.phases||[])].sort((a,b)=>(phaseOrder[a.key]??9)-(phaseOrder[b.key]??9));
+
+  const renderActionCard=(a)=> {
+    const executable=cleanupIsCandidateAction(a);
+    const title=a.skill_name
+      ? `${a.skill_name} · ${a.from_state||''} → 垃圾站`
+      : `${a.agent||''} · ${a.from_state||''} → 垃圾站`;
+    return `<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:8px;background:var(--bg-card-alt)">
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        ${executable?`<button class="btn btn-sm" onclick="toggleCleanupExclude('${esc(a.id)}')" style="font-size:9px;padding:1px 6px">${cleanupExcludedActions.has(a.id)?'恢复推荐':'排除'}</button>`:''}
+        <span class="skill-tag">${escapeHtml(a.label)}</span>
+        ${a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
+        ${a.destructive?'<span class="skill-tag" style="color:var(--red)">会移动文件</span>':'<span class="skill-tag" style="color:var(--green)">不动文件</span>'}
+        ${a.requires_confirmation?'<span class="skill-tag" style="color:var(--amber)">需二次确认</span>':''}
+        ${cleanupExcludedActions.has(a.id)?'<span class="skill-tag">已排除</span>':''}
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-top:6px">${escapeHtml(title)}</div>
+      <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">原因：${escapeHtml(a.why||'')}</div>
+      <div style="font-size:11px;color:var(--text-muted);line-height:1.5">回滚：${escapeHtml(a.rollback||'')}</div>
+      ${renderIssuePath(a.path)}
+      ${a.duplicate_of?`<div style="font-size:10px;color:var(--text-dim);margin-top:5px">保留副本</div>${renderIssuePath(a.duplicate_of)}`:''}
+      ${a.evidence?.length?`<div style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:5px">证据：${a.evidence.map(escapeHtml).join(' / ')}</div>`:''}
+      ${a.sample_skills?.length?`<div class="skill-tags" style="margin-top:6px">${a.sample_skills.slice(0,5).map(n=>`<span class="skill-tag">${escapeHtml(n)}</span>`).join('')}</div>`:''}
+    </div>`;
+  };
+
+  const renderPhaseCard=(phase,limit=10)=>{
+    const actions=(phase.actions||[]).slice(0,_issueShowAll?999:limit);
+    const hidden=Math.max(0,(phase.actions||[]).length-actions.length);
+    return `<div class="card" style="min-width:320px;flex:1;border-left:3px solid ${phaseTone[phase.key]||'var(--border)'}">
+      <div class="card-head" style="align-items:flex-start">
+        <div>
+          <h3>${phaseIcon[phase.key]||'▶'} ${escapeHtml(phase.label)}</h3>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${escapeHtml(phase.intent||'')}</div>
+        </div>
+        <span class="sub">${phase.action_count} 动作 · ${phase.skill_count} skills</span>
+      </div>
+      <div style="display:grid;gap:8px">
+        ${actions.map(renderActionCard).join('')}
+        ${hidden?`<div style="font-size:11px;color:var(--text-muted);padding:4px 0">还有 ${hidden} 个动作未展开，点击“显示全量”查看。</div>`:''}
+      </div>
+    </div>`;
+  };
+  const candidatePhases=sortedPhases.filter(p=>p.key==='candidate');
+  const evidencePhases=sortedPhases.filter(p=>p.key!=='candidate');
+  const candidateHtml=candidatePhases.length
+    ? candidatePhases.map(p=>renderPhaseCard(p,16)).join('')
+    : '<div class="empty" style="padding:18px 0">当前没有推荐移入垃圾站的候选。</div>';
+  const evidenceCount=evidencePhases.reduce((sum,p)=>sum+(p.action_count||0),0);
+  const evidenceHtml=evidencePhases.length
+    ? `<details style="margin-top:10px"><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">查看未处理原因和保护规则（${evidenceCount} 项）</summary><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:8px">${evidencePhases.map(p=>renderPhaseCard(p,8)).join('')}</div></details>`
+    : '';
+  const rules=(executionPlan.rules||[]).map(r=>`<div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:3px 0">${escapeHtml(r)}</div>`).join('');
+  return `<div style="margin-bottom:16px">
+    <div class="card" style="border-left:3px solid var(--red)">
+      <div class="card-head">
+        <div>
+          <h3>推荐清理</h3>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${strategyLabel} · 推荐项先移入垃圾站，可恢复 · ${executionPlan.generated_at||''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="executionPlan=null;renderIssues()">收起推荐</button>
+        ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()">恢复全部推荐</button>`:''}
+        <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选 skill 移入垃圾站，不永久删除">移入垃圾站 ${executableActions.length}</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
+        <div class="scope-card primary"><div class="scope-name"><span>建议移走</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>涉及内容</span><b>${executableSkillCount}</b></div><div class="scope-desc">skills</div></div>
+        <div class="scope-card"><div class="scope-name"><span>已排除</span><b>${excludedCount}</b></div><div class="scope-desc">不会处理</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>直接删除</span><b>0</b></div><div class="scope-desc">不永久删除</div></div>
+      </div>
+      <details><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">查看执行规则</summary><div style="margin-top:8px">${rules}</div></details>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${candidateHtml}</div>
+    ${evidenceHtml}
+  </div>`;
+}
+
+function cleanupIsCandidateAction(a){
+  return a&&['move_skills_to_trash','move_skill_to_trash'].includes(a.operation);
+}
+
+function cleanupCandidateActions(){
+  const actions=[];
+  (executionPlan?.phases||[]).forEach(p=>(p.actions||[]).forEach(a=>{
+    if(cleanupIsCandidateAction(a))actions.push(a);
+  }));
+  return actions;
+}
+function toggleCleanupExclude(id){
+  if(cleanupExcludedActions.has(id))cleanupExcludedActions.delete(id);
+  else cleanupExcludedActions.add(id);
+  renderIssues();
+}
+function restoreAllCleanupCandidates(){
+  cleanupExcludedActions.clear();
+  renderIssues();
+}
+async function executeRecommendedCleanupActions(){
+  const selected=cleanupCandidateActions().filter(a=>!cleanupExcludedActions.has(a.id));
+  if(!selected.length)return;
+  const totalSkills=selected.reduce((s,a)=>s+(a.count||0),0);
+  const excluded=cleanupCandidateActions().length-selected.length;
+  const dirCount=selected.filter(a=>a.operation==='move_skills_to_trash').length;
+  const dupCount=selected.filter(a=>a.operation==='move_skill_to_trash').length;
+  if(!confirm(`将推荐的 ${dirCount} 个候选目录和 ${dupCount} 个完全重复 skill 移入垃圾站，共 ${totalSkills} 个 skill。\n${excluded?`已排除 ${excluded} 项。\\n`:''}\n不会永久删除，可在垃圾站恢复。确认执行？`))return;
+  const btn=$('cleanup-execute-btn');
+  if(btn){btn.disabled=true;btn.textContent='执行中...'}
+  try{
+    const r=await fetch('/api/cleanup-execute',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({actions:selected.map(a=>({
+        id:a.id,
+        path:a.path,
+        operation:a.operation,
+        skill_name:a.skill_name,
+        duplicate_of:a.duplicate_of,
+        content_hash:a.content_hash,
+      }))})
+    });
+    const d=await r.json();
+    if(!d.ok&&d.error){toast(d.error,'error');return}
+    cleanupExcludedActions.clear();
+    executionPlan=null;
+    cleanupPlan=null;
+    await loadTrash();
+    await refreshAfterDelete(d.changed_paths||[]);
+    renderIssues();
+    toast(`已移入垃圾站 ${d.moved||0} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
+  }catch(e){toast('执行失败: '+e.message,'error')}
+  finally{
+    if(btn){btn.disabled=false;btn.textContent='移入垃圾站'}
+  }
 }
 
 /* ── Issues with fix actions (redesigned) ── */
@@ -1338,11 +1537,12 @@ function renderIssues(){
   const upstreams=health?.upstream_sources||[];
   const sameName=globalOverlap?.duplicates_same_name||[];
   const agentSimilar=globalOverlap?.agent_similar||{};
-  const planHtml=renderCleanupPlan();
+  const executionHtml=renderExecutionPlan();
+  const planHtml=executionPlan?'':renderCleanupPlan();
 
   // No scan yet
   if(!scanResult&&(!health||(!overlaps.length&&!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML=planHtml+'<div class="empty" style="padding:30px 0">👆 点击「扫描日常目录」先分析可管理/待复核目录；需要盘点缓存和市场目录时再做全量审计</div>';
+    $('issues-list').innerHTML=executionHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」生成推荐清理；需要看同名、相似和上游证据时再展开高级证据。</div>';
     return;
   }
 
@@ -1462,7 +1662,7 @@ function renderIssues(){
   const hiddenActionable=Math.max(0,originalActionable-visibleActionable);
 
   // ── Build HTML ──
-  let h=planHtml+tabHtml;
+  let h=executionHtml+planHtml+tabHtml;
 
   const hasFilteredData=originalActionable>0;
   if(!hasFilteredData){

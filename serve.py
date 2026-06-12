@@ -383,6 +383,14 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
     return result
 
 
+def _skill_md_hash(skill_dir):
+    """Return a short stable hash for one skill's SKILL.md."""
+    try:
+        return hashlib.sha256((Path(skill_dir) / "SKILL.md").read_bytes()).hexdigest()[:12]
+    except Exception:
+        return "error"
+
+
 def _find_same_name_duplicates(dirs):
     """Find same-name skills across the given directory list.
     Returns (duplicates_identical, duplicates_same_name, all_skills_map).
@@ -414,11 +422,7 @@ def _find_same_name_duplicates(dirs):
             continue
         hashes = {}
         for loc in locations:
-            skill_md = Path(loc["dir"]) / name / "SKILL.md"
-            try:
-                h = hashlib.sha256(skill_md.read_bytes()).hexdigest()[:12]
-            except Exception:
-                h = "error"
+            h = _skill_md_hash(Path(loc["dir"]) / name)
             loc["hash"] = h
             hashes.setdefault(h, []).append(loc)
 
@@ -964,6 +968,340 @@ def build_cleanup_plan(current_target, scope="daily"):
         "rules": rules,
         "groups": groups,
     }
+
+
+def _execution_action_for_item(item, strategy="conservative"):
+    """Convert one cleanup-plan item into a concrete, still non-running action."""
+    layer = item.get("layer", "")
+    group = item.get("group", "")
+    operation_seed = f"{item.get('path', '')}|{strategy}|{layer}|{group}"
+    base = {
+        "id": hashlib.sha1(operation_seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
+        "path": item.get("path", ""),
+        "rel": item.get("rel", ""),
+        "agent": item.get("agent", ""),
+        "count": item.get("count", 0),
+        "sample_skills": item.get("sample_skills", []),
+        "from_state": item.get("layer_label") or layer,
+        "evidence": item.get("reasons", []),
+        "risk": item.get("risk", "medium"),
+    }
+
+    if group == "protect":
+        return {
+            **base,
+            "phase": "protect",
+            "operation": "lock_keep",
+            "label": "锁定保留",
+            "to_state": "日常管理",
+            "why": "这是当前运行目录或用户技能库，目录级清理风险过高。",
+            "rollback": "无文件变更；只是保护规则。",
+            "ready": True,
+            "destructive": False,
+            "requires_confirmation": False,
+        }
+
+    if group == "observe":
+        return {
+            **base,
+            "phase": "organize",
+            "operation": "keep_observed",
+            "label": "收纳到观察区",
+            "to_state": "全量审计可见，日常视图隐藏",
+            "why": "这是市场、插件或宿主来源证据，适合解释来源，不适合当用户垃圾删除。",
+            "rollback": "切换到全量审计即可继续查看。",
+            "ready": True,
+            "destructive": False,
+            "requires_confirmation": False,
+        }
+
+    if group == "hide":
+        return {
+            **base,
+            "phase": "organize",
+            "operation": "hide_cache",
+            "label": "收纳到隐藏区",
+            "to_state": "默认不进入日常管理",
+            "why": "这是缓存、测试样例或系统工件；本工具不直接接管它的生命周期。",
+            "rollback": "切换到全量审计即可继续查看。",
+            "ready": True,
+            "destructive": False,
+            "requires_confirmation": False,
+        }
+
+    if strategy == "declutter" and layer in ("backup-snapshot", "imported-copy", "downloaded-package"):
+        return {
+            **base,
+            "phase": "candidate",
+            "operation": "move_skills_to_trash",
+            "label": "候选移入垃圾站",
+            "to_state": "垃圾站/快照后再物理删除",
+            "why": "该目录像备份、导入副本或下载包，有清理潜力，但必须逐项确认。",
+            "rollback": "先移入本工具垃圾站或保留快照，确认无误后再清空。",
+            "ready": False,
+            "destructive": True,
+            "requires_confirmation": True,
+        }
+
+    return {
+        **base,
+        "phase": "review",
+        "operation": "manual_review",
+        "label": "进入人工复核",
+        "to_state": "待定：保留、迁移、合并或移入垃圾站",
+        "why": "这个目录有清理潜力，但当前证据不足以自动删除。",
+        "rollback": "无文件变更；复核后再生成具体删除动作。",
+        "ready": True,
+        "destructive": False,
+        "requires_confirmation": False,
+    }
+
+
+def _duplicate_keeper_sort_key(loc, current_target):
+    """Prefer the copy most likely to be actively used."""
+    path = Path(loc.get("dir", "")).expanduser()
+    try:
+        resolved = path.resolve()
+        current = Path(current_target).expanduser().resolve()
+    except Exception:
+        resolved = path
+        current = Path(current_target)
+    governance = _classify_skill_dir_detail(path)
+    layer = governance.get("layer", "")
+    policy = governance.get("policy", "")
+    if resolved == current:
+        priority = 0
+    elif layer == "active-root":
+        priority = 1
+    elif policy == "manage":
+        priority = 2
+    elif layer == "project-local":
+        priority = 3
+    elif layer in ("app-local-library", "plugin-marketplace", "vendor-bundled"):
+        priority = 4
+    elif policy == "review":
+        priority = 5
+    else:
+        priority = 6
+    return (priority, str(path).lower())
+
+
+def _duplicate_skill_execute_allowed(skills_dir, skill_name, current_target, duplicate_of="", expected_hash=""):
+    """Return (allowed, reason) for moving one exact duplicate skill to trash."""
+    try:
+        if not re.match(r'^[a-zA-Z0-9._@+\-]+$', skill_name or ""):
+            return False, "invalid skill name"
+        path = Path(skills_dir).expanduser().resolve()
+        home = Path.home().resolve()
+        if not path.is_relative_to(home):
+            return False, "path outside home"
+        if path == Path(current_target).expanduser().resolve():
+            return False, "current target is protected"
+        skill_dir = path / skill_name
+        if not (skill_dir.is_dir() and (skill_dir / "SKILL.md").exists()):
+            return False, "skill not found"
+
+        governance = _classify_skill_dir_detail(path)
+        policy = governance.get("policy")
+        layer = governance.get("layer")
+        duplicate_of_path = Path(duplicate_of).expanduser().resolve() if duplicate_of else None
+        current_path = Path(current_target).expanduser().resolve()
+        review_allowed = policy == "review" and layer in (
+            "backup-snapshot",
+            "imported-copy",
+            "downloaded-package",
+            "app-local-library",
+        )
+        active_duplicate_allowed = (
+            policy == "manage"
+            and layer in ("active-root", "user-installed")
+            and duplicate_of_path == current_path
+        )
+        if not (review_allowed or active_duplicate_allowed):
+            return False, f"policy/layer {policy}/{layer} is not single-skill cleanup candidate"
+
+        actual_hash = _skill_md_hash(skill_dir)
+        if expected_hash and actual_hash != expected_hash:
+            return False, "content hash changed"
+        if duplicate_of:
+            kept_dir = Path(duplicate_of).expanduser().resolve() / skill_name
+            if not (kept_dir.is_dir() and (kept_dir / "SKILL.md").exists()):
+                return False, "kept duplicate copy is missing"
+            if _skill_md_hash(kept_dir) != actual_hash:
+                return False, "kept copy is no longer identical"
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
+
+
+def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=None):
+    """Build trash candidates for exact duplicate single skills.
+
+    Directory-level candidates remain dominant. This only adds single-skill
+    actions for review-layer libraries that are not already being moved as a
+    whole directory.
+    """
+    excluded_dirs = {str(Path(d).expanduser().resolve()) for d in (excluded_dirs or [])}
+    duplicates_identical, _ = _find_same_name_duplicates(dirs)
+    actions = []
+    seen = set()
+    for dup in duplicates_identical:
+        name = dup.get("name", "")
+        locations = dup.get("locations", [])
+        if len(locations) < 2:
+            continue
+        keeper = sorted(locations, key=lambda loc: _duplicate_keeper_sort_key(loc, current_target))[0]
+        keeper_dir = keeper.get("dir", "")
+        for loc in locations:
+            loc_dir = loc.get("dir", "")
+            if loc_dir == keeper_dir:
+                continue
+            try:
+                loc_resolved = str(Path(loc_dir).expanduser().resolve())
+            except Exception:
+                loc_resolved = loc_dir
+            if loc_resolved in excluded_dirs:
+                continue
+            allowed, reason = _duplicate_skill_execute_allowed(
+                loc_dir,
+                name,
+                current_target,
+                duplicate_of=keeper_dir,
+                expected_hash=loc.get("hash", ""),
+            )
+            if not allowed:
+                continue
+            key = (loc_resolved, name)
+            if key in seen:
+                continue
+            seen.add(key)
+            governance = _classify_skill_dir_detail(loc_dir)
+            seed = f"{loc_resolved}|{name}|exact-duplicate|{keeper_dir}|{loc.get('hash', '')}"
+            actions.append({
+                "id": hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
+                "path": loc_resolved,
+                "rel": str(Path(loc_resolved)).replace(str(Path.home()), "~"),
+                "agent": loc.get("agent") or _agent_from_path(loc_resolved),
+                "count": 1,
+                "skill_name": name,
+                "duplicate_of": keeper_dir,
+                "content_hash": loc.get("hash", ""),
+                "sample_skills": [name],
+                "from_state": governance.get("layer_label") or governance.get("layer", ""),
+                "evidence": list(dict.fromkeys([
+                    "SKILL.md content hash matches another copy",
+                    f"kept copy: {keeper_dir}",
+                    *governance.get("evidence", []),
+                ]))[:5],
+                "risk": "medium",
+                "phase": "candidate",
+                "operation": "move_skill_to_trash",
+                "label": "完全重复移入垃圾站",
+                "to_state": "垃圾站/保留另一份完全相同副本",
+                "why": f"{name} 的 SKILL.md 内容完全一致；保留更可能正在使用的副本，只移动这个重复副本。",
+                "rollback": "从垃圾站恢复到原路径即可。",
+                "ready": False,
+                "destructive": True,
+                "requires_confirmation": True,
+            })
+    actions.sort(key=lambda a: (a.get("agent", ""), a.get("skill_name", ""), a.get("path", "")))
+    return actions
+
+
+def build_cleanup_execution_plan(current_target, scope="daily", strategy="conservative"):
+    """Build an executable-shaped plan without executing filesystem changes."""
+    cleanup_plan = build_cleanup_plan(current_target, scope)
+    actions = []
+    plan_dirs = []
+    for group in cleanup_plan.get("groups", []):
+        for item in group.get("items", []):
+            plan_dirs.append(Path(item.get("path", "")))
+            actions.append(_execution_action_for_item(item, strategy))
+
+    if strategy == "declutter":
+        directory_candidate_paths = {
+            a.get("path", "")
+            for a in actions
+            if a.get("operation") == "move_skills_to_trash"
+        }
+        actions.extend(_build_exact_duplicate_skill_actions(
+            plan_dirs,
+            current_target,
+            excluded_dirs=directory_candidate_paths,
+        ))
+
+    phase_meta = {
+        "protect": {
+            "label": "先锁定",
+            "intent": "明确哪些目录永远不进入目录级删除。",
+        },
+        "review": {
+            "label": "再复核",
+            "intent": "把不确定目录变成可人工处理的核查任务。",
+        },
+        "organize": {
+            "label": "再收纳",
+            "intent": "把市场、内置包、缓存从日常管理里移开，但保留证据。",
+        },
+        "candidate": {
+            "label": "推荐移入垃圾站",
+            "intent": "备份/导入目录和完全重复 skill。只进垃圾站，不永久删除。",
+        },
+    }
+    phases = []
+    for key in ("protect", "review", "organize", "candidate"):
+        phase_actions = [a for a in actions if a["phase"] == key]
+        if not phase_actions:
+            continue
+        phases.append({
+            "key": key,
+            **phase_meta[key],
+            "action_count": len(phase_actions),
+            "skill_count": sum(a.get("count", 0) for a in phase_actions),
+            "actions": phase_actions,
+        })
+
+    summary = {
+        "actions": len(actions),
+        "ready": sum(1 for a in actions if a.get("ready")),
+        "needs_confirmation": sum(1 for a in actions if a.get("requires_confirmation")),
+        "destructive": sum(1 for a in actions if a.get("destructive")),
+        "skills_touched": sum(a.get("count", 0) for a in actions),
+        "filesystem_changes_now": 0,
+    }
+    return {
+        "schema": 1,
+        "mode": "execution-preview",
+        "scope": scope,
+        "strategy": strategy,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "current_target": current_target,
+        "summary": summary,
+        "rules": [
+            "当前接口只生成动作预案，不执行文件删除。",
+            "断舍离策略会推荐备份、导入、下载目录，以及 SKILL.md 完全一致的重复 skill。",
+            "其他 Agent 根目录只在当前目录已保留完全相同副本时，才允许单个重复 skill 进入候选。",
+            "相似度线索只进入复核，不作为自动删除依据。",
+            "真正执行时必须先移入垃圾站或创建快照，不能直接物理删除。",
+        ],
+        "phases": phases,
+    }
+
+
+def _is_cleanup_execute_allowed(skills_dir):
+    """Return (allowed, reason) for a concrete cleanup execution path."""
+    try:
+        path = Path(skills_dir).expanduser().resolve()
+        if not path.is_relative_to(Path.home().resolve()):
+            return False, "path outside home"
+        governance = _classify_skill_dir_detail(path)
+        if governance.get("policy") != "review":
+            return False, f"policy is {governance.get('policy')}, not review"
+        if governance.get("layer") not in ("backup-snapshot", "imported-copy", "downloaded-package"):
+            return False, f"layer {governance.get('layer')} is not executable candidate"
+        return True, "ok"
+    except Exception as e:
+        return False, str(e)
 
 
 # ── Content hash tracking ──
@@ -2059,6 +2397,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._list_targets()
         elif path == "/api/cleanup-plan":
             self._cleanup_plan()
+        elif path == "/api/cleanup-execution-plan":
+            self._cleanup_execution_plan()
         elif path == "/api/category-order":
             f = STATE_DIR / "category-order.json"
             data = f.read_text(encoding="utf-8") if f.exists() else "[]"
@@ -2127,6 +2467,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._diagnose()
         elif path == "/api/scan-run":
             self._run_scan()
+        elif path == "/api/cleanup-execute":
+            self._cleanup_execute()
         elif path == "/api/steal":
             self._steal_skill()
         elif path == "/api/copy-skill":
@@ -2379,6 +2721,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
                 {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
+                {"method": "GET", "path": "/api/cleanup-execution-plan?scope=&strategy=", "desc": "Executable-shaped cleanup preview without deletion"},
+                {"method": "POST", "path": "/api/cleanup-execute", "desc": "Move selected cleanup candidates to trash"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
@@ -2401,6 +2745,119 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if scope not in ("daily", "deep"):
             scope = "daily"
         self._json_response(build_cleanup_plan(self._current_target(), scope))
+
+    def _cleanup_execution_plan(self):
+        """Return executable-shaped cleanup actions without applying them."""
+        query = parse_qs(urlparse(self.path).query)
+        scope = query.get("scope", ["daily"])[0]
+        strategy = query.get("strategy", ["conservative"])[0]
+        if scope not in ("daily", "deep"):
+            scope = "daily"
+        if strategy not in ("conservative", "declutter"):
+            strategy = "conservative"
+        self._json_response(build_cleanup_execution_plan(self._current_target(), scope, strategy))
+
+    def _cleanup_execute(self):
+        """Execute selected cleanup candidate actions by moving skills to trash."""
+        body = self._read_json() or {}
+        actions = body.get("actions", [])
+        if not isinstance(actions, list) or not actions:
+            self._json_response({"error": "actions is empty"}, status=400)
+            return
+
+        ok, fail, skipped = 0, 0, 0
+        changed_paths = []
+        details = []
+        max_skills = 500
+        for action in actions[:100]:
+            if not isinstance(action, dict):
+                skipped += 1
+                continue
+            operation = action.get("operation", "")
+            path = action.get("path", "")
+            if operation not in ("move_skills_to_trash", "move_skill_to_trash") or not path:
+                skipped += 1
+                details.append({"path": path, "status": "skipped", "reason": "unsupported operation"})
+                continue
+            if operation == "move_skills_to_trash":
+                allowed, reason = _is_cleanup_execute_allowed(path)
+                if not allowed:
+                    fail += 1
+                    details.append({"path": path, "status": "blocked", "reason": reason})
+                    continue
+                skills_dir = Path(path).expanduser().resolve()
+                moved = 0
+                failed_names = []
+                try:
+                    skill_dirs = [d for d in sorted(skills_dir.iterdir(), key=lambda x: x.name.lower())
+                                  if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists()]
+                    for skill_dir in skill_dirs:
+                        if ok >= max_skills:
+                            skipped += 1
+                            failed_names.append(f"{skill_dir.name}: safety cap reached")
+                            continue
+                        try:
+                            self._trash_dir(skill_dir)
+                            ok += 1
+                            moved += 1
+                        except Exception as e:
+                            fail += 1
+                            failed_names.append(f"{skill_dir.name}: {e}")
+                    changed_paths.append(str(skills_dir))
+                    details.append({
+                        "path": str(skills_dir),
+                        "status": "moved",
+                        "moved": moved,
+                        "failed": failed_names[:10],
+                    })
+                except Exception as e:
+                    fail += 1
+                    details.append({"path": str(skills_dir), "status": "failed", "reason": str(e)})
+                continue
+
+            skill_name = self._validate_skill_name(action.get("skill_name", ""))
+            if not skill_name:
+                fail += 1
+                details.append({"path": path, "status": "blocked", "reason": "invalid skill name"})
+                continue
+            allowed, reason = _duplicate_skill_execute_allowed(
+                path,
+                skill_name,
+                self._current_target(),
+                duplicate_of=action.get("duplicate_of", ""),
+                expected_hash=action.get("content_hash", ""),
+            )
+            if not allowed:
+                fail += 1
+                details.append({"path": path, "name": skill_name, "status": "blocked", "reason": reason})
+                continue
+            if ok >= max_skills:
+                skipped += 1
+                details.append({"path": path, "name": skill_name, "status": "skipped", "reason": "safety cap reached"})
+                continue
+            try:
+                skills_dir = Path(path).expanduser().resolve()
+                self._trash_dir(skills_dir / skill_name)
+                ok += 1
+                changed_paths.append(str(skills_dir))
+                details.append({
+                    "path": str(skills_dir),
+                    "name": skill_name,
+                    "status": "moved",
+                    "moved": 1,
+                })
+            except Exception as e:
+                fail += 1
+                details.append({"path": path, "name": skill_name, "status": "failed", "reason": str(e)})
+
+        self._json_response({
+            "ok": True,
+            "moved": ok,
+            "failed": fail,
+            "skipped": skipped,
+            "changed_paths": changed_paths,
+            "details": details,
+        })
 
     def _list_source_skills(self):
         """Return skills in a given source directory (for穿透 browsing)."""
