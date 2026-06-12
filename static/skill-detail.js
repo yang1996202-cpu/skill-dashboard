@@ -92,6 +92,7 @@ async function deleteSelectedIssues(){
   const checks=document.querySelectorAll('.issue-check:checked');
   if(!checks.length){toast('请先勾选要删除的 skill','error');return;}
   const names=[...new Set([...checks].map(c=>c.dataset.sname))];
+  const changedDirs=[...new Set([...checks].map(c=>c.dataset.sdir).filter(Boolean))];
   if(!confirm(`确认删除选中的 ${checks.length} 个 skill？\n\n${names.join(', ')}`))return;
   let ok=0,fail=0;
   for(const cb of checks){
@@ -103,7 +104,11 @@ async function deleteSelectedIssues(){
   }
   _issueSelected.clear();
   toast(`已删除 ${ok} 个${fail>0?`，${fail} 个失败`:''}`);
-  await loadData();
+  if(typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
+    await refreshIssuesAfterDelete(changedDirs);
+  }else{
+    await loadData();
+  }
 }
 function escapeHtml(t){return t.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 // Escape for use inside HTML attributes and JS string literals

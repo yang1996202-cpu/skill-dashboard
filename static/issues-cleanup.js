@@ -180,8 +180,10 @@ async function runScan(scope='daily',opts={}){
       agent_similar:r.agent_similar||{},
       total_identical:(r.duplicates_identical||[]).length,
     };
-    _issueCategoryTab='user';
-    _issueShowAll=false;
+    if(!opts.preserveIssueView){
+      _issueCategoryTab='user';
+      _issueShowAll=false;
+    }
     if(!opts.deferRender)renderIssues();
     updateDiagBadges();
     if(!opts.silent)toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
@@ -324,7 +326,7 @@ function renderExecutionPlan(){
         : `${a.agent||''} · ${a.from_state||''} → 垃圾站`;
     return `<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:8px;background:var(--bg-card-alt)">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${executable?`<label class="skill-tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="margin:0">${cleanupExcludedActions.has(a.id)?'已排除':'纳入清理'}</label>`:''}
+        ${executable?`<label class="skill-tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="margin:0">${cleanupExcludedActions.has(a.id)?'已排除':`纳入清理 · ${a.count||0} skills`}</label>`:''}
         ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
         <span class="skill-tag">${escapeHtml(a.label)}</span>
         ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
@@ -381,7 +383,7 @@ function renderExecutionPlan(){
         <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="查看本机记录的运行状态，不随 Git 提交">本地决策</button>
         <button class="btn btn-sm" onclick="executionPlan=null;renderIssues()">收起推荐</button>
         ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()">恢复全部推荐</button>`:''}
-        <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选 skill 移入垃圾站，不永久删除">移入垃圾站 ${executableActions.length}</button>
+        <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选移入垃圾站，不永久删除。数字前半是动作项，后半是实际 skill 数。">移入垃圾站 ${executableActions.length} 项 / ${executableSkillCount} skills</button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
         <div class="scope-card primary"><div class="scope-name"><span>可勾选处理</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
@@ -524,6 +526,30 @@ function restoreAllCleanupCandidates(){
   cleanupExcludedActions.clear();
   renderIssues();
 }
+
+async function refreshIssuesAfterDelete(changedPaths=[],opts={}){
+  const scope=opts.scope||scanResult?.scope||cleanupPlan?.scope||executionPlan?.scope||'daily';
+  const strategy=opts.strategy||executionPlan?.strategy||'declutter';
+  const hadCleanupPlan=!!cleanupPlan||!!executionPlan;
+  const hadExecutionPlan=!!executionPlan;
+  const tabBefore=_issueCategoryTab;
+  const showAllBefore=_issueShowAll;
+  await loadTrash();
+  await refreshAfterDelete(changedPaths||[]);
+  if(hadCleanupPlan){
+    await runCleanupPlan(scope,{silent:true,deferRender:true});
+  }
+  await runScan(scope,{silent:true,deferRender:true,preserveIssueView:true});
+  _issueCategoryTab=tabBefore;
+  _issueShowAll=showAllBefore;
+  if(hadExecutionPlan){
+    await runExecutionPlan(strategy,{silent:true});
+  }else{
+    renderIssues();
+  }
+  updateDiagBadges();
+}
+
 async function executeRecommendedCleanupActions(){
   const selected=cleanupCandidateActions().filter(a=>!cleanupExcludedActions.has(a.id));
   if(!selected.length)return;
@@ -531,9 +557,11 @@ async function executeRecommendedCleanupActions(){
   const excluded=cleanupCandidateActions().length-selected.length;
   const dirCount=selected.filter(a=>a.operation==='move_skills_to_trash').length;
   const dupCount=selected.filter(a=>a.operation==='move_skill_to_trash').length;
-  if(!confirm(`将推荐的 ${dirCount} 个候选目录和 ${dupCount} 个完全重复 skill 移入垃圾站，共 ${totalSkills} 个 skill。\n${excluded?`已排除 ${excluded} 项。\\n`:''}\n不会永久删除，可在垃圾站恢复。确认执行？`))return;
+  if(!confirm(`将 ${selected.length} 个清理项移入垃圾站。\n\n其中包含 ${dirCount} 个候选目录、${dupCount} 个完全重复 skill，共 ${totalSkills} 个 skills。\n${excluded?`已排除 ${excluded} 项。\\n`:''}\n不会永久删除，可在垃圾站恢复。确认执行？`))return;
   const btn=$('cleanup-execute-btn');
   if(btn){btn.disabled=true;btn.textContent='执行中...'}
+  const scopeBefore=scanResult?.scope||cleanupPlan?.scope||executionPlan?.scope||'daily';
+  const strategyBefore=executionPlan?.strategy||'declutter';
   try{
     const r=await fetch('/api/cleanup-execute',{
       method:'POST',
@@ -550,12 +578,8 @@ async function executeRecommendedCleanupActions(){
     const d=await r.json();
     if(!d.ok&&d.error){toast(d.error,'error');return}
     cleanupExcludedActions.clear();
-    executionPlan=null;
-    cleanupPlan=null;
-    await loadTrash();
-    await refreshAfterDelete(d.changed_paths||[]);
-    renderIssues();
-    toast(`已移入垃圾站 ${d.moved||0} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
+    await refreshIssuesAfterDelete(d.changed_paths||[],{scope:scopeBefore,strategy:strategyBefore});
+    toast(`已移入垃圾站 ${d.moved||0} 个 skill（${selected.length} 项）${d.failed?`，${d.failed} 个失败`:''}`);
   }catch(e){toast('执行失败: '+e.message,'error')}
   finally{
     if(btn){btn.disabled=false;btn.textContent='移入垃圾站'}
@@ -972,7 +996,14 @@ async function deleteSkill(name,btn,target){
   if(btn){btn.disabled=true;btn.textContent='删除中...';}
   const url=target?`/api/skill/${name}?target=${encodeURIComponent(target)}`:`/api/skill/${name}`;
   try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();
-    if(d.ok){toast(`已删除 ${name}`);await loadData()}else toast(d.error||'删除失败','error')}
+    if(d.ok){
+      toast(`已删除 ${name}`);
+      if(target&&typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
+        await refreshIssuesAfterDelete([target]);
+      }else{
+        await loadData();
+      }
+    }else toast(d.error||'删除失败','error')}
   catch(e){toast('删除失败','error')}finally{if(btn){btn.disabled=false;btn.textContent='删除';}}
 }
 
@@ -988,7 +1019,12 @@ async function batchDeleteNames(names,label,targets){
     catch{fail++;}
   }
   toast(`${label||'批量删除'}: 已删 ${ok} 个${fail>0?`，${fail} 个失败`:''}`);
-  await loadData();
+  const changedDirs=[...new Set((targets||[]).filter(Boolean))];
+  if(changedDirs.length&&typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
+    await refreshIssuesAfterDelete(changedDirs);
+  }else{
+    await loadData();
+  }
 }
 async function batchRehash(names,label){
   if(!names||!names.length)return;
