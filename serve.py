@@ -20,6 +20,7 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from skilldash.similarity import compute_signature_similarity
 from skilldash.understanding import compact_understanding, understand_skill
 
 PORT = 3457
@@ -27,6 +28,8 @@ STATE_DIR = Path(__file__).parent / ".data" / "state"
 HTML_FILE = Path(__file__).parent / "index.html"
 CACHE_DIR = Path(__file__).parent / ".data" / "cache"
 DIAG_LOG = Path(__file__).parent / ".data" / "cache" / "diag.log"
+DUPLICATE_DECISIONS_FILE = STATE_DIR / "duplicate-decisions.json"
+SIMILAR_DECISIONS_FILE = STATE_DIR / "similar-decisions.json"
 
 
 def _cache_path(target_path):
@@ -185,6 +188,40 @@ def _tfidf_tokenize(text):
     return tokens
 
 
+def _load_similar_decisions():
+    try:
+        data = json.loads(SIMILAR_DECISIONS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("not_similar", {})
+            return data
+    except Exception:
+        pass
+    return {"schema": 1, "not_similar": {}}
+
+
+def _save_similar_decisions(data):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data["schema"] = 1
+    SIMILAR_DECISIONS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_ignored_similar_group(group_key):
+    data = _load_similar_decisions()
+    return group_key in data.get("not_similar", {})
+
+
+def _similar_ignored_keys():
+    return set(_load_similar_decisions().get("not_similar", {}).keys())
+
+
+def _compute_signature_similarity(skill_refs):
+    return compute_signature_similarity(
+        skill_refs,
+        ignored_keys=_similar_ignored_keys(),
+        classify_skill=_classify_skill,
+    )
+
+
 def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=None):
     """Compute pairwise TF-IDF cosine similarity between skills.
     Returns list of overlap groups with scores.
@@ -269,7 +306,7 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
         vectors[name] = vec
 
     # Step 4: Pairwise cosine similarity (dot product of unit vectors)
-    THRESHOLD = 0.45
+    THRESHOLD = 0.50
     # Build similar pairs only (no transitive grouping — prevents chain inflation)
     pairs = []
     for i in range(N):
@@ -447,7 +484,7 @@ def _find_same_name_duplicates(dirs):
 
 
 def _find_agent_cross_dir_similar(dirs):
-    """Per-agent TF-IDF cross-directory similarity for the given directory list.
+    """Per-agent light-signature cross-directory similarity for the given directory list.
     Returns {agent_name: [overlap_groups]}.
     """
     dir_skills = {}  # dir_path -> [skill_names]
@@ -474,28 +511,16 @@ def _find_agent_cross_dir_similar(dirs):
     for agent_name, agent_dir_list in agent_dirs.items():
         if len(agent_dir_list) < 2:
             continue
-        agent_skills = []
-        agent_docs = {}
+        agent_refs = []
         seen_names = set()
         for dp in agent_dir_list:
             for skill_name in dir_skills.get(dp, []):
                 if skill_name in seen_names:
                     continue
                 seen_names.add(skill_name)
-                skill_md = Path(dp) / skill_name / "SKILL.md"
-                try:
-                    content = skill_md.read_text("utf-8", errors="ignore")
-                    agent_docs[skill_name] = content
-                    agent_skills.append({"name": skill_name})
-                except Exception:
-                    pass
-        if 1 < len(agent_skills):
-            groups = compute_tfidf_similarity(
-                target_path=agent_dir_list[0],
-                skills_data=agent_skills,
-                docs=agent_docs,
-                agent_name=agent_name,
-            )
+                agent_refs.append({"name": skill_name, "dir": dp, "agent": agent_name})
+        if 1 < len(agent_refs):
+            groups = _compute_signature_similarity(agent_refs)
             if groups:
                 agent_similar[agent_name] = groups
     return agent_similar
@@ -511,7 +536,7 @@ def detect_cross_dir_overlaps():
     if cache_file.exists():
         try:
             cached = json.loads(cache_file.read_text("utf-8"))
-            if time.time() - cached.get("_ts", 0) < 300:
+            if cached.get("_schema") == 3 and time.time() - cached.get("_ts", 0) < 300:
                 return {k: v for k, v in cached.items() if not k.startswith("_")}
         except Exception:
             pass
@@ -536,7 +561,7 @@ def detect_cross_dir_overlaps():
 
     prunable = sum(d["dir_count"] - 1 for d in duplicates_identical)
 
-    # Cross-directory TF-IDF similarity
+    # Cross-directory light-signature similarity
     agent_similar = _find_agent_cross_dir_similar(all_dirs)
 
     # Count unique skills across all dirs for stats
@@ -569,7 +594,7 @@ def detect_cross_dir_overlaps():
 
     try:
         cache_file.write_text(
-            json.dumps({"_ts": time.time(), **result}, ensure_ascii=False, indent=2),
+            json.dumps({"_schema": 3, "_ts": time.time(), **result}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:
@@ -1086,52 +1111,80 @@ def _duplicate_keeper_sort_key(loc, current_target):
     return (priority, str(path).lower())
 
 
-def _duplicate_skill_execute_allowed(skills_dir, skill_name, current_target, duplicate_of="", expected_hash=""):
-    """Return (allowed, reason) for moving one exact duplicate skill to trash."""
+def _duplicate_decision_key(skill_name, content_hash, decision="multi_agent_deployment"):
+    raw = f"{decision}|{skill_name}|{content_hash}"
+    return hashlib.sha1(raw.encode("utf-8", errors="ignore")).hexdigest()[:20]
+
+
+def _load_duplicate_decisions():
+    try:
+        data = json.loads(DUPLICATE_DECISIONS_FILE.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            data.setdefault("multi_agent_deployment", {})
+            return data
+    except Exception:
+        pass
+    return {"schema": 1, "multi_agent_deployment": {}}
+
+
+def _save_duplicate_decisions(data):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    data["schema"] = 1
+    DUPLICATE_DECISIONS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _is_marked_multi_agent_deployment(skill_name, content_hash):
+    decisions = _load_duplicate_decisions()
+    key = _duplicate_decision_key(skill_name, content_hash)
+    return key in decisions.get("multi_agent_deployment", {})
+
+
+def _duplicate_action_kind(skills_dir, skill_name, current_target, duplicate_of="", expected_hash=""):
+    """Classify an exact duplicate as trash candidate, multi-agent deployment, or blocked."""
     try:
         if not re.match(r'^[a-zA-Z0-9._@+\-]+$', skill_name or ""):
-            return False, "invalid skill name"
+            return "blocked", "invalid skill name", {}
         path = Path(skills_dir).expanduser().resolve()
         home = Path.home().resolve()
         if not path.is_relative_to(home):
-            return False, "path outside home"
+            return "blocked", "path outside home", {}
         if path == Path(current_target).expanduser().resolve():
-            return False, "current target is protected"
+            return "blocked", "current target is protected", {}
         skill_dir = path / skill_name
         if not (skill_dir.is_dir() and (skill_dir / "SKILL.md").exists()):
-            return False, "skill not found"
+            return "blocked", "skill not found", {}
 
         governance = _classify_skill_dir_detail(path)
         policy = governance.get("policy")
         layer = governance.get("layer")
         duplicate_of_path = Path(duplicate_of).expanduser().resolve() if duplicate_of else None
         current_path = Path(current_target).expanduser().resolve()
-        review_allowed = policy == "review" and layer in (
-            "backup-snapshot",
-            "imported-copy",
-            "downloaded-package",
-            "app-local-library",
-        )
-        active_duplicate_allowed = (
-            policy == "manage"
-            and layer in ("active-root", "user-installed")
-            and duplicate_of_path == current_path
-        )
-        if not (review_allowed or active_duplicate_allowed):
-            return False, f"policy/layer {policy}/{layer} is not single-skill cleanup candidate"
 
         actual_hash = _skill_md_hash(skill_dir)
         if expected_hash and actual_hash != expected_hash:
-            return False, "content hash changed"
+            return "blocked", "content hash changed", governance
         if duplicate_of:
-            kept_dir = Path(duplicate_of).expanduser().resolve() / skill_name
+            kept_dir = duplicate_of_path / skill_name
             if not (kept_dir.is_dir() and (kept_dir / "SKILL.md").exists()):
-                return False, "kept duplicate copy is missing"
+                return "blocked", "kept duplicate copy is missing", governance
             if _skill_md_hash(kept_dir) != actual_hash:
-                return False, "kept copy is no longer identical"
-        return True, "ok"
+                return "blocked", "kept copy is no longer identical", governance
+
+        if policy == "review" and layer in ("backup-snapshot", "imported-copy", "downloaded-package", "app-local-library"):
+            return "trash", "review-layer exact duplicate", governance
+        if policy == "manage" and layer in ("active-root", "user-installed") and duplicate_of_path == current_path:
+            return "multi_agent", "same skill deployed into another active agent root", governance
+        return "blocked", f"policy/layer {policy}/{layer} is not single-skill cleanup candidate", governance
     except Exception as e:
-        return False, str(e)
+        return "blocked", str(e), {}
+
+
+def _duplicate_skill_execute_allowed(skills_dir, skill_name, current_target, duplicate_of="", expected_hash=""):
+    """Return (allowed, reason) for moving one exact duplicate skill to trash."""
+    kind, reason, _ = _duplicate_action_kind(skills_dir, skill_name, current_target, duplicate_of, expected_hash)
+    if kind != "trash":
+        return False, reason
+    return True, "ok"
 
 
 def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=None):
@@ -1162,21 +1215,54 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
                 loc_resolved = loc_dir
             if loc_resolved in excluded_dirs:
                 continue
-            allowed, reason = _duplicate_skill_execute_allowed(
+            kind, reason, governance = _duplicate_action_kind(
                 loc_dir,
                 name,
                 current_target,
                 duplicate_of=keeper_dir,
                 expected_hash=loc.get("hash", ""),
             )
-            if not allowed:
+            if kind == "blocked":
                 continue
             key = (loc_resolved, name)
             if key in seen:
                 continue
             seen.add(key)
-            governance = _classify_skill_dir_detail(loc_dir)
             seed = f"{loc_resolved}|{name}|exact-duplicate|{keeper_dir}|{loc.get('hash', '')}"
+            if kind == "multi_agent":
+                content_hash = loc.get("hash", "")
+                if _is_marked_multi_agent_deployment(name, content_hash):
+                    continue
+                actions.append({
+                    "id": hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
+                    "path": loc_resolved,
+                    "rel": str(Path(loc_resolved)).replace(str(Path.home()), "~"),
+                    "agent": loc.get("agent") or _agent_from_path(loc_resolved),
+                    "count": 1,
+                    "skill_name": name,
+                    "duplicate_of": keeper_dir,
+                    "content_hash": content_hash,
+                    "sample_skills": [name],
+                    "from_state": governance.get("layer_label") or governance.get("layer", ""),
+                    "evidence": list(dict.fromkeys([
+                        "SKILL.md content hash matches current target copy",
+                        f"kept copy: {keeper_dir}",
+                        reason,
+                        *governance.get("evidence", []),
+                    ]))[:5],
+                    "risk": "low",
+                    "phase": "deploy",
+                    "operation": "mark_multi_agent_deploy",
+                    "label": "多端部署副本",
+                    "to_state": "保留在对应 Agent 根目录",
+                    "why": f"{name} 和当前目录内容完全一致，但它位于另一个 Agent 的根目录，更像多端部署副本，不默认清理。",
+                    "rollback": "无文件变更；标记后仅隐藏同一内容 hash 的重复提醒。",
+                    "ready": True,
+                    "destructive": False,
+                    "requires_confirmation": False,
+                })
+                continue
+
             actions.append({
                 "id": hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
                 "path": loc_resolved,
@@ -1243,13 +1329,17 @@ def build_cleanup_execution_plan(current_target, scope="daily", strategy="conser
             "label": "再收纳",
             "intent": "把市场、内置包、缓存从日常管理里移开，但保留证据。",
         },
+        "deploy": {
+            "label": "多端部署",
+            "intent": "同一个 skill 被放进多个 Agent 根目录。默认保留，可标记后不再重复提醒。",
+        },
         "candidate": {
             "label": "推荐移入垃圾站",
-            "intent": "备份/导入目录和完全重复 skill。只进垃圾站，不永久删除。",
+            "intent": "备份、导入、下载或 App 本地库中的重复副本。只进垃圾站，不永久删除。",
         },
     }
     phases = []
-    for key in ("protect", "review", "organize", "candidate"):
+    for key in ("protect", "review", "organize", "deploy", "candidate"):
         phase_actions = [a for a in actions if a["phase"] == key]
         if not phase_actions:
             continue
@@ -1279,8 +1369,9 @@ def build_cleanup_execution_plan(current_target, scope="daily", strategy="conser
         "summary": summary,
         "rules": [
             "当前接口只生成动作预案，不执行文件删除。",
-            "断舍离策略会推荐备份、导入、下载目录，以及 SKILL.md 完全一致的重复 skill。",
-            "其他 Agent 根目录只在当前目录已保留完全相同副本时，才允许单个重复 skill 进入候选。",
+            "断舍离策略会推荐备份、导入、下载目录，以及复核层中 SKILL.md 完全一致的重复 skill。",
+            "其他 Agent 根目录里的完全重复 skill 视为多端部署副本，默认保留，不进垃圾站候选。",
+            "标记为多端部署后，同一 skill + content hash 不再重复提醒；内容变更后会重新出现。",
             "相似度线索只进入复核，不作为自动删除依据。",
             "真正执行时必须先移入垃圾站或创建快照，不能直接物理删除。",
         ],
@@ -1907,9 +1998,12 @@ def python_quick_check(target_path):
     else:
         level = "red"
 
-    # TF-IDF similarity (with graceful fallback)
+    # Default similarity: light, explainable signature comparison.
     try:
-        overlap_groups = compute_tfidf_similarity(target_path, skills)
+        overlap_groups = _compute_signature_similarity([
+            {"name": s["name"], "dir": str(target_dir), "agent": _agent_from_path(target_path)}
+            for s in skills
+        ])
     except Exception:
         overlap_groups = []
 
@@ -2399,6 +2493,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._cleanup_plan()
         elif path == "/api/cleanup-execution-plan":
             self._cleanup_execution_plan()
+        elif path == "/api/duplicate-decisions":
+            self._list_duplicate_decisions()
+        elif path == "/api/similar-decisions":
+            self._list_similar_decisions()
         elif path == "/api/category-order":
             f = STATE_DIR / "category-order.json"
             data = f.read_text(encoding="utf-8") if f.exists() else "[]"
@@ -2469,6 +2567,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._run_scan()
         elif path == "/api/cleanup-execute":
             self._cleanup_execute()
+        elif path == "/api/duplicate-decision":
+            self._duplicate_decision()
+        elif path == "/api/similar-decision":
+            self._similar_decision()
         elif path == "/api/steal":
             self._steal_skill()
         elif path == "/api/copy-skill":
@@ -2519,6 +2621,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._delete_skill(name, target or None)
         elif path == "/api/custom-sources":
             self._remove_custom_source()
+        elif path == "/api/duplicate-decision":
+            self._remove_duplicate_decision()
+        elif path == "/api/similar-decision":
+            self._remove_similar_decision()
         elif path.startswith("/api/trash/"):
             # Permanent delete: DELETE /api/trash/{trash_dir_name}
             self._delete_trash(path)
@@ -2723,6 +2829,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
                 {"method": "GET", "path": "/api/cleanup-execution-plan?scope=&strategy=", "desc": "Executable-shaped cleanup preview without deletion"},
                 {"method": "POST", "path": "/api/cleanup-execute", "desc": "Move selected cleanup candidates to trash"},
+                {"method": "GET", "path": "/api/duplicate-decisions", "desc": "List local exact-duplicate handling decisions"},
+                {"method": "POST", "path": "/api/duplicate-decision", "desc": "Persist exact-duplicate handling decisions"},
+                {"method": "DELETE", "path": "/api/duplicate-decision?key=", "desc": "Remove a local exact-duplicate handling decision"},
+                {"method": "GET", "path": "/api/similar-decisions", "desc": "List local not-similar decisions"},
+                {"method": "POST", "path": "/api/similar-decision", "desc": "Persist not-similar group decisions"},
+                {"method": "DELETE", "path": "/api/similar-decision?key=", "desc": "Remove a local not-similar decision"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
@@ -2756,6 +2868,131 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if strategy not in ("conservative", "declutter"):
             strategy = "conservative"
         self._json_response(build_cleanup_execution_plan(self._current_target(), scope, strategy))
+
+    def _list_duplicate_decisions(self):
+        """Return local exact-duplicate handling decisions."""
+        data = _load_duplicate_decisions()
+        entries = []
+        for key, entry in data.get("multi_agent_deployment", {}).items():
+            if not isinstance(entry, dict):
+                continue
+            item = dict(entry)
+            item["key"] = key
+            entries.append(item)
+        entries.sort(key=lambda x: x.get("decided_at", ""), reverse=True)
+        self._json_response({
+            "schema": 1,
+            "state_file": str(DUPLICATE_DECISIONS_FILE),
+            "ignored_by_git": True,
+            "decisions": entries,
+            "count": len(entries),
+        })
+
+    def _duplicate_decision(self):
+        """Persist a local decision for exact duplicate handling."""
+        body = self._read_json() or {}
+        decision = body.get("decision", "")
+        skill_name = self._validate_skill_name(body.get("skill_name", ""))
+        content_hash = body.get("content_hash", "")
+        if decision != "multi_agent_deployment":
+            self._json_response({"error": "unsupported decision"}, status=400)
+            return
+        if not skill_name:
+            self._json_response({"error": "invalid skill name"}, status=400)
+            return
+        if not re.match(r'^[a-fA-F0-9]{8,64}$', content_hash or ""):
+            self._json_response({"error": "invalid content hash"}, status=400)
+            return
+
+        data = _load_duplicate_decisions()
+        key = _duplicate_decision_key(skill_name, content_hash)
+        entry = {
+            "decision": decision,
+            "skill_name": skill_name,
+            "content_hash": content_hash,
+            "path": body.get("path", ""),
+            "duplicate_of": body.get("duplicate_of", ""),
+            "decided_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        data.setdefault("multi_agent_deployment", {})[key] = entry
+        _save_duplicate_decisions(data)
+        self._json_response({"ok": True, "key": key, "entry": entry})
+
+    def _remove_duplicate_decision(self):
+        """Remove one local exact-duplicate handling decision."""
+        query = parse_qs(urlparse(self.path).query)
+        key = query.get("key", [""])[0]
+        if not re.match(r'^[a-fA-F0-9]{20}$', key or ""):
+            self._json_response({"error": "invalid decision key"}, status=400)
+            return
+        data = _load_duplicate_decisions()
+        bucket = data.setdefault("multi_agent_deployment", {})
+        existed = key in bucket
+        if existed:
+            del bucket[key]
+            _save_duplicate_decisions(data)
+        self._json_response({"ok": True, "removed": existed, "key": key})
+
+    def _list_similar_decisions(self):
+        """Return local not-similar decisions."""
+        data = _load_similar_decisions()
+        entries = []
+        for key, entry in data.get("not_similar", {}).items():
+            if not isinstance(entry, dict):
+                continue
+            item = dict(entry)
+            item["key"] = key
+            entries.append(item)
+        entries.sort(key=lambda x: x.get("decided_at", ""), reverse=True)
+        self._json_response({
+            "schema": 1,
+            "state_file": str(SIMILAR_DECISIONS_FILE),
+            "ignored_by_git": True,
+            "decisions": entries,
+            "count": len(entries),
+        })
+
+    def _similar_decision(self):
+        """Persist a local not-similar decision for one similarity group."""
+        body = self._read_json() or {}
+        decision = body.get("decision", "")
+        group_key = body.get("group_key", "")
+        if decision != "not_similar":
+            self._json_response({"error": "unsupported decision"}, status=400)
+            return
+        if not re.match(r'^[a-fA-F0-9]{20}$', group_key or ""):
+            self._json_response({"error": "invalid group key"}, status=400)
+            return
+        members = body.get("members", [])
+        if not isinstance(members, list):
+            members = []
+        entry = {
+            "decision": decision,
+            "group_key": group_key,
+            "source": body.get("source", "signature"),
+            "members": members[:10],
+            "reason": body.get("reason", ""),
+            "decided_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        data = _load_similar_decisions()
+        data.setdefault("not_similar", {})[group_key] = entry
+        _save_similar_decisions(data)
+        self._json_response({"ok": True, "key": group_key, "entry": entry})
+
+    def _remove_similar_decision(self):
+        """Remove one local not-similar decision."""
+        query = parse_qs(urlparse(self.path).query)
+        key = query.get("key", [""])[0]
+        if not re.match(r'^[a-fA-F0-9]{20}$', key or ""):
+            self._json_response({"error": "invalid decision key"}, status=400)
+            return
+        data = _load_similar_decisions()
+        bucket = data.setdefault("not_similar", {})
+        existed = key in bucket
+        if existed:
+            del bucket[key]
+            _save_similar_decisions(data)
+        self._json_response({"ok": True, "removed": existed, "key": key})
 
     def _cleanup_execute(self):
         """Execute selected cleanup candidate actions by moving skills to trash."""
@@ -3218,7 +3455,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "scanned_dirs": len(valid_dirs),
             "scope": requested_scope,
-            "scan_schema_version": 2,
+            "scan_schema_version": 3,
             "scanned_policy_counts": dict(Counter(
                 _classify_skill_dir_detail(d).get("policy", "review") for d in valid_dirs
             )),
@@ -3239,9 +3476,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             # Similarity within this directory
             if "similar" in checks and len(dir_skills) > 1:
-                groups = compute_tfidf_similarity(
-                    str(tdir), dir_skills, agent_name=_agent_from_path(str(tdir))
-                )
+                groups = _compute_signature_similarity([
+                    {"name": s["name"], "dir": str(tdir), "agent": _agent_from_path(str(tdir))}
+                    for s in dir_skills
+                ])
                 if groups:
                     result["overlap_groups"].extend(groups)
 
@@ -3581,6 +3819,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _trash_dir(self, skill_dir):
         """Move a skill directory to trash. Returns trash path."""
+        if skill_dir.is_symlink():
+            raise RuntimeError("refusing to trash symlink skill; remove the link manually")
         trash = STATE_DIR.parent / "trash"
         trash.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")

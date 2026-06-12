@@ -34,7 +34,7 @@
 
 ## 功能
 
-**完全独立，零外部依赖。** 不装任何额外工具，一个 Python 文件跑起来。
+**完全独立，零外部依赖。** 不装任何额外工具，一个 Python 入口跑起来。
 
 | 功能 | 说明 |
 |---|---|
@@ -42,13 +42,15 @@
 | 🧠 **理解层** | 离线规则解析 SKILL.md，生成中文用途、场景、能力标签、风险提示和证据片段 |
 | 🧭 **清理计划** | dry-run 生成目录治理方案：保护区、复核区、观察区、隐藏区，先给证据不直接删除 |
 | 🧩 **推荐清理** | 将目录治理和完全重复 skill 转成可恢复的垃圾站候选；推荐候选可一键移入垃圾站 |
+| 🔁 **多端部署识别** | 同一 skill 同内容出现在多个 Agent 根目录时默认保留，可标记为已知部署副本，并可在“本地决策”里撤销 |
+| 🔍 **可解释相似度** | 默认用名称、description、keywords 和标题做轻量关键词相似；可标记不相似，避免反复误报 |
 | 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch / Hermes / WorkBuddy / CodeBuddy 等 10+ 个技能库 |
 | 📚 **技能库来源浏览** | 扫描 150+ 个来源库，支持穿透查看、批量同步到目标库 |
 | 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + 支持 frontmatter `category` 覆盖 |
 | 📖 **查看内容** | 点击 skill 名称查看 SKILL.md 全文 |
 | 🏥 **健康评分** | Python 自主计算，不依赖 bash |
 | ⚠️ **结构问题** | broken symlink、缺 frontmatter、oversized 检测 |
-| 🔍 **轻量相似度** | 前端 Jaccard 算法，基于 name + description 关键词重叠分析 |
+| 🔍 **轻量相似度** | 后端 signature Jaccard，基于 name、description、keywords 和标题的关键词重叠分析 |
 | 🔗 **上游追踪** | 自动检测 `.git` 来源 + `.skill-source.env` 安装记录 |
 | 🔄 **上游更新检测** | urllib 调 GitHub API，对比 installed vs latest commit |
 | ⬇️ **安装 Skill** | 粘贴 GitHub URL → Python 自动 git clone + 子目录选择 + 快照备份 |
@@ -76,13 +78,13 @@ python3 serve.py
 ## 架构
 
 ```
-用户操作 → fast-scan (5-10ms) → 页面立刻渲染
+页面加载 → fast-scan + targets + global-stats → 先看到当前技能库和目录地图
                 ↓
           understanding cache → 中文用途 + 场景/能力/风险标签
                 ↓
-          Python quick-check (~10ms) → 健康分 + 结构问题 + 上游追踪 + 清理候选
+          点「开始整理」→ cleanup-execution-plan → 推荐移入垃圾站 / 复核 / 多端部署
                 ↓
-    点「一键诊断」→ Python diagnosis (~5s) → 完整数据 + 上游版本状态
+          展开高级线索 → scan-run → 同名、相似、上游和内容变更证据
 ```
 
 **设计原则**：
@@ -90,14 +92,17 @@ python3 serve.py
 - 理解层默认离线可用，不要求 API key；未来可接可选 AI 增强，但 UI 只依赖统一理解 schema
 - 清理计划默认 dry-run，目录级动作先解释来源、状态、去向和证据，不做直接删除
 - 推荐清理只允许候选移入垃圾站，可恢复；不会直接永久删除，不做当前目录级删除
-- 完全重复 skill 只有在 `SKILL.md` 内容一致且保留副本明确时才进入候选；相似度线索只进复核
+- 完全重复 skill 只有在 `SKILL.md` 内容一致且保留副本明确时才可能进入候选；备份、导入、下载、本地库副本可移入垃圾站，其他 Agent 根目录副本按多端部署默认保留
+- 多端部署标记记录在本地状态里，按 `skill + content hash` 生效；内容变更后会重新出现，避免长期误藏；“本地决策”入口可查看和撤销这些运行状态
+- 相似度线索只进复核，不作为自动清理依据；默认展示 30% 以上的轻量关键词相似组，TF-IDF 全文相似保留为深度审计能力
+- “标记不相似”和“标记多端部署”都属于本机运行状态，记录在 `.data/state/`，用于减少重复提醒，不随 Git 提交
 - 所有写操作（安装、删除、更新）都有自动快照备份
 
 ---
 
 ## 技术栈
 
-- **后端**：Python 3 标准库（`http.server`），零依赖
+- **后端**：Python 3 标准库（`serve.py` + `skilldash/` 轻量模块），零依赖
 - **前端**：单文件 HTML + CSS + JS，无框架
 - **数据源**：直接读文件系统 + GitHub REST API
 

@@ -1,8 +1,14 @@
 # Skill Dashboard — 项目约定
 
+## GBrain / GStack
+
+- 这个项目优先使用 GBrain MCP/HTTP 能力查询项目记忆；不要把本地 `gbrain search` CLI 当首选入口。
+- 如果 MCP/HTTP 不可用，才使用 CLI fallback；若 CLI 出现 PGLite/WASM 初始化失败或命令不在 PATH，记录失败原因后继续用仓库证据推进，不要反复重试同一条 CLI。
+- 新的清理准则、扫描分类口径、可恢复删除边界等长期决策，应该同步写进本文件或项目文档，避免后续 Agent 重复摸索。
+
 ## 是什么
 
-零依赖本地 WebUI，可视化管理本地 AI skill 文件。Python 标准库 http.server + 单文件 HTML/CSS/JS。
+零依赖本地 WebUI，可视化管理本地 AI skill 文件。Python 标准库 http.server + 单文件前端 + 少量后端模块。
 
 ## 运行
 
@@ -16,9 +22,10 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端：HTTP handler + 业务逻辑（~2960 行）
+serve.py           — 后端：HTTP handler + 业务逻辑（~4100 行）
+skilldash/         — 后端轻量模块（当前包含 signature 相似度）
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
-index.html         — 前端：HTML + CSS + JS 单文件（~2400 行）
+index.html         — 前端：HTML + CSS + JS 单文件（~3400 行）
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
 docs/              — 项目文档（troubleshooting.md）
 README.md
@@ -32,8 +39,10 @@ screenshots/       — 截图（当前只有 .gitkeep）
 浏览器 → index.html (静态)
           ↓ fetch API
        serve.py (HTTPServer, 端口 3457)
+          ↓ 调用本地模块
+       skilldash/similarity.py
           ↓ 读文件系统
-       本地 skill 目录 (如 ~/.claude/skills/)
+       本地 skill 目录 (如 ~/.codex/skills/)
           ↓ GitHub REST API (无认证)
        上游版本检测
 ```
@@ -73,6 +82,11 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/skill/{name}/update` | PATCH | 从上游更新 skill |
 | `/api/skill/{name}/fix` | PATCH | 修复 skill 结构问题 |
 | `/api/preview` | GET | 跨目录预览 skill 内容（?dir=xxx&name=xxx） |
+| `/api/cleanup-plan` | GET | 生成目录治理计划（dry-run） |
+| `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
+| `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |
+| `/api/duplicate-decision` | POST | 记录完全重复 skill 的本地处理决策，如多端部署副本 |
+| `/api/similar-decision` | POST/DELETE | 记录或撤销“这组不是相似 skill”的本地运行决策 |
 | `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
 | `/api/openapi` | GET | 返回路由清单（调试用） |
 
@@ -96,13 +110,27 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### Agent 分组：_agent_from_path()
 
-`_agent_from_path()` 从路径推断 Agent 名称。保留已知映射（`.claude` → `Claude Code`），但未知 `.xxx` 直接用目录名。**不在其他地方重复这个映射**——`_list_targets()` 等调用 `_agent_from_path()` 而不是自己维护 if/elif 列表。
+`_agent_from_path()` 从路径推断 Agent 名称。保留已知映射（`.codex` → `Codex`），但未知 `.xxx` 直接用目录名。**不在其他地方重复这个映射**——`_list_targets()` 等调用 `_agent_from_path()` 而不是自己维护 if/elif 列表。
 
 ### 扫描 API：用户选范围 + 选类型
 
 `POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/相似/上游/内容变更）在用户选择的目录上。
 
 辅助函数 `_find_same_name_duplicates(dirs)` 和 `_find_agent_cross_dir_similar(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
+
+### 清理执行准则：hash 一致不是直接删除依据
+
+`/api/cleanup-execution-plan` 只生成预案，不直接改文件。推荐移入垃圾站的候选限定在：
+
+- 备份、快照、导入副本、下载包、App 本地库等复核层目录
+- `SKILL.md` 内容 hash 完全一致
+- 保留副本仍存在，且执行前 hash 没有变化
+
+其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
+
+默认相似度使用轻量 signature：`name + description + keywords + headings` 的关键词集合 Jaccard，阈值 0.30，强调可解释性和“为什么像”。TF-IDF 全文相似函数保留为深度审计能力，但不作为默认问题页口径。
+
+相似度只用于人工复核和合并判断，不参与自动清理。前端相似卡片不提供删除入口，只提供查看、并排对比、标记不相似。“标记不相似”写入 `.data/state/similar-decisions.json`，属于本机运行状态，不提交 Git。
 
 ### 前端数据流
 
@@ -135,6 +163,8 @@ screenshots/       — 截图（当前只有 .gitkeep）
 ## 数据目录
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
+- 完全重复处理决策：`.data/state/duplicate-decisions.json`（本地运行态，不提交）
+- 相似度误报处理决策：`.data/state/similar-decisions.json`（本地运行态，不提交）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 
 ## 注意事项
@@ -146,6 +176,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
+- **Symlink 安全**：垃圾站移动拒绝 skill 目录 symlink，避免误移动链接本身造成宿主目录状态混乱
 - **前端 JS 调试**：模板字符串嵌套 HTML 属性时注意引号冲突，优先抽全局函数而非内联 onclick
 
 ## 下一步方向

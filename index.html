@@ -498,11 +498,18 @@ let cleanupExcludedActions=new Set();
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
+const SIGNATURE_SIMILARITY_DISPLAY_THRESHOLD=0.30;
+const TFIDF_SIMILARITY_DISPLAY_THRESHOLD=0.50;
 let _sourcesShowAll=false;
 let _sourceViewMode=localStorage.getItem('sd-source-view')||'daily'; // daily | deep
 let _expandedSourceAgent=null;
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
+}
+
+function isVisibleSimilarityGroup(g){
+  const threshold=g?.source==='tfidf'?TFIDF_SIMILARITY_DISPLAY_THRESHOLD:SIGNATURE_SIMILARITY_DISPLAY_THRESHOLD;
+  return (g?.score||0) >= threshold;
 }
 async function loadCachedScanResult(){
   const r=await fetch('/api/scan-result').then(r=>r.json()).catch(()=>null);
@@ -634,8 +641,8 @@ function render(){
 
 function getTriageMetrics(){
   const sameName=(globalOverlap?.duplicates_same_name||[]).length;
-  const overlapGroups=health?.overlap_groups?.length||0;
-  const agentSimilar=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.length,0);
+  const overlapGroups=(health?.overlap_groups||[]).filter(isVisibleSimilarityGroup).length;
+  const agentSimilar=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.filter(isVisibleSimilarityGroup).length,0);
   const similar=overlapGroups+agentSimilar;
   const upstreams=health?.upstream_sources||[];
   const outdated=upstreams.filter(s=>s.status==='outdated').length;
@@ -661,7 +668,7 @@ function getCategoryActionCounts(){
     const cats=new Set((dup.locations||[]).map(l=>_dirCategory(l.dir)));
     cats.forEach(c=>{counts[c]=(counts[c]||0)+1});
   });
-  const simGroups=[...(health?.overlap_groups||[]),...Object.values(globalOverlap?.agent_similar||{}).flat()];
+  const simGroups=[...(health?.overlap_groups||[]),...Object.values(globalOverlap?.agent_similar||{}).flat()].filter(isVisibleSimilarityGroup);
   simGroups.forEach(g=>{
     const meta=g.skills_meta||{};
     const cats=new Set();
@@ -816,7 +823,7 @@ function getSkillIssueTags(name){
   const tags=[];
   if(!health)return tags;
   // Similar skills (overlap_groups)
-  const similarGroup=(health.overlap_groups||[]).find(g=>g.skills.includes(name));
+  const similarGroup=(health.overlap_groups||[]).filter(isVisibleSimilarityGroup).find(g=>g.skills.includes(name));
   if(similarGroup)tags.push({icon:'🔍',title:`相似: ${Math.round((similarGroup.score||0)*100)}%`,color:'var(--amber)'});
   // Structure issues
   const issue=(health.structure_issues||[]).find(i=>i.name===name);
@@ -911,10 +918,13 @@ function renderSimilarityReason(g){
   const terms=(g.shared_terms||[]).slice(0,8);
   const pair=g.strongest_pair;
   const pairText=pair?.skills?.length===2?`最强配对：${pair.skills.join(' ↔ ')} · ${Math.round((pair.score||0)*100)}%`:'';
-  const termText=terms.length?`共同词：${terms.join('、')}`:'旧扫描结果未记录共同词，重新扫描后会显示原因';
+  const termText=terms.length?`共享关键词：${terms.join('、')}`:'旧扫描结果未记录共同词，重新扫描后会显示原因';
+  const sourceText=g.source==='tfidf'
+    ? '深度内容审计：TF-IDF 全文相似，只作为复核线索。'
+    : '轻量相似：基于名称、description、keywords 和标题的关键词重叠。';
   return `<div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:6px 10px;background:var(--bg-card-alt);border-top:1px solid var(--border-subtle)">
     ${escapeHtml(termText)}${pairText?`<br>${escapeHtml(pairText)}`:''}<br>
-    <span style="color:var(--amber)">规则说明：这是 TF-IDF 文本相似，不等于语义重复，也不等于可删除。</span>
+    <span style="color:var(--amber)">规则说明：${escapeHtml(sourceText)}不等于可删除。</span>
   </div>`;
 }
 
@@ -1178,8 +1188,8 @@ function renderScanConfig(){
   let statusHtml='';
   if(scanResult){
     const sn=scanResult.duplicates_same_name?.length||0;
-    const ov=scanResult.overlap_groups?.length||0;
-    const ag=Object.values(scanResult.agent_similar||{}).reduce((s,g)=>s+g.length,0);
+    const ov=(scanResult.overlap_groups||[]).filter(isVisibleSimilarityGroup).length;
+    const ag=Object.values(scanResult.agent_similar||{}).reduce((s,g)=>s+(g||[]).filter(isVisibleSimilarityGroup).length,0);
     const up=scanResult.upstream_sources?.length||0;
     const scopeLabel=scanResult.scope==='daily'?'日常扫描':scanResult.scope==='deep'?'全量审计':'自定义扫描';
     const pc=scanResult.scanned_policy_counts||{};
@@ -1380,8 +1390,8 @@ function renderCleanupPlan(){
 function renderExecutionPlan(){
   if(!executionPlan)return '';
   const s=executionPlan.summary||{};
-  const phaseTone={protect:'var(--green)',review:'var(--amber)',organize:'var(--accent)',candidate:'var(--red)'};
-  const phaseIcon={protect:'锁定',review:'复核',organize:'收纳',candidate:'候选'};
+  const phaseTone={protect:'var(--green)',review:'var(--amber)',organize:'var(--accent)',deploy:'var(--green)',candidate:'var(--red)'};
+  const phaseIcon={protect:'锁定',review:'复核',organize:'收纳',deploy:'部署',candidate:'候选'};
   const strategyLabel=executionPlan.strategy==='declutter'?'断舍离策略':'保守策略';
   const candidateActions=cleanupCandidateActions();
   const executableActions=candidateActions.filter(a=>!cleanupExcludedActions.has(a.id));
@@ -1389,19 +1399,23 @@ function renderExecutionPlan(){
   const executableSkillCount=executableActions.reduce((sum,a)=>sum+(a.count||0),0);
   const directoryCandidateCount=executableActions.filter(a=>a.operation==='move_skills_to_trash').length;
   const exactDuplicateCount=executableActions.filter(a=>a.operation==='move_skill_to_trash').length;
-  const phaseOrder=executionPlan.strategy==='declutter'?{candidate:0,review:1,organize:2,protect:3}:{protect:0,review:1,organize:2,candidate:3};
+  const deployCount=(executionPlan.phases||[]).find(p=>p.key==='deploy')?.action_count||0;
+  const phaseOrder=executionPlan.strategy==='declutter'?{candidate:0,deploy:1,review:2,organize:3,protect:4}:{protect:0,review:1,organize:2,deploy:3,candidate:4};
   const sortedPhases=[...(executionPlan.phases||[])].sort((a,b)=>(phaseOrder[a.key]??9)-(phaseOrder[b.key]??9));
 
   const renderActionCard=(a)=> {
     const executable=cleanupIsCandidateAction(a);
-    const title=a.skill_name
-      ? `${a.skill_name} · ${a.from_state||''} → 垃圾站`
-      : `${a.agent||''} · ${a.from_state||''} → 垃圾站`;
+    const title=a.operation==='mark_multi_agent_deploy'
+      ? `${a.skill_name||''} · ${a.from_state||''} · 多端部署`
+      : a.skill_name
+        ? `${a.skill_name} · ${a.from_state||''} → 垃圾站`
+        : `${a.agent||''} · ${a.from_state||''} → 垃圾站`;
     return `<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:8px;background:var(--bg-card-alt)">
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${executable?`<button class="btn btn-sm" onclick="toggleCleanupExclude('${esc(a.id)}')" style="font-size:9px;padding:1px 6px">${cleanupExcludedActions.has(a.id)?'恢复推荐':'排除'}</button>`:''}
+        ${executable?`<label class="skill-tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="margin:0">${cleanupExcludedActions.has(a.id)?'已排除':'纳入清理'}</label>`:''}
+        ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
         <span class="skill-tag">${escapeHtml(a.label)}</span>
-        ${a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
+        ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
         ${a.destructive?'<span class="skill-tag" style="color:var(--red)">会移动文件</span>':'<span class="skill-tag" style="color:var(--green)">不动文件</span>'}
         ${a.requires_confirmation?'<span class="skill-tag" style="color:var(--amber)">需二次确认</span>':''}
         ${cleanupExcludedActions.has(a.id)?'<span class="skill-tag">已排除</span>':''}
@@ -1452,6 +1466,7 @@ function renderExecutionPlan(){
           <h3>推荐清理</h3>
           <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${strategyLabel} · 推荐项先移入垃圾站，可恢复 · ${executionPlan.generated_at||''}</div>
         </div>
+        <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="查看本机记录的运行状态，不随 Git 提交">本地决策</button>
         <button class="btn btn-sm" onclick="executionPlan=null;renderIssues()">收起推荐</button>
         ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()">恢复全部推荐</button>`:''}
         <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选 skill 移入垃圾站，不永久删除">移入垃圾站 ${executableActions.length}</button>
@@ -1459,6 +1474,7 @@ function renderExecutionPlan(){
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
         <div class="scope-card primary"><div class="scope-name"><span>建议移走</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
         <div class="scope-card warn"><div class="scope-name"><span>涉及内容</span><b>${executableSkillCount}</b></div><div class="scope-desc">skills</div></div>
+        <div class="scope-card"><div class="scope-name"><span>多端部署</span><b>${deployCount}</b></div><div class="scope-desc">默认保留</div></div>
         <div class="scope-card"><div class="scope-name"><span>已排除</span><b>${excludedCount}</b></div><div class="scope-desc">不会处理</div></div>
         <div class="scope-card muted"><div class="scope-name"><span>直接删除</span><b>0</b></div><div class="scope-desc">不永久删除</div></div>
       </div>
@@ -1471,6 +1487,113 @@ function renderExecutionPlan(){
 
 function cleanupIsCandidateAction(a){
   return a&&['move_skills_to_trash','move_skill_to_trash'].includes(a.operation);
+}
+
+async function markMultiAgentDeployment(skillName,contentHash,path,duplicateOf){
+  if(!skillName||!contentHash)return;
+  try{
+    const r=await fetch('/api/duplicate-decision',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        decision:'multi_agent_deployment',
+        skill_name:skillName,
+        content_hash:contentHash,
+        path,
+        duplicate_of:duplicateOf,
+      })
+    });
+    const d=await r.json();
+    if(!d.ok){toast(d.error||'标记失败','error');return}
+    toast('已标记为多端部署：同一内容不再重复提醒');
+    await runExecutionPlan(executionPlan?.strategy||'declutter',{silent:true});
+  }catch(e){toast('标记失败: '+e.message,'error')}
+}
+
+async function showDuplicateDecisions(){
+  $('modal-title').textContent='本地决策';
+  $('modal-body').innerHTML='<div style="padding:12px;color:var(--text-muted)">加载中...</div>';
+  $('modal').classList.remove('hidden');
+  try{
+    const d=await fetch('/api/duplicate-decisions').then(r=>r.json());
+    const rows=d.decisions||[];
+    const intro=`<div style="font-family:-apple-system,sans-serif;font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">
+      这些记录只保存在本机 <code>.data/state/duplicate-decisions.json</code>，用于隐藏已确认的多端部署重复提醒；不会提交到 Git。内容 hash 变化后会重新出现。
+    </div>`;
+    if(!rows.length){
+      $('modal-body').innerHTML=intro+'<div class="empty" style="font-family:-apple-system,sans-serif">暂无本地决策。你在“多端部署”里点击标记后，这里会出现可撤销记录。</div>';
+      return;
+    }
+    $('modal-body').innerHTML=intro+`<div style="display:grid;gap:8px;font-family:-apple-system,sans-serif">
+      ${rows.map(row=>`<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:10px;background:var(--bg-card-alt)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <b style="font-size:13px;color:var(--text)">${escapeHtml(row.skill_name||'')}</b>
+          <span class="skill-tag">多端部署</span>
+          <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(row.decided_at||'')}</span>
+          <span style="flex:1"></span>
+          <button class="btn btn-sm" onclick="removeDuplicateDecision('${esc(row.key||'')}')" style="font-size:10px;padding:2px 8px">撤销</button>
+        </div>
+        <div style="font-family:'SF Mono','Fira Code',monospace;font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:6px">
+          hash: ${escapeHtml(row.content_hash||'')}<br>
+          path: ${escapeHtml(row.path||'')}<br>
+          kept: ${escapeHtml(row.duplicate_of||'')}
+        </div>
+      </div>`).join('')}
+    </div>`;
+  }catch(e){
+    $('modal-body').innerHTML='<div style="color:var(--red)">加载失败：'+escapeHtml(e.message)+'</div>';
+  }
+}
+
+async function removeDuplicateDecision(key){
+  if(!key)return;
+  try{
+    const d=await fetch('/api/duplicate-decision?key='+encodeURIComponent(key),{method:'DELETE'}).then(r=>r.json());
+    if(!d.ok){toast(d.error||'撤销失败','error');return}
+    toast('已撤销本地决策');
+    await showDuplicateDecisions();
+    if(executionPlan)await runExecutionPlan(executionPlan.strategy||'declutter',{silent:true});
+  }catch(e){toast('撤销失败: '+e.message,'error')}
+}
+
+function hideSimilarGroupByKey(key){
+  const keep=g=>g?.decision_key!==key&&g?.id!==key;
+  if(health?.overlap_groups)health.overlap_groups=health.overlap_groups.filter(keep);
+  if(globalOverlap?.agent_similar){
+    Object.keys(globalOverlap.agent_similar).forEach(agent=>{
+      globalOverlap.agent_similar[agent]=(globalOverlap.agent_similar[agent]||[]).filter(keep);
+      if(!globalOverlap.agent_similar[agent].length)delete globalOverlap.agent_similar[agent];
+    });
+  }
+  if(scanResult?.overlap_groups)scanResult.overlap_groups=scanResult.overlap_groups.filter(keep);
+  if(scanResult?.agent_similar){
+    Object.keys(scanResult.agent_similar).forEach(agent=>{
+      scanResult.agent_similar[agent]=(scanResult.agent_similar[agent]||[]).filter(keep);
+      if(!scanResult.agent_similar[agent].length)delete scanResult.agent_similar[agent];
+    });
+  }
+}
+
+async function ignoreSimilarGroup(groupKey,dataKey,source){
+  if(!groupKey)return toast('旧扫描结果没有可记录的相似组 key，请重新扫描','error');
+  const members=(_compareData[dataKey]||[]).map(x=>({name:x.name,dir:x.dir}));
+  try{
+    const d=await fetch('/api/similar-decision',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        decision:'not_similar',
+        group_key:groupKey,
+        source:source||'signature',
+        members,
+        reason:'user marked this similarity group as not similar',
+      })
+    }).then(r=>r.json());
+    if(!d.ok){toast(d.error||'标记失败','error');return}
+    hideSimilarGroupByKey(groupKey);
+    renderIssues();
+    toast('已标记为不相似：该组后续不再提醒');
+  }catch(e){toast('标记失败: '+e.message,'error')}
 }
 
 function cleanupCandidateActions(){
@@ -1533,10 +1656,13 @@ function renderIssues(){
 
   const issues=health?.structure_issues||[];
   const changes=health?.content_changes;
-  const overlaps=health?.overlap_groups||[];
+  const overlaps=(health?.overlap_groups||[]).filter(isVisibleSimilarityGroup);
   const upstreams=health?.upstream_sources||[];
   const sameName=globalOverlap?.duplicates_same_name||[];
-  const agentSimilar=globalOverlap?.agent_similar||{};
+  const agentSimilar=Object.fromEntries(Object.entries(globalOverlap?.agent_similar||{}).map(([agent,groups])=>[
+    agent,
+    (groups||[]).filter(isVisibleSimilarityGroup)
+  ]).filter(([,groups])=>groups.length));
   const executionHtml=renderExecutionPlan();
   const planHtml=executionPlan?'':renderCleanupPlan();
 
@@ -1734,7 +1860,7 @@ function renderIssues(){
         const shortDir=dir.replace(/^\/Users\/[^/]+/,'~');
         const dirCat=_dirCategory(dir);
         const dirCm=CAT_META[dirCat]||CAT_META.unknown;
-        h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+        h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span></div>
           <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px;display:flex;align-items:center;gap:4px">${dirCm.emoji} ${shortDir}</div>`;
         groups.forEach(g=>{
           const pct=Math.round((g.score||0)*100);
@@ -1748,6 +1874,7 @@ function renderIssues(){
               <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
               ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
               <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
+              <button class="btn btn-sm" onclick="event.stopPropagation();ignoreSimilarGroup('${esc(g.decision_key||g.id||'')}','${uid}','${esc(g.source||'signature')}')" style="font-size:9px;padding:2px 8px">标记不相似</button>
             </div>
             ${renderSimilarityReason(g)}
             <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
@@ -1757,15 +1884,13 @@ function renderIssues(){
                 const sKey=s+'|'+sDir;
                 const sCat=_dirCategory(sDir);
                 const sCm=CAT_META[sCat]||CAT_META.unknown;
-                return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+                return `<div style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                   <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
-                  <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
                   <div style="min-width:0">
                     <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
                     ${renderIssuePath(sDir)}
                   </div>
                   <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-                  <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
                 </div>`;
               }).join('')}
             </div>
@@ -1777,8 +1902,8 @@ function renderIssues(){
 
     // Per-agent similar
     Object.entries(visibleAgentSimilar).sort((a,b)=>b[1].length-a[1].length).forEach(([agent,groups])=>{
-      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
-        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录 TF-IDF 全文比对，相似度 ≥45%</div>`;
+      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span></div>
+        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录轻量关键词比对，相似度 ≥30%；用于合并判断，不作为删除依据。</div>`;
       groups.forEach(g=>{
         const pct=Math.round((g.score||0)*100);
         const catLabel2=CAT_NAMES[g.category]||g.category||'';
@@ -1791,6 +1916,7 @@ function renderIssues(){
             <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
             ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
             <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
+            <button class="btn btn-sm" onclick="event.stopPropagation();ignoreSimilarGroup('${esc(g.decision_key||g.id||'')}','${uid}','${esc(g.source||'signature')}')" style="font-size:9px;padding:2px 8px">标记不相似</button>
           </div>
           ${renderSimilarityReason(g)}
           <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
@@ -1800,16 +1926,14 @@ function renderIssues(){
               const sKey=s+'|'+sDir;
               const sCat=_dirCategory(sDir);
               const sCm=CAT_META[sCat]||CAT_META.unknown;
-              return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+              return `<div style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                 <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
-                <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
                 <div style="min-width:0">
                   <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
                   <span style="font-size:9px;color:var(--text-muted);margin-left:6px">${m.agent||''}</span>
                   ${renderIssuePath(sDir)}
                 </div>
                 <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
             }).join('')}
           </div>
