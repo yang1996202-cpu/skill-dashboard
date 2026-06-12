@@ -20,6 +20,8 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
+from skilldash.understanding import compact_understanding, understand_skill
+
 PORT = 3457
 STATE_DIR = Path(__file__).parent / ".data" / "state"
 HTML_FILE = Path(__file__).parent / "index.html"
@@ -326,6 +328,31 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
                 s = pair_scores.get(key, pair_scores.get(rev_key, 0))
                 scores.append(s)
         avg_score = sum(scores) / len(scores) if scores else 0
+        shared_terms = []
+        try:
+            shared = set(tokenized.get(members[0], []))
+            for member in members[1:]:
+                shared &= set(tokenized.get(member, []))
+            weighted = sorted(
+                shared,
+                key=lambda t: idf.get(t, 0) * sum(Counter(tokenized.get(m, [])).get(t, 0) for m in members),
+                reverse=True,
+            )
+            shared_terms = weighted[:10]
+        except Exception:
+            shared_terms = []
+        strongest_pair = None
+        if members and scores:
+            best = (None, None, 0)
+            for i in range(len(members)):
+                for j in range(i + 1, len(members)):
+                    key = (members[i], members[j])
+                    rev_key = (members[j], members[i])
+                    s = pair_scores.get(key, pair_scores.get(rev_key, 0))
+                    if s > best[2]:
+                        best = (members[i], members[j], s)
+            if best[0]:
+                strongest_pair = {"skills": [best[0], best[1]], "score": round(best[2], 4)}
         # Category: use _classify_skill for primary category
         cats = Counter(_classify_skill(m, "") for m in members)
         primary_cat = cats.most_common(1)[0][0] if cats else "other"
@@ -337,6 +364,8 @@ def compute_tfidf_similarity(target_path, skills_data, docs=None, agent_name=Non
             "category": primary_cat,
             "source": "tfidf",
             "scope": "current_dir",
+            "shared_terms": shared_terms,
+            "strongest_pair": strongest_pair,
         })
 
     # Sort by score descending
@@ -621,6 +650,141 @@ def _classify_skill_dir(dir_path):
 
     # Default: user-created
     return "user"
+
+
+def _classify_skill_dir_detail(dir_path):
+    """Return directory governance metadata used by the UI.
+
+    Discovery is intentionally high-recall: if a directory contains */SKILL.md it
+    should be visible somewhere.  Governance is stricter: only active/user roots
+    should look directly manageable, while package caches and marketplace copies
+    are audit evidence by default.
+    """
+    path = Path(dir_path).expanduser()
+    p = str(path).replace("\\", "/").lower()
+    padded_p = "/" + p.strip("/") + "/"
+    home = Path.home()
+    category = _classify_skill_dir(path)
+    layer = "user-installed"
+    policy = "manage"
+    confidence = "medium"
+    evidence = []
+
+    def mark(new_layer, new_policy, reason, new_category=None, new_confidence="high"):
+        nonlocal layer, policy, category, confidence
+        layer = new_layer
+        policy = new_policy
+        confidence = new_confidence
+        if new_category:
+            category = new_category
+        evidence.append(reason)
+
+    try:
+        rel_parts = path.resolve().relative_to(home.resolve()).parts
+    except Exception:
+        rel_parts = path.parts
+    top = rel_parts[0].lower() if rel_parts else ""
+
+    # Exact agent root, e.g. ~/.claude/skills or ~/.agents/skills.
+    if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
+        mark("active-root", "manage", "agent root skills directory", "user")
+
+    # User-level non-hidden collections, e.g. ~/AI-Skills or ~/some/skills.
+    elif category == "user":
+        mark("user-installed", "manage", "user-level skills collection", "user", "medium")
+
+    # Local app inventories and downloaded packs are useful to review, but are
+    # not automatically connected to a runtime.
+    if top in ("downloads", "desktop", "documents"):
+        mark("downloaded-package", "review", "downloaded or manually unpacked skill package", category)
+    if top in ("projects", "code", "workspace"):
+        mark("project-local", "review", "project/workspace level skills", "project")
+    if top == ".skillslm":
+        mark("app-local-library", "review", "SkillsLM local library, not necessarily active in a host", category)
+
+    # Project-local skills are often real, but deleting them can change a repo.
+    if category == "project":
+        mark("project-local", "review", "project-local skills should be reviewed before deleting", "project")
+
+    # Cross-agent/imported copies are useful cleanup candidates, not automatic deletes.
+    if category == "cross-copy":
+        mark("imported-copy", "review", "nested agent skills copy", "cross-copy")
+
+    # Backups and snapshots are reviewable evidence, not current runtime roots.
+    if any(sig in p for sig in (".snapshots", "backup", "plugins-backup", "skill-backups", "/migration/", "/archive/")):
+        mark("backup-snapshot", "review", "backup or snapshot directory", "cache")
+
+    # Package-manager and plugin caches: visible in deep audit, hidden from daily work.
+    if "/install/cache/" in padded_p or "/.bun/install/cache/" in padded_p:
+        mark("package-cache", "hidden", "package manager install cache", "cache")
+    elif any(sig in p for sig in ("plugins/cache", "/cache/", "vendor_imports", ".tmp", ".temp", "bundled-marketplaces")):
+        mark("plugin-cache", "hidden", "plugin/cache/vendor artifact", "cache")
+
+    # Marketplace catalogues are source material. They may contain hundreds of
+    # skills, but they are not the user's active skill library.
+    if any(sig in p for sig in ("marketplace", "agent-plugins", "skills-marketplace")):
+        mark("plugin-marketplace", "observe", "marketplace catalogue or plugin store", "marketplace")
+    elif "/plugins/" in p and "/skills" in p:
+        mark("plugin-marketplace", "observe", "plugin-provided skills", "marketplace")
+
+    # Vendor/system bundles may be mounted into a host, but should not be treated
+    # as user-owned cleanup targets.
+    if any(sig in p for sig in (
+        "/.system",
+        "hermes-agent",
+        "optional-skills",
+        "openai-bundled",
+        "openai-curated",
+        "openai-primary-runtime",
+        "/builtin/",
+        "/resources/skills/",
+        "/connectors/skills/",
+        "/extensions/",
+    )):
+        mark("vendor-bundled", "observe", "host/vendor bundled skills", category)
+
+    if "/workspace/skills/" in padded_p or padded_p.endswith("/workspace/skills/"):
+        mark("project-local", "review", "workspace-local skills", "project")
+
+    # Test fixtures and examples are never daily management targets.
+    if any(sig in padded_p for sig in ("/fixtures/", "/fixture/", "/examples/", "/test/", "/tests/")):
+        mark("fixture-example", "hidden", "test fixture or example skills", "cache")
+
+    # Known import buckets are reviewable cleanup candidates, not cache.
+    if any(sig in p for sig in ("openclaw-imports", "/imports/")):
+        mark("imported-copy", "review", "imported skills bucket", "cross-copy")
+
+    policy_labels = {
+        "manage": "可管理",
+        "review": "待复核",
+        "observe": "只观察",
+        "hidden": "默认隐藏",
+    }
+    layer_labels = {
+        "active-root": "当前/Agent 根目录",
+        "user-installed": "用户技能库",
+        "app-local-library": "App 本地库",
+        "downloaded-package": "下载/解包目录",
+        "project-local": "项目内技能",
+        "imported-copy": "导入/跨 Agent 副本",
+        "backup-snapshot": "备份/快照",
+        "package-cache": "包管理缓存",
+        "plugin-cache": "插件缓存",
+        "plugin-marketplace": "插件市场/目录",
+        "vendor-bundled": "宿主内置包",
+        "fixture-example": "测试样例",
+    }
+    return {
+        "category": category,
+        "layer": layer,
+        "layer_label": layer_labels.get(layer, layer),
+        "policy": policy,
+        "policy_label": policy_labels.get(policy, policy),
+        "confidence": confidence,
+        "evidence": evidence[:4],
+        "is_deletable": policy == "manage",
+        "is_daily": policy in ("manage", "review"),
+    }
 
 
 # ── Content hash tracking ──
@@ -1728,6 +1892,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._export_skills()
         elif path == "/api/openapi":
             self._openapi()
+        elif path == "/api/understand":
+            self._serve_understanding()
         elif path == "/api/source/skills":
             self._list_source_skills()
         elif path == "/api/custom-sources":
@@ -1893,6 +2059,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return
         self._json_response({"error": f"Skill '{name}' not found"}, status=404)
 
+    def _serve_understanding(self):
+        """Return cached rule-based understanding for one skill.
+
+        Query:
+          /api/understand?name=<skill>
+          /api/understand?dir=<skills-dir>&name=<skill>
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        raw_name = qs.get("name", [""])[0]
+        name = self._validate_skill_name(raw_name)
+        if not name:
+            self._json_response({"error": "invalid skill name"}, status=400)
+            return
+
+        base = qs.get("dir", [""])[0] or self._current_target()
+        try:
+            base_dir = Path(base).expanduser().resolve()
+            home = Path.home().resolve()
+            if not base_dir.is_relative_to(home):
+                self._json_response({"error": "dir must be under home directory"}, status=403)
+                return
+            skill_dir = base_dir / name
+            if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").exists():
+                self._json_response({"error": "skill not found"}, status=404)
+                return
+            data = understand_skill(skill_dir, CACHE_DIR)
+            data["dir"] = str(base_dir)
+            data["agent"] = _agent_from_path(str(base_dir))
+            data["directory"] = _classify_skill_dir_detail(base_dir)
+            self._json_response(data)
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
+
     def _serve_preview(self, dir_path, name):
         """Preview SKILL.md from any directory (no target switch needed).
         Query param ?full=1 returns full content instead of 500-char preview."""
@@ -2000,6 +2199,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
+                {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
                 {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
                 {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
                 {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
@@ -2053,9 +2253,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 description = line.split(":", 1)[1].strip().strip("'\"")
             except Exception:
                 pass
+            understanding = None
+            try:
+                understanding = compact_understanding(understand_skill(d, CACHE_DIR))
+            except Exception:
+                understanding = None
             result.append({
                 "name": name,
                 "description": description,
+                "understanding": understanding,
             })
         self._json_response({
             "source": str(source_dir).replace(str(Path.home()), "~"),
@@ -2281,12 +2487,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Check if symlink
             if d.is_symlink():
                 kind = "symlink" if d.resolve().exists() else "broken_symlink"
+            understanding = None
+            try:
+                understanding = compact_understanding(understand_skill(d, CACHE_DIR))
+            except Exception:
+                understanding = None
             skills.append({
                 "name": name,
                 "description": description,
                 "category": category,
                 "kind": kind,
                 "agent": "",
+                "understanding": understanding,
             })
 
         # Build scan-like response
@@ -2326,6 +2538,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         body = self._read_json() or {}
 
         directories = body.get("directories", [])
+        requested_scope = body.get("scope") or ("deep" if not directories else "custom")
         # If no directories specified, scan all discovered dirs
         home = Path.home()
         if not directories:
@@ -2357,6 +2570,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "content_changes": None,
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "scanned_dirs": len(valid_dirs),
+            "scope": requested_scope,
+            "scan_schema_version": 2,
+            "scanned_policy_counts": dict(Counter(
+                _classify_skill_dir_detail(d).get("policy", "review") for d in valid_dirs
+            )),
         }
 
         # Per-directory checks
@@ -2617,7 +2835,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             # Use shared agent detection
             agent = _agent_from_path(str(skills_dir))
             scope = "project" if "projects/" in rel else "global"
-            category = _classify_skill_dir(skills_dir)
+            governance = _classify_skill_dir_detail(skills_dir)
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,
@@ -2625,7 +2843,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "scope": scope,
                 "count": count,
                 "is_current": str(skills_dir) == current,
-                "category": category,
+                **governance,
             })
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 
@@ -2986,12 +3204,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _json_response(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
-        self.send_response(status)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
     def log_message(self, fmt, *args):
         """Quieter logging — only show API calls, not static file requests."""

@@ -183,10 +183,13 @@ tbody tr:hover{background:var(--bg-hover)}
 .search:focus{outline:none;border-color:var(--accent)}
 .search-wrap{position:relative;margin-bottom:10px}
 .search-wrap::before{content:'⌕';position:absolute;left:10px;top:50%;transform:translateY(-50%);color:var(--text-muted);font-size:14px}
-.skill-row{display:grid;grid-template-columns:22px 1fr 90px 60px;gap:8px;padding:6px 10px;border-radius:5px;align-items:center;cursor:pointer;transition:background .08s;font-size:12px}
+.skill-row{display:grid;grid-template-columns:22px minmax(0,1fr) 100px 60px;gap:8px;padding:7px 10px;border-radius:5px;align-items:start;cursor:pointer;transition:background .08s;font-size:12px}
 .skill-row:hover{background:var(--bg-hover)}
 .skill-row .name{font-weight:500;color:var(--accent)}
 .skill-row .agent{color:var(--text-muted);font-size:11px}
+.skill-summary{margin-top:3px;color:var(--text-muted);font-size:11px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skill-tags{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+.skill-tag{font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:999px;padding:1px 5px;line-height:1.4}
 .skill-check{cursor:pointer;width:14px;height:14px}
 .kind{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
 .k-entity{background:var(--bg-card-alt);color:var(--text-muted)}.k-symlink{background:var(--amber-bg);color:var(--amber)}.k-broken{background:var(--red-bg);color:var(--red)}
@@ -493,6 +496,7 @@ let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
 let _sourcesShowAll=false;
+let _sourceViewMode=localStorage.getItem('sd-source-view')||'daily'; // daily | deep
 let _expandedSourceAgent=null;
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
@@ -500,6 +504,15 @@ async function loadGlobalOverlap(){
 async function loadCachedScanResult(){
   const r=await fetch('/api/scan-result').then(r=>r.json()).catch(()=>null);
   if(r&&!r.error&&r.scanned_at){
+    if(r.scan_schema_version!==2){
+      scanResult=null;
+      health=null;
+      globalOverlap=null;
+      renderIssues();
+      renderStats();renderWorkbench();
+      updateDiagBadges();
+      return;
+    }
     scanResult=r;
     // Map scan result into health/globalOverlap for renderIssues
     health={
@@ -678,7 +691,11 @@ function renderWorkbench(){
   const el=$('workbench-card');
   if(!el)return;
   const m=getTriageMetrics();
-  const catCounts=getCategoryActionCounts();
+  const policyCounts={
+    manage:targets.filter(t=>sourcePolicy(t)==='manage').length,
+    review:targets.filter(t=>sourcePolicy(t)==='review').length,
+    observe:targets.filter(t=>sourcePolicy(t)==='observe'||sourcePolicy(t)==='hidden').length,
+  };
   const current=targets.find(t=>t.is_current)||scan?.target;
   const currentName=current?.name||scan?.target?.label||'当前目录';
   const scanMeta=scanResult
@@ -688,8 +705,8 @@ function renderWorkbench(){
     : `轻量模式 · ${globalStats?.targets_scanned||targetGroups.length||'?'} 个目录已发现`;
   const queue=[
     {
-      title:m.outdated?`更新过时来源`:'先做一次深度扫描',
-      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'生成同名、相似、上游和内容变更的统一基线',
+      title:m.outdated?`更新过时来源`:'先扫日常目录',
+      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析可管理/待复核目录；缓存和市场包留给全量审计',
       count:m.outdated||'未扫描',
       action:'issues'
     },
@@ -722,7 +739,7 @@ function renderWorkbench(){
         <div class="queue-count">${q.count}</div>
       </div>`).join('')}</div>
       <div class="workbench-actions">
-        <button class="btn btn-primary" onclick="goView('issues')">${scanResult?'查看重点':'开始扫描'}</button>
+        <button class="btn btn-primary" onclick="goView('issues')">${scanResult?'查看重点':'去日常扫描'}</button>
         <button class="btn" onclick="goView('sources')">目录地图</button>
         <button class="btn" onclick="goView('skills')">当前目录</button>
       </div>
@@ -730,9 +747,9 @@ function renderWorkbench(){
     <div class="card">
       <div class="card-head"><h3>整理范围</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>日常处理</span><b>${catCounts.user||skills.length}</b></div><div class="scope-desc">用户自建、当前常用目录、过时来源优先。</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>整理合并</span><b>${(catCounts['cross-copy']||0)+(catCounts.project||0)}</b></div><div class="scope-desc">跨 Agent 副本和项目级 skill，先对比再删除。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>全量审计</span><b>${(catCounts.marketplace||0)+(catCounts.cache||0)}</b></div><div class="scope-desc">marketplace 与缓存默认观察，不作为首轮负担。</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>可管理目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">当前/用户技能库，可作为日常整理对象。</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>待复核目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">导入副本和项目级 skill，先对比再删除。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>观察/隐藏</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
       </div>
     </div>
   </div>`;
@@ -819,10 +836,89 @@ function getSkillIssueTags(name){
   return tags;
 }
 
+function understandingLabels(items,limit=3){
+  return (items||[]).slice(0,limit).map(x=>x.label||x.key||String(x)).filter(Boolean);
+}
+function skillUnderstandingText(s){
+  const u=s?.understanding||{};
+  return [
+    s?.name||'',
+    s?.description||'',
+    u.summary_zh||'',
+    ...understandingLabels(u.scenarios,5),
+    ...understandingLabels(u.capabilities,5),
+    ...understandingLabels(u.risks,3),
+  ].join(' ').toLowerCase();
+}
+function renderSkillMiniUnderstanding(s){
+  const u=s?.understanding||{};
+  const summary=safeDesc(u.summary_zh||s.description||'暂无中文理解，点击查看原文');
+  const tags=[
+    ...understandingLabels(u.scenarios,2),
+    ...understandingLabels(u.capabilities,3),
+  ].slice(0,4);
+  const tagHtml=tags.length?`<div class="skill-tags">${tags.map(t=>`<span class="skill-tag">${escapeHtml(t)}</span>`).join('')}</div>`:'';
+  return `<div class="skill-summary" title="${esc(summary)}">${escapeHtml(summary)}</div>${tagHtml}`;
+}
+function renderUnderstandingPanel(u,opts={}){
+  if(!u||u.error)return '';
+  const compact=!!opts.compact;
+  const chip=(text,kind='')=>`<span class="skill-tag" style="${kind==='risk'?'color:var(--amber);border-color:color-mix(in srgb,var(--amber) 35%,var(--border-subtle))':''}">${escapeHtml(text)}</span>`;
+  const scenarios=understandingLabels(u.scenarios,compact?3:6);
+  const caps=understandingLabels(u.capabilities,compact?4:8);
+  const risks=understandingLabels(u.risks,compact?2:6);
+  const users=understandingLabels(u.target_users,compact?2:4);
+  const evidence=(u.evidence||[]).slice(0,compact?2:4);
+  return `<div style="border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt);padding:12px;margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+      <div style="font-size:12px;font-weight:700;color:var(--text)">理解摘要</div>
+      <span class="skill-tag">离线规则</span>
+      <span class="skill-tag">不消耗 token</span>
+      ${u.needs_ai_translation?'<span class="skill-tag" style="color:var(--amber)">待 AI 翻译</span>':''}
+      <span class="skill-tag">可信度 ${escapeHtml(u.confidence||'low')}</span>
+    </div>
+    <div style="font-size:13px;line-height:1.6;color:var(--text);margin-bottom:8px">${escapeHtml(u.summary_zh||'暂无摘要')}</div>
+    ${scenarios.length||caps.length||users.length?`<div class="skill-tags" style="margin-bottom:8px">
+      ${scenarios.map(t=>chip(t)).join('')}
+      ${caps.map(t=>chip(t)).join('')}
+      ${users.map(t=>chip(t)).join('')}
+    </div>`:''}
+    ${risks.length?`<div class="skill-tags" style="margin-bottom:8px">${risks.map(t=>chip(t,'risk')).join('')}</div>`:''}
+    ${!compact&&evidence.length?`<details style="margin-top:8px"><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">查看判断依据</summary>
+      <div style="margin-top:6px;display:grid;gap:5px">${evidence.map(e=>`<div style="font-size:11px;color:var(--text-muted);line-height:1.5;border-left:2px solid var(--border);padding-left:8px">${escapeHtml(e)}</div>`).join('')}</div>
+    </details>`:''}
+  </div>`;
+}
+function absolutePathLabel(path){
+  return path||'';
+}
+function copyPath(path){
+  if(!path)return;
+  navigator.clipboard.writeText(path).then(()=>showCopyToast('✓ 已复制路径：'+path)).catch(()=>toast('复制失败','error'));
+}
+function renderIssuePath(path){
+  const p=absolutePathLabel(path);
+  if(!p)return '';
+  return `<div style="display:flex;align-items:center;gap:6px;min-width:0;margin-top:2px">
+    <code style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:4px;padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px" title="${esc(p)}">${escapeHtml(p)}</code>
+    <button class="btn btn-sm" onclick="event.stopPropagation();copyPath('${esc(p)}')" style="font-size:9px;padding:1px 5px">复制路径</button>
+  </div>`;
+}
+function renderSimilarityReason(g){
+  const terms=(g.shared_terms||[]).slice(0,8);
+  const pair=g.strongest_pair;
+  const pairText=pair?.skills?.length===2?`最强配对：${pair.skills.join(' ↔ ')} · ${Math.round((pair.score||0)*100)}%`:'';
+  const termText=terms.length?`共同词：${terms.join('、')}`:'旧扫描结果未记录共同词，重新扫描后会显示原因';
+  return `<div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:6px 10px;background:var(--bg-card-alt);border-top:1px solid var(--border-subtle)">
+    ${escapeHtml(termText)}${pairText?`<br>${escapeHtml(pairText)}`:''}<br>
+    <span style="color:var(--amber)">规则说明：这是 TF-IDF 文本相似，不等于语义重复，也不等于可删除。</span>
+  </div>`;
+}
+
 /* ── Skills list with category groups (horizontal bar + expandable) ── */
 function renderSkillsList(){
   const q=($('search').value||'').toLowerCase();
-  const filtered=skills.filter(s=>!q||s.name.toLowerCase().includes(q));
+  const filtered=skills.filter(s=>!q||skillUnderstandingText(s).includes(q));
   // Group by category
   const groups={};filtered.forEach(s=>{const c=s.category||'other';if(!groups[c])groups[c]=[];groups[c].push(s)});
   const sortedCats=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
@@ -848,7 +944,10 @@ function renderSkillsList(){
         const issueHtml=issues.length?`<span style="display:inline-flex;gap:3px;margin-left:4px">${issues.map(t=>`<span style="font-size:10px;color:${t.color};cursor:help" title="${t.title}">${t.icon}</span>`).join('')}</span>`:'';
         return `<div class="skill-row" onclick="if(event.target.type!=='checkbox')showSkill('${esc(s.name)}')">
         <input type="checkbox" class="skill-check" ${selectedSkills.has(s.name)?'checked':''} onchange="toggleSkillSelect('${esc(s.name)}')">
-        <div class="name" style="display:flex;align-items:center">${s.name}${issueHtml}</div>
+        <div class="name">
+          <div style="display:flex;align-items:center;min-width:0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>${issueHtml}</div>
+          ${renderSkillMiniUnderstanding(s)}
+        </div>
         <div class="agent">${s.categorySource==='frontmatter'?'📋':s.categorySource==='user'?'🏷️':''} ${s.agent||''}</div>
         <div><span class="kind ${s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'k-entity'}">${s.kind||'entity'}</span></div>
       </div>`;
@@ -866,7 +965,7 @@ function toggleSkillSelect(name){
 function toggleSelectAll(){
   const checked=$('select-all').checked;
   const q=($('search').value||'').toLowerCase();
-  const visible=skills.filter(s=>!q||s.name.toLowerCase().includes(q)).map(s=>s.name);
+  const visible=skills.filter(s=>!q||skillUnderstandingText(s).includes(q)).map(s=>s.name);
   if(checked){visible.forEach(n=>selectedSkills.add(n))}else{visible.forEach(n=>selectedSkills.delete(n))}
   renderSkillsList();
 }
@@ -976,13 +1075,16 @@ async function switchAndShow(dirPath,skillName){
 /* ── Preview skill from any directory (no switch) ── */
 async function previewSkill(dirPath,name){
   try{
-    const r=await fetch(`/api/preview?dir=${encodeURIComponent(dirPath)}&name=${encodeURIComponent(name)}`);
-    const d=await r.json();
+    const [d,u]=await Promise.all([
+      fetch(`/api/preview?dir=${encodeURIComponent(dirPath)}&name=${encodeURIComponent(name)}`).then(r=>r.json()),
+      fetch(`/api/understand?dir=${encodeURIComponent(dirPath)}&name=${encodeURIComponent(name)}`).then(r=>r.json()).catch(()=>null)
+    ]);
     if(d.error){toast(d.error,'error');return}
     $('modal').classList.remove('hidden');
     $('modal-title').textContent=`${name} — ${d.agent}`;
     $('modal-body').innerHTML=`<div style="font-size:12px;color:var(--text-muted);margin-bottom:8px">${d.dir.replace(/^\/Users\/[^/]+/,'~')}</div>
       ${d.description?`<div style="font-size:13px;margin-bottom:10px;padding:6px 10px;background:var(--bg-card-alt);border-radius:6px">${esc(d.description)}</div>`:''}
+      ${renderUnderstandingPanel(u)}
       <pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:400px;overflow-y:auto;background:var(--bg-card-alt);padding:12px;border-radius:6px">${esc(d.preview)}</pre>
       <div style="font-size:10px;color:var(--text-muted);margin-top:8px">${d.size} bytes</div>`;
   }catch(e){toast('预览失败','error')}
@@ -1008,6 +1110,64 @@ const CAT_META={
   project:{emoji:'📁',label:'项目级',color:'#10b981'},
   unknown:{emoji:'❓',label:'未知',color:'#9ca3af'},
 };
+const POLICY_META={
+  manage:{emoji:'✅',label:'可管理',desc:'当前/用户技能库，可作为日常整理对象'},
+  review:{emoji:'🟡',label:'待复核',desc:'导入副本或项目目录，先看内容再处理'},
+  observe:{emoji:'👁',label:'只观察',desc:'市场/内置包，默认不做删除动作'},
+  hidden:{emoji:'🚫',label:'默认隐藏',desc:'缓存/测试样例，只在全量审计里看'},
+};
+const LAYER_FALLBACK={
+  user:'用户技能库',
+  marketplace:'插件市场/目录',
+  cache:'缓存/备份',
+  'cross-copy':'导入/跨 Agent 副本',
+  project:'项目内技能',
+  unknown:'未知来源',
+};
+function sourcePolicy(t){
+  if(!t)return 'review';
+  if(t.policy)return t.policy;
+  const c=t.category||'unknown';
+  if(c==='user')return 'manage';
+  if(c==='cross-copy'||c==='project')return 'review';
+  if(c==='marketplace')return 'observe';
+  if(c==='cache')return 'hidden';
+  return 'review';
+}
+function sourceLayerLabel(t){
+  return t?.layer_label||LAYER_FALLBACK[t?.category||'unknown']||'未知来源';
+}
+function sourceIsDaily(t){
+  const p=sourcePolicy(t);
+  return p==='manage'||p==='review'||t?.is_current||isFav(t?.path);
+}
+function sourceCanDelete(t){
+  return sourcePolicy(t)==='manage'&&t?.is_deletable!==false;
+}
+function sourcePolicyBadge(t){
+  const p=sourcePolicy(t);
+  const meta=POLICY_META[p]||POLICY_META.review;
+  return `<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);padding:1px 5px;border-radius:999px;white-space:nowrap" title="${esc(meta.desc)}">${meta.emoji} ${meta.label}</span>`;
+}
+function getVisibleSourceTargets(){
+  if(_sourceViewMode==='deep')return targets;
+  return targets.filter(sourceIsDaily);
+}
+function getVisibleSourceGroups(){
+  const base=_sourceViewMode==='deep'
+    ? targetGroups
+    : targetGroups.map(g=>{
+        const dirs=g.dirs.filter(sourceIsDaily);
+        return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+d.count,0)};
+      }).filter(g=>g.dirs.length);
+  return base;
+}
+function setSourceViewMode(mode){
+  _sourceViewMode=mode==='deep'?'deep':'daily';
+  localStorage.setItem('sd-source-view',_sourceViewMode);
+  _sourcesShowAll=false;
+  renderSources();
+}
 
 function renderScanConfig(){
   const el=$('scan-config');
@@ -1018,9 +1178,14 @@ function renderScanConfig(){
     const ov=scanResult.overlap_groups?.length||0;
     const ag=Object.values(scanResult.agent_similar||{}).reduce((s,g)=>s+g.length,0);
     const up=scanResult.upstream_sources?.length||0;
+    const scopeLabel=scanResult.scope==='daily'?'日常扫描':scanResult.scope==='deep'?'全量审计':'自定义扫描';
+    const pc=scanResult.scanned_policy_counts||{};
+    const policyText=(pc.manage||pc.review||pc.observe||pc.hidden)
+      ? ` · 可管理 ${pc.manage||0} / 待复核 ${pc.review||0} / 观察隐藏 ${(pc.observe||0)+(pc.hidden||0)}`
+      : '';
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 10px;background:var(--green-bg);border:1px solid color-mix(in srgb,var(--green) 30%,transparent);border-radius:6px;font-size:11px;color:var(--green)">
-      <span>✅ 扫描完成</span>
-      <span style="color:var(--text-muted)">${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
+      <span>✅ ${scopeLabel}完成</span>
+      <span style="color:var(--text-muted)">${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s${policyText}</span>
       <span style="color:var(--text-muted)">·</span>
       <span>同名 ${sn}</span><span>相似 ${ov+ag}</span><span>上游 ${up}</span>
       ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">⚠ ${scanResult.lint.warnings.length} 个数据异常</span>`:''}
@@ -1028,21 +1193,27 @@ function renderScanConfig(){
   }
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-      <button class="btn btn-primary" id="scan-run-btn" onclick="runScan()">🔍 全量扫描</button>
-      <span style="font-size:10px;color:var(--text-dim)">扫描所有 skill 目录 · 同名 + 相似 + 上游 + 变更</span>
+      <button class="btn btn-primary" id="scan-run-btn" onclick="runScan('daily')">🔍 扫描日常目录</button>
+      <button class="btn" id="scan-run-deep-btn" onclick="runScan('deep')">全量审计</button>
+      <span style="font-size:10px;color:var(--text-dim)">默认只扫可管理/待复核目录；全量审计才包含 marketplace、缓存和内置包</span>
     </div>
     ${statusHtml}
   </div>`;
 }
 
-async function runScan(){
+async function runScan(scope='daily'){
   const btn=$('scan-run-btn');
-  btn.disabled=true;btn.textContent='⏳ 扫描中...';
+  const deepBtn=$('scan-run-deep-btn');
+  if(btn)btn.disabled=true;
+  if(deepBtn)deepBtn.disabled=true;
+  if(btn)btn.textContent=scope==='deep'?'⏳ 全量审计中...':'⏳ 日常扫描中...';
   try{
+    const scanTargets=scope==='deep'?targets:getVisibleSourceTargets();
+    const directories=targets.length?scanTargets.map(t=>t.path):[];
     const r=await fetch('/api/scan-run',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({}) // empty = scan all
+      body:JSON.stringify({directories,scope})
     }).then(r=>r.json());
     if(r.error){toast(r.error,'error');return}
     scanResult=r;
@@ -1065,9 +1236,12 @@ async function runScan(){
     _issueShowAll=false;
     renderIssues();
     updateDiagBadges();
-    toast(`扫描完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
+    toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
   }catch(e){toast('扫描失败: '+e.message,'error')}
-  finally{btn.disabled=false;btn.textContent='🔍 全量扫描'}
+  finally{
+    if(btn){btn.disabled=false;btn.textContent='🔍 扫描日常目录'}
+    if(deepBtn)deepBtn.disabled=false;
+  }
 }
 
 /* ── Issues with fix actions (redesigned) ── */
@@ -1083,7 +1257,7 @@ function renderIssues(){
 
   // No scan yet
   if(!scanResult&&(!health||(!overlaps.length&&!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML='<div class="empty" style="padding:30px 0">👆 点击「全量扫描」开始分析所有 skill 目录</div>';
+    $('issues-list').innerHTML='<div class="empty" style="padding:30px 0">👆 点击「扫描日常目录」先分析可管理/待复核目录；需要盘点缓存和市场目录时再做全量审计</div>';
     return;
   }
 
@@ -1239,7 +1413,7 @@ function renderIssues(){
         const cm=CAT_META[cat]||CAT_META.unknown;
         h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
           <span style="font-size:12px" title="${cm.label}">${cm.emoji}</span>
-          <div style="flex:1"><div style="font-size:13px;font-weight:500">${s.name}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div></div>
+          <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500">${s.name}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(s.dir)}</div>
           <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
           <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this})">更新</button></div>`;
       });
@@ -1284,23 +1458,27 @@ function renderIssues(){
           const uid='ov-'+Math.random().toString(36).slice(2,8);
           _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
           h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
-            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+            <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
               <span style="font-size:10px;color:var(--text-muted)">▶</span>
               <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
               ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
               <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
             </div>
-            <div style="display:none;padding:6px 12px 10px">
+            ${renderSimilarityReason(g)}
+            <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
               ${g.skills.map(s=>{
                 const m=meta[s]||{};
                 const sDir=m.dir||'';
                 const sKey=s+'|'+sDir;
                 const sCat=_dirCategory(sDir);
                 const sCm=CAT_META[sCat]||CAT_META.unknown;
-                return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+                return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                   <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
                   <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
-                  <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
+                  <div style="min-width:0">
+                    <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
+                    ${renderIssuePath(sDir)}
+                  </div>
                   <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
                   <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
                 </div>`;
@@ -1323,24 +1501,28 @@ function renderIssues(){
         const uid='as-'+Math.random().toString(36).slice(2,8);
         _compareData[uid]=g.skills.map(s=>({name:s,dir:(meta[s]||{}).dir||''}));
         h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
             <span style="font-size:10px;color:var(--text-muted)">▶</span>
             <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill · ${pct}% 相似</span>
             ${catLabel2?`<span style="font-size:10px;color:var(--text-muted)">${catLabel2}</span>`:''}
             <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
           </div>
-          <div style="display:none;padding:6px 12px 10px">
+          ${renderSimilarityReason(g)}
+          <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
             ${g.skills.map(s=>{
               const m=meta[s]||{};
               const sDir=m.dir||'';
               const sKey=s+'|'+sDir;
               const sCat=_dirCategory(sDir);
               const sCm=CAT_META[sCat]||CAT_META.unknown;
-              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+              return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                 <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
                 <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
-                <span style="font-size:9px;color:var(--text-muted)">${m.agent||''}</span>
+                <div style="min-width:0">
+                  <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
+                  <span style="font-size:9px;color:var(--text-muted);margin-left:6px">${m.agent||''}</span>
+                  ${renderIssuePath(sDir)}
+                </div>
                 <button class="btn btn-sm" onclick="showSkill('${esc(s)}','${esc(sDir)}')" style="font-size:9px;padding:2px 6px">查看</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(s)}',this,'${esc(sDir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
@@ -1387,23 +1569,27 @@ function renderIssues(){
         const uid='sn-'+Math.random().toString(36).slice(2,8);
         _compareData[uid]=agentLocs.map(l=>({name:l.name||dup.name,dir:l.dir}));
         h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;margin-bottom:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
             <span style="font-size:10px;color:var(--text-muted)">▶</span>
             <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${agentLocs.length} 个目录</span>
             <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
           </div>
-          <div id="${uid}" style="display:none;padding:6px 12px 10px">
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:6px 10px;background:var(--bg-card-alt);border-top:1px solid var(--border-subtle)">
+            同名原因：目录中存在相同 skill 文件夹名。<span style="color:var(--amber)">同名不代表内容相同，也不代表可删除。</span>
+          </div>
+          <div id="${uid}" class="issue-group-body" style="display:none;padding:6px 12px 10px">
             ${agentLocs.map(loc=>{
               const sn=loc.name||dup.name;
-              const shortDir=loc.dir.replace(/^\/Users\/[^/]+/,'~');
               const sKey=sn+'|'+loc.dir;
               const sCat=_dirCategory(loc.dir);
               const sCm=CAT_META[sCat]||CAT_META.unknown;
-              return `<div style="display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle)">
+              return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                 <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
                 <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;flex:1" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
-                <span style="font-size:9px;color:var(--text-muted);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(loc.dir)}">${shortDir}</span>
+                <div style="min-width:0">
+                  <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
+                  ${renderIssuePath(loc.dir)}
+                </div>
                 <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
               </div>`;
@@ -1593,14 +1779,24 @@ function renderSources(){
   if(!targets.length){$('sources-list').innerHTML='';return}
   try{
   const curTarget=targets.find(t=>t.is_current);
+  const visibleTargets=getVisibleSourceTargets();
+  const hiddenByPolicy=targets.length-visibleTargets.length;
+  const manageCount=targets.filter(t=>sourcePolicy(t)==='manage').length;
+  const reviewCount=targets.filter(t=>sourcePolicy(t)==='review').length;
+  const observeCount=targets.filter(t=>sourcePolicy(t)==='observe'||sourcePolicy(t)==='hidden').length;
   let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
     <h3 style="font-size:14px;font-weight:600">📚 全部目录技能</h3>
-    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
+    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · 日常 ${visibleTargets.length}/${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <span style="flex:1"></span>
+    <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
+      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示可管理和待复核目录">日常视图</button>
+      <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
+    </div>
     <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
   </div>`;
+  h+=`<div class="notice-line"><span>分层结果：${manageCount} 个可管理 · ${reviewCount} 个待复核 · ${observeCount} 个只观察/默认隐藏${_sourceViewMode==='daily'&&hiddenByPolicy>0?` · 已收起 ${hiddenByPolicy} 个缓存/市场/内置目录`:''}</span>${_sourceViewMode==='daily'&&hiddenByPolicy>0?`<button class="btn btn-sm" onclick="setSourceViewMode('deep')">查看全量</button>`:''}</div>`;
   // Quick-switch chips
-  const allDirs=targets.filter(t=>!t.is_current).map(t=>({name:t.name,path:t.path,rel:t.rel,count:t.count,scope:t.scope,agent:t.name}));
+  const allDirs=visibleTargets.filter(t=>!t.is_current).map(t=>({name:t.name,path:t.path,rel:t.rel,count:t.count,scope:t.scope,agent:t.name,policy:t.policy}));
   const favDirsList=allDirs.filter(d=>isFav(d.path));
   const autoDirs=allDirs.filter(d=>!isFav(d.path)).sort((a,b)=>b.count-a.count);
   const chipDirs=favDirsList.length?[...favDirsList,...autoDirs].slice(0,8):autoDirs.slice(0,6);
@@ -1614,10 +1810,11 @@ function renderSources(){
     });
     h+=`</div></div>`;
   }
-  if(targetGroups.length){
+  const visibleGroups=getVisibleSourceGroups();
+  if(visibleGroups.length){
     // Apply saved category order
     if(categoryOrder.length){
-      const ordered=[...targetGroups];
+      const ordered=[...visibleGroups];
       ordered.sort((a,b)=>{
         const ia=categoryOrder.indexOf(a.agent);
         const ib=categoryOrder.indexOf(b.agent);
@@ -1626,18 +1823,18 @@ function renderSources(){
         if(ib===-1)return -1;
         return ia-ib;
       });
-      targetGroups.splice(0,targetGroups.length,...ordered);
+      visibleGroups.splice(0,visibleGroups.length,...ordered);
     }
-    let groupsToRender=targetGroups;
-    if(!_sourcesShowAll&&targetGroups.length>12){
-      const priority=targetGroups.filter(g=>g.dirs.some(t=>t.is_current||isFav(t.path)));
+    let groupsToRender=visibleGroups;
+    if(!_sourcesShowAll&&visibleGroups.length>12){
+      const priority=visibleGroups.filter(g=>g.dirs.some(t=>t.is_current||isFav(t.path)));
       const used=new Set(priority.map(g=>g.agent));
-      const rest=targetGroups.filter(g=>!used.has(g.agent));
+      const rest=visibleGroups.filter(g=>!used.has(g.agent));
       groupsToRender=[...priority,...rest].slice(0,12);
-      const hidden=targetGroups.length-groupsToRender.length;
+      const hidden=visibleGroups.length-groupsToRender.length;
       h+=`<div class="notice-line"><span>默认显示当前/常用和高频应用，共 ${groupsToRender.length} 个；其余 ${hidden} 个应用先收起。</span><button class="btn btn-sm" onclick="_sourcesShowAll=true;renderSources()">显示全部</button></div>`;
-    }else if(_sourcesShowAll&&targetGroups.length>12){
-      h+=`<div class="notice-line"><span>已显示全部 ${targetGroups.length} 个应用分组。</span><button class="btn btn-sm" onclick="_sourcesShowAll=false;renderSources()">回到重点</button></div>`;
+    }else if(_sourcesShowAll&&visibleGroups.length>12){
+      h+=`<div class="notice-line"><span>已显示全部 ${visibleGroups.length} 个应用分组。</span><button class="btn btn-sm" onclick="_sourcesShowAll=false;renderSources()">回到重点</button></div>`;
     }
     groupsToRender.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
@@ -1646,6 +1843,11 @@ function renderSources(){
       const mainDir=g.dirs.find(t=>t.is_current)||g.dirs[0];
       const favPath=favDir?favDir.path:mainDir.path;
       const isExpanded=_expandedSourceAgent===g.agent;
+      const deletableDirs=g.dirs.filter(sourceCanDelete);
+      const policySummary=['manage','review','observe','hidden'].map(p=>{
+        const n=g.dirs.filter(t=>sourcePolicy(t)===p).length;
+        return n?`${POLICY_META[p].label} ${n}`:'';
+      }).filter(Boolean).join(' · ');
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
@@ -1655,10 +1857,11 @@ function renderSources(){
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
             </div>
-            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
+            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills${policySummary?` · ${policySummary}`:''}</div>
           </div>
           <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用目录':'设为常用目录'}">${hasFav?'⭐ 常用目录':'☆ 设为常用目录'}</button>
-          <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 8px;flex-shrink:0" onclick="event.stopPropagation();deleteAgentSkills('${esc(g.agent)}')" title="删除此应用下所有 skills">🗑 删除全部</button>
+          ${deletableDirs.length?`<button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 8px;flex-shrink:0" onclick="event.stopPropagation();deleteAgentSkills('${esc(g.agent)}')" title="只删除可管理目录里的 skills">🗑 删除可管理</button>`
+            :`<span style="font-size:10px;color:var(--text-muted);flex-shrink:0" title="此分组只有待复核/只观察/隐藏目录">不可批量删</span>`}
         </div>
         <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
       if(!isExpanded){
@@ -1680,29 +1883,35 @@ function renderSources(){
         const cat=catKeys[0]||'unknown';
         const cm=CAT_META[cat]||CAT_META.unknown;
         const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
+        const catDeletable=g.dirs.filter(sourceCanDelete);
         const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
         h+=`<div style="border-top:1px solid var(--border-subtle)">
           <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
             <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
             <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${catCount} skills)</span>
             <span style="flex:1"></span>
-            <button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="删除此分类下所有 skills">🗑 删除全部</button>
+            ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
           </div>
           <div id="${catFoldId}">`;
         g.dirs.forEach((t,di)=>{
           const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
           const safeId='sd-'+Math.random().toString(36).slice(2,8);
           const fav=isFav(t.path);
+          const canDelete=sourceCanDelete(t);
+          const layerLabel=sourceLayerLabel(t);
+          const evidence=(t.evidence||[]).join(' · ');
           h+=`<div style="border-top:1px solid var(--border-subtle)">
             <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
               <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
               <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+              <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0" title="${esc(evidence||layerLabel)}">${layerLabel}</span>
+              ${sourcePolicyBadge(t)}
               ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
               <span class="to-count">${t.count}</span>
               ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
               ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
                    :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
-              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此目录下所有 skills">🗑</button>
+              ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
               <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
             </div>
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -1715,26 +1924,32 @@ function renderSources(){
           const cm=CAT_META[cat]||CAT_META.unknown;
           const catDirs=dirsByCat[cat];
           const catCount=catDirs.reduce((s,d)=>s+d.count,0);
+          const catDeletable=catDirs.filter(sourceCanDelete);
           const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
           h+=`<div style="border-top:1px solid var(--border-subtle)">
             <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
               <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
               <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
               <span style="flex:1"></span>
-              <button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="删除此分类下所有 skills">🗑 删除全部</button>
+              ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
             </div>
             <div id="${catFoldId}">`;
           catDirs.forEach(t=>{
             const safeId='sd-'+Math.random().toString(36).slice(2,8);
             const fav=isFav(t.path);
+            const canDelete=sourceCanDelete(t);
+            const layerLabel=sourceLayerLabel(t);
+            const evidence=(t.evidence||[]).join(' · ');
             h+=`<div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:6px 14px 6px 52px" title="${t.rel}">
               <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
               <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
+              <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0" title="${esc(evidence||layerLabel)}">${layerLabel}</span>
+              ${sourcePolicyBadge(t)}
               <span class="to-count">${t.count}</span>
               ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
               ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
                    :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
-              <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此目录下所有 skills">🗑</button>
+              ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
               <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
             </div>
             <div id="${safeId}" style="display:none;padding:4px 14px 8px 64px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
@@ -1745,12 +1960,14 @@ function renderSources(){
       h+=`</div></div>`;
     });
   }else{
-    targets.forEach((t,di)=>{
+    visibleTargets.forEach((t,di)=>{
 
       const safeId='fb-'+di;
       h+=`<div class="target-opt" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" title="${t.rel}">
         <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
         <span style="flex:1;font-size:11px">${t.name}</span>
+        <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${sourceLayerLabel(t)}</span>
+        ${sourcePolicyBadge(t)}
         <span class="to-count">${t.count}</span>
         <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
       </div>
@@ -1974,11 +2191,13 @@ function updateSrcBatchUI(){
 async function deleteCategoryDirs(agentName,category){
   const group=targetGroups.find(g=>g.agent===agentName);
   if(!group)return;
-  const catDirs=group.dirs.filter(d=>(d.category||'unknown')===category);
-  if(!catDirs.length){toast('该分类下无目录');return}
+  const allCatDirs=group.dirs.filter(d=>(d.category||'unknown')===category);
+  const catDirs=allCatDirs.filter(sourceCanDelete);
+  if(!allCatDirs.length){toast('该分类下无目录');return}
+  if(!catDirs.length){toast('该分类只有待复核/只观察目录，未执行删除','error');return}
   const catCount=catDirs.reduce((s,d)=>s+d.count,0);
   const cm=CAT_META[category]||CAT_META.unknown;
-  if(!confirm(`确认删除「${agentName}」下 ${cm.emoji} ${cm.label} 分类的所有 skills？\n\n${catDirs.length} 个目录 · ${catCount} 个 skill\n将移入垃圾站，可恢复。`))return;
+  if(!confirm(`确认删除「${agentName}」下 ${cm.emoji} ${cm.label} 分类里的可管理 skills？\n\n将处理 ${catDirs.length}/${allCatDirs.length} 个目录 · ${catCount} 个 skill\n待复核/只观察/缓存目录不会删除。`))return;
   const items=[];
   for(const d of catDirs){
     try{
@@ -2004,12 +2223,14 @@ async function deleteCategoryDirs(agentName,category){
 async function deleteAgentSkills(agentName){
   const group=targetGroups.find(g=>g.agent===agentName);
   if(!group)return;
-  const dirCount=group.dirs.length;
-  const skillCount=group.total_skills;
-  if(!confirm(`确认删除「${agentName}」下所有 skills？\n\n${dirCount} 个目录 · ${skillCount} 个 skill\n将移入垃圾站，可恢复。`))return;
+  const dirs=group.dirs.filter(sourceCanDelete);
+  if(!dirs.length){toast('该应用分组没有可管理目录，未执行删除','error');return}
+  const dirCount=dirs.length;
+  const skillCount=dirs.reduce((s,d)=>s+d.count,0);
+  if(!confirm(`确认删除「${agentName}」下可管理目录里的 skills？\n\n将处理 ${dirCount}/${group.dirs.length} 个目录 · ${skillCount} 个 skill\n待复核/只观察/缓存目录不会删除。`))return;
   // Collect all skills from all directories under this agent
   const items=[];
-  for(const d of group.dirs){
+  for(const d of dirs){
     try{
       const r=await fetch('/api/source/skills?path='+encodeURIComponent(d.path));
       const data=await r.json();
@@ -2024,12 +2245,14 @@ async function deleteAgentSkills(agentName){
     const d=await r.json();
     if(d.ok){
       toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
-      refreshAfterDelete(group.dirs.map(d=>d.path));
+      refreshAfterDelete(dirs.map(d=>d.path));
       loadTrash();
     }else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败: '+e.message,'error')}
 }
 async function deleteDirSkills(path,count){
+  const t=targets.find(t=>t.path===path);
+  if(!sourceCanDelete(t)){toast('该目录不是可管理目录，未执行删除','error');return}
   if(!confirm(`确认删除此目录下所有 ${count} 个 skill？\n将移入垃圾站，可恢复。`))return;
   // Use cache if available, otherwise fetch
   let list=sourceSkillsCache[path];
@@ -2145,11 +2368,14 @@ function renderSourceSkillList(path,sourceSkills,container){
   let h='<div style="max-height:300px;overflow-y:auto">';
   sourceSkills.forEach(sk=>{
     const isInstalled=installedNames.has(sk.name);
+    const summary=safeDesc(sk.understanding?.summary_zh||sk.description||'暂无中文理解');
+    const tags=[...understandingLabels(sk.understanding?.scenarios,2),...understandingLabels(sk.understanding?.capabilities,2)].slice(0,3);
     h+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent)">
       <span style="font-size:11px;${isInstalled?'color:var(--green)':'color:var(--text-muted)'};min-width:60px">${isInstalled?'✓ 已安装':'○ 未安装'}</span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;font-weight:500;cursor:pointer;color:var(--indigo)" onclick="showSkill('${esc(sk.name)}')">${sk.name}</div>
-        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${safeDesc(sk.description)}</div>
+        <div style="font-size:12px;font-weight:500;cursor:pointer;color:var(--indigo)" onclick="showSkill('${esc(sk.name)}','${esc(path)}')">${sk.name}</div>
+        <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(summary)}">${escapeHtml(summary)}</div>
+        ${tags.length?`<div class="skill-tags">${tags.map(t=>`<span class="skill-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}
       </div>
     </div>`;
   });
@@ -2187,11 +2413,12 @@ async function loadSourceSkillsForSync(path){
       <div style="max-height:50vh;overflow-y:auto;border:1px solid var(--border);border-radius:8px">`;
     sourceSkills.forEach(sk=>{
       const isInstalled=installedNames.has(sk.name);
+      const summary=safeDesc(sk.understanding?.summary_zh||sk.description||'暂无中文理解');
       h+=`<div style="display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent);${isInstalled?'opacity:.5':''}">
         <input type="checkbox" class="sync-check" data-name="${sk.name}" ${isInstalled?'disabled':''} onchange="toggleSyncSkill('${sk.name}')">
         <div style="flex:1;min-width:0">
           <div style="font-size:12px;font-weight:500">${sk.name} ${isInstalled?'<span style="font-size:10px;color:var(--green)">(已安装)</span>':''}</div>
-          <div style="font-size:10px;color:var(--text-muted)">${safeDesc(sk.description)}</div>
+          <div style="font-size:10px;color:var(--text-muted)">${escapeHtml(summary)}</div>
         </div>
       </div>`;
     });
@@ -2326,7 +2553,11 @@ const ALL_CATS=['code-dev','content','image-gen','video-audio','data','web-searc
 async function showSkill(name,dir){
   try{
     const url=dir?`/api/preview?full=1&dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/skill/${name}/content`;
-    const r=await fetch(url);const d=await r.json();
+    const understandUrl=dir?`/api/understand?dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/understand?name=${encodeURIComponent(name)}`;
+    const [d,u]=await Promise.all([
+      fetch(url).then(r=>r.json()),
+      fetch(understandUrl).then(r=>r.json()).catch(()=>null)
+    ]);
     const sk=skills.find(s=>s.name===name);
     const cat=sk?.category||'other';
     const catSrc=sk?.categorySource||'';
@@ -2342,11 +2573,29 @@ async function showSkill(name,dir){
           ${ALL_CATS.map(c=>`<option value="${c}" ${categoryOverrides[name]===c?'selected':''}>${CAT_NAMES[c]||c}</option>`).join('')}
         </select>
       </div>
+      ${renderUnderstandingPanel(u)}
       <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-dim);background:var(--bg-card-alt);padding:12px;border-radius:8px;border:1px solid var(--border);max-height:50vh;overflow-y:auto">${escapeHtml(d.preview||d.content||d.error||'(无内容)')}</pre>
     </div>`;
     $('modal').classList.remove('hidden')
   }
   catch(e){$('modal-title').textContent=name;$('modal-body').textContent='加载失败';$('modal').classList.remove('hidden')}
+}
+function firstMeaningfulLine(text){
+  return (text||'').split('\n').map(l=>l.trim()).find(l=>l&&l.length>8&&!l.startsWith('```'))||'';
+}
+function renderCompareSummary(results){
+  if(!results.length)return '';
+  const lengths=results.map(r=>(r.content||'').length);
+  const uniqueBodies=new Set(results.map(r=>r.content||''));
+  const minLen=Math.min(...lengths),maxLen=Math.max(...lengths);
+  const firstLines=[...new Set(results.map(r=>firstMeaningfulLine(r.content)).filter(Boolean))].slice(0,3);
+  const sentence=uniqueBodies.size===1
+    ? '内容判断：这些 SKILL.md 正文完全相同，主要差异在目录来源。'
+    : `内容判断：正文不完全相同，长度约 ${minLen}-${maxLen} 字符；需要看下方并排原文确认差异。`;
+  return `<div style="font-size:11px;color:var(--text-muted);line-height:1.6;background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:6px;padding:8px;margin-top:8px">
+    ${escapeHtml(sentence)}
+    ${firstLines.length?`<br>首段/标题线索：${firstLines.map(escapeHtml).join(' ｜ ')}`:''}
+  </div>`;
 }
 async function compareSkills(btn,dataKey){
   const container=btn.closest('[style*="border:1px"]')||btn.parentElement.parentElement;
@@ -2364,12 +2613,17 @@ async function compareSkills(btn,dataKey){
         return{dir:l.dir,name:l.name,content:d.preview||d.content||'(无内容)',ok:true};
       }catch(e){return{dir:l.dir,name:l.name,content:'加载失败',ok:false};}
     }));
-    const shortDir=d=>d.replace(/^\/Users\/[^/]+/,'~');
-    let html=`<div class="compare-panel" style="margin-top:8px;display:flex;gap:8px;overflow-x:auto">
+    let html=`<div class="compare-panel">
+    ${renderCompareSummary(results)}
+    <div style="margin-top:8px;display:flex;gap:8px;overflow-x:auto">
       ${results.map(r=>`<div style="flex:1;min-width:280px;border:1px solid var(--border-subtle);border-radius:6px;overflow:hidden">
-        <div style="padding:6px 10px;background:var(--bg-card-alt);font-size:10px;color:var(--text-muted);border-bottom:1px solid var(--border-subtle);white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.dir)}">${shortDir(r.dir)}</div>
+        <div style="padding:6px 10px;background:var(--bg-card-alt);font-size:10px;color:var(--text-muted);border-bottom:1px solid var(--border-subtle)">
+          <div style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${esc(r.dir)}">${escapeHtml(r.dir)}</div>
+          <button class="btn btn-sm" onclick="copyPath('${esc(r.dir)}')" style="font-size:9px;padding:1px 5px;margin-top:4px">复制路径</button>
+        </div>
         <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:10px;line-height:1.5;color:var(--text-dim);padding:8px;max-height:300px;overflow-y:auto;margin:0">${escapeHtml(r.content)}</pre>
       </div>`).join('')}
+      </div>
     </div>`;
     // Insert after the skills list (the second child div)
     const listDiv=container.querySelector('div[style*="display:none"]')||container.children[1];
