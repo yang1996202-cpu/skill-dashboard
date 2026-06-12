@@ -492,6 +492,7 @@ async function loadFavDirs(){
 }
 let globalOverlap=null;
 let scanResult=null; // cached scan results from /api/scan-run
+let cleanupPlan=null; // dry-run governance plan from /api/cleanup-plan
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
@@ -1195,6 +1196,8 @@ function renderScanConfig(){
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <button class="btn btn-primary" id="scan-run-btn" onclick="runScan('daily')">🔍 扫描日常目录</button>
       <button class="btn" id="scan-run-deep-btn" onclick="runScan('deep')">全量审计</button>
+      <button class="btn" id="cleanup-plan-btn" onclick="runCleanupPlan('daily')">🧭 生成清理计划</button>
+      <button class="btn btn-sm" id="cleanup-plan-deep-btn" onclick="runCleanupPlan('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量清理审计</button>
       <span style="font-size:10px;color:var(--text-dim)">默认只扫可管理/待复核目录；全量审计才包含 marketplace、缓存和内置包</span>
     </div>
     ${statusHtml}
@@ -1244,6 +1247,87 @@ async function runScan(scope='daily'){
   }
 }
 
+async function runCleanupPlan(scope='daily'){
+  const btn=$('cleanup-plan-btn');
+  const deepBtn=$('cleanup-plan-deep-btn');
+  if(btn)btn.disabled=true;
+  if(deepBtn)deepBtn.disabled=true;
+  if(btn)btn.textContent=scope==='deep'?'⏳ 全量计划中...':'⏳ 生成计划中...';
+  try{
+    const r=await fetch(`/api/cleanup-plan?scope=${encodeURIComponent(scope)}`).then(r=>r.json());
+    if(r.error){toast(r.error,'error');return}
+    cleanupPlan=r;
+    renderIssues();
+    toast(`${scope==='deep'?'全量清理审计':'清理计划'}完成: ${r.summary?.directories||0} 目录`);
+  }catch(e){toast('清理计划失败: '+e.message,'error')}
+  finally{
+    if(btn){btn.disabled=false;btn.textContent='🧭 生成清理计划'}
+    if(deepBtn)deepBtn.disabled=false;
+  }
+}
+
+function renderCleanupPlan(){
+  if(!cleanupPlan)return '';
+  const s=cleanupPlan.summary||{};
+  const scopeLabel=cleanupPlan.scope==='deep'?'全量清理审计':'日常清理计划';
+  const groupTone={protect:'var(--green)',review:'var(--amber)',observe:'var(--accent)',hide:'var(--text-muted)'};
+  const groupIcon={protect:'🛡️',review:'🔎',observe:'👁️',hide:'🚫'};
+  const riskLabel={low:'低风险',medium:'中风险',high:'高风险'};
+  const ruleHtml=(cleanupPlan.rules||[]).map(r=>`<div style="display:flex;gap:8px;align-items:flex-start;padding:6px 0;border-bottom:1px solid var(--border-subtle)">
+    <span style="font-size:11px;color:var(--accent);font-weight:700;min-width:72px">${escapeHtml(r.name)}</span>
+    <span style="font-size:11px;color:var(--text-muted);line-height:1.5">${escapeHtml(r.text)}</span>
+  </div>`).join('');
+  const groupHtml=(cleanupPlan.groups||[]).map(g=>{
+    const items=(g.items||[]).slice(0,_issueShowAll?999:8);
+    const hidden=Math.max(0,(g.items||[]).length-items.length);
+    return `<div class="card" style="min-width:320px;flex:1;border-left:3px solid ${groupTone[g.key]||'var(--border)'}">
+      <div class="card-head" style="align-items:flex-start">
+        <div>
+          <h3>${groupIcon[g.key]||'📁'} ${escapeHtml(g.label)}</h3>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${escapeHtml(g.intent||'')}</div>
+        </div>
+        <span class="sub">${g.directory_count} 目录 · ${g.skill_count} skills</span>
+      </div>
+      <div style="display:grid;gap:8px">
+        ${items.map(item=>`<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:8px;background:var(--bg-card-alt)">
+          <div style="display:flex;align-items:center;gap:8px;min-width:0">
+            <span class="skill-tag">${escapeHtml(item.policy_label||item.policy)}</span>
+            <span class="skill-tag">${escapeHtml(item.layer_label||item.layer)}</span>
+            <span class="skill-tag" style="color:${item.risk==='high'?'var(--red)':item.risk==='medium'?'var(--amber)':'var(--green)'}">${riskLabel[item.risk]||item.risk}</span>
+            <span style="flex:1"></span>
+            <span style="font-size:11px;color:var(--text-muted)">${item.count} skills</span>
+          </div>
+          <div style="font-size:12px;font-weight:600;color:var(--text);margin-top:6px">${escapeHtml(item.agent)} · ${escapeHtml(item.decision)}</div>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">去向：${escapeHtml(item.next_state)}</div>
+          ${renderIssuePath(item.path)}
+          ${item.reasons?.length?`<div style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:5px">证据：${item.reasons.map(escapeHtml).join(' / ')}</div>`:''}
+          ${item.sample_skills?.length?`<div class="skill-tags" style="margin-top:6px">${item.sample_skills.slice(0,5).map(n=>`<span class="skill-tag">${escapeHtml(n)}</span>`).join('')}</div>`:''}
+        </div>`).join('')}
+        ${hidden?`<div style="font-size:11px;color:var(--text-muted);padding:4px 0">还有 ${hidden} 个目录未展开，点击“显示全量”查看。</div>`:''}
+      </div>
+    </div>`;
+  }).join('');
+  return `<div style="margin-bottom:16px">
+    <div class="card" style="border-left:3px solid var(--green)">
+      <div class="card-head">
+        <div>
+          <h3>🧭 ${scopeLabel}</h3>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">dry-run · 不执行删除 · ${cleanupPlan.duration_ms||0}ms · ${cleanupPlan.generated_at||''}</div>
+        </div>
+        <button class="btn btn-sm" onclick="cleanupPlan=null;renderIssues()">收起计划</button>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:8px;margin-bottom:10px">
+        <div class="scope-card primary"><div class="scope-name"><span>目录</span><b>${s.directories||0}</b></div><div class="scope-desc">${s.skills||0} skills</div></div>
+        <div class="scope-card"><div class="scope-name"><span>保护</span><b>${s.protect||0}</b></div><div class="scope-desc">不做目录级删除</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>复核</span><b>${s.review||0}</b></div><div class="scope-desc">${s.review_skills||0} skills</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>直删</span><b>${s.direct_delete||0}</b></div><div class="scope-desc">当前版本保持 0</div></div>
+      </div>
+      <details><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">查看清理准则</summary><div style="margin-top:8px">${ruleHtml}</div></details>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${groupHtml}</div>
+  </div>`;
+}
+
 /* ── Issues with fix actions (redesigned) ── */
 function renderIssues(){
   renderScanConfig();
@@ -1254,10 +1338,11 @@ function renderIssues(){
   const upstreams=health?.upstream_sources||[];
   const sameName=globalOverlap?.duplicates_same_name||[];
   const agentSimilar=globalOverlap?.agent_similar||{};
+  const planHtml=renderCleanupPlan();
 
   // No scan yet
   if(!scanResult&&(!health||(!overlaps.length&&!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML='<div class="empty" style="padding:30px 0">👆 点击「扫描日常目录」先分析可管理/待复核目录；需要盘点缓存和市场目录时再做全量审计</div>';
+    $('issues-list').innerHTML=planHtml+'<div class="empty" style="padding:30px 0">👆 点击「扫描日常目录」先分析可管理/待复核目录；需要盘点缓存和市场目录时再做全量审计</div>';
     return;
   }
 
@@ -1377,7 +1462,7 @@ function renderIssues(){
   const hiddenActionable=Math.max(0,originalActionable-visibleActionable);
 
   // ── Build HTML ──
-  let h=tabHtml;
+  let h=planHtml+tabHtml;
 
   const hasFilteredData=originalActionable>0;
   if(!hasFilteredData){

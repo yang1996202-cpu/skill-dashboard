@@ -787,6 +787,185 @@ def _classify_skill_dir_detail(dir_path):
     }
 
 
+def _sample_skill_names(skills_dir, limit=6):
+    """Return a small stable sample of skill names in a skills directory."""
+    names = []
+    try:
+        for d in sorted(Path(skills_dir).iterdir(), key=lambda x: x.name.lower()):
+            if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists():
+                names.append(d.name)
+                if len(names) >= limit:
+                    break
+    except Exception:
+        pass
+    return names
+
+
+def _cleanup_plan_item(skills_dir, current_target):
+    """Build one dry-run cleanup decision for a discovered skills directory."""
+    skills_dir = Path(skills_dir)
+    governance = _classify_skill_dir_detail(skills_dir)
+    count = sum(1 for d in skills_dir.iterdir()
+                if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists())
+    agent = _agent_from_path(str(skills_dir))
+    is_current = str(skills_dir) == current_target
+    category = governance.get("category", "unknown")
+    layer = governance.get("layer", "unknown")
+    policy = governance.get("policy", "review")
+
+    if is_current:
+        group = "protect"
+        decision = "保留当前运行目录"
+        next_state = "继续作为当前技能库，只做单个 skill 级别整理"
+        risk = "high"
+        can_execute = False
+        reasons = ["current active target", *governance.get("evidence", [])]
+    elif policy == "manage":
+        group = "protect"
+        decision = "保护用户技能库"
+        next_state = "保留在日常管理；删除必须落到单个 skill 或明确目录"
+        risk = "medium"
+        can_execute = False
+        reasons = ["user-manageable directory", *governance.get("evidence", [])]
+    elif policy == "review":
+        group = "review"
+        decision = "进入人工复核"
+        next_state = "先对比来源、相似度和原文，再决定迁移/删除/保留"
+        risk = "medium"
+        can_execute = False
+        reasons = ["review before destructive cleanup", *governance.get("evidence", [])]
+    elif policy == "observe":
+        group = "observe"
+        decision = "只观察不清理"
+        next_state = "作为市场、插件或宿主来源证据保留，不进日常删除队列"
+        risk = "low"
+        can_execute = False
+        reasons = ["source catalogue or vendor-provided directory", *governance.get("evidence", [])]
+    else:
+        group = "hide"
+        decision = "默认隐藏"
+        next_state = "从日常视图排除；如需释放空间，应由对应包管理器或宿主工具处理"
+        risk = "low"
+        can_execute = False
+        reasons = ["cache/fixture/system artifact", *governance.get("evidence", [])]
+
+    return {
+        "path": str(skills_dir),
+        "rel": str(skills_dir).replace(str(Path.home()), "~"),
+        "agent": agent,
+        "count": count,
+        "sample_skills": _sample_skill_names(skills_dir),
+        "is_current": is_current,
+        "category": category,
+        "layer": layer,
+        "layer_label": governance.get("layer_label", layer),
+        "policy": policy,
+        "policy_label": governance.get("policy_label", policy),
+        "classification_confidence": governance.get("confidence", "medium"),
+        "group": group,
+        "decision": decision,
+        "next_state": next_state,
+        "risk": risk,
+        "can_execute": can_execute,
+        "reasons": list(dict.fromkeys([r for r in reasons if r]))[:5],
+    }
+
+
+def build_cleanup_plan(current_target, scope="daily"):
+    """Build a conservative dry-run cleanup plan.
+
+    The plan is deliberately non-destructive. It explains directory state and
+    recommended next state, but it does not declare anything directly deletable.
+    """
+    started = time.time()
+    all_dirs = _discover_skill_dirs()
+    items = []
+    for skills_dir in all_dirs:
+        try:
+            item = _cleanup_plan_item(skills_dir, current_target)
+        except Exception:
+            continue
+        if item["count"] <= 0:
+            continue
+        if scope == "daily" and item["group"] in ("observe", "hide"):
+            continue
+        items.append(item)
+
+    group_meta = {
+        "protect": {
+            "label": "保护区",
+            "intent": "当前目录和用户技能库。可以整理单个 skill，但不建议做目录级清理。",
+        },
+        "review": {
+            "label": "复核区",
+            "intent": "导入副本、项目目录、App 本地库和备份。这里是清理潜力区，但必须先看证据。",
+        },
+        "observe": {
+            "label": "观察区",
+            "intent": "marketplace、插件来源和宿主内置包。它们解释“从哪里来”，默认不删除。",
+        },
+        "hide": {
+            "label": "隐藏区",
+            "intent": "包管理缓存、测试样例和系统缓存。默认不进日常管理，也不由本工具直接删除。",
+        },
+    }
+    groups = []
+    for key in ("protect", "review", "observe", "hide"):
+        group_items = [item for item in items if item["group"] == key]
+        if not group_items:
+            continue
+        groups.append({
+            "key": key,
+            **group_meta[key],
+            "directory_count": len(group_items),
+            "skill_count": sum(item["count"] for item in group_items),
+            "items": group_items,
+        })
+
+    policy_counts = Counter(item["policy"] for item in items)
+    group_counts = Counter(item["group"] for item in items)
+    summary = {
+        "directories": len(items),
+        "skills": sum(item["count"] for item in items),
+        "protect": group_counts.get("protect", 0),
+        "review": group_counts.get("review", 0),
+        "observe": group_counts.get("observe", 0),
+        "hide": group_counts.get("hide", 0),
+        "review_skills": sum(item["count"] for item in items if item["group"] == "review"),
+        "direct_delete": 0,
+        "policies": dict(policy_counts),
+    }
+    rules = [
+        {
+            "name": "先保护运行目录",
+            "text": "当前目录和用户技能库只能做 skill 级整理，不做目录级一键删除。",
+        },
+        {
+            "name": "复核区先看证据",
+            "text": "导入副本、项目技能、App 本地库和备份只进入复核，不默认删除。",
+        },
+        {
+            "name": "市场/内置包只观察",
+            "text": "marketplace、插件包和宿主内置 skill 解释来源，不作为用户垃圾处理。",
+        },
+        {
+            "name": "缓存默认隐藏",
+            "text": "包管理缓存和测试样例不进入日常视图；清空间应交给对应包管理器或宿主工具。",
+        },
+    ]
+    return {
+        "schema": 1,
+        "mode": "dry-run",
+        "scope": scope,
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "duration_ms": int((time.time() - started) * 1000),
+        "current_target": current_target,
+        "summary": summary,
+        "rules": rules,
+        "groups": groups,
+    }
+
+
 # ── Content hash tracking ──
 
 CONTENT_HASH_FILE = STATE_DIR / "content-hashes.json"
@@ -1878,6 +2057,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_history()
         elif path == "/api/targets":
             self._list_targets()
+        elif path == "/api/cleanup-plan":
+            self._cleanup_plan()
         elif path == "/api/category-order":
             f = STATE_DIR / "category-order.json"
             data = f.read_text(encoding="utf-8") if f.exists() else "[]"
@@ -2197,6 +2378,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
                 {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
+                {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
@@ -2211,6 +2393,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
             ],
         })
+
+    def _cleanup_plan(self):
+        """Return a conservative dry-run cleanup plan for discovered skill dirs."""
+        query = parse_qs(urlparse(self.path).query)
+        scope = query.get("scope", ["daily"])[0]
+        if scope not in ("daily", "deep"):
+            scope = "daily"
+        self._json_response(build_cleanup_plan(self._current_target(), scope))
 
     def _list_source_skills(self):
         """Return skills in a given source directory (for穿透 browsing)."""
