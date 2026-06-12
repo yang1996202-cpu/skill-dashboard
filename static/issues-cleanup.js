@@ -100,18 +100,13 @@ function renderScanConfig(){
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
       <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始整理</button>
-      <span style="font-size:11px;color:var(--text-muted)">先给出可执行推荐；只进垃圾站，不永久删除。相似线索放到高级证据里。</span>
-      <details style="margin-left:auto">
-        <summary style="font-size:11px;color:var(--text-muted);cursor:pointer">高级证据</summary>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:8px">
-          <button class="btn btn-sm" id="cleanup-plan-btn" onclick="runCleanupPlan('daily')">目录依据</button>
-          <button class="btn btn-sm" id="cleanup-plan-deep-btn" onclick="runCleanupPlan('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量目录依据</button>
-          <button class="btn btn-sm" id="scan-run-btn" onclick="runScan('daily')">同名/相似线索</button>
-          <button class="btn btn-sm" id="scan-run-deep-btn" onclick="runScan('deep')">全量线索</button>
-        </div>
-        ${statusHtml}
-      </details>
+      <span style="font-size:11px;color:var(--text-muted)">同名、相似、目录分类都只是初筛线索；人看路径和原文后再勾选处理。</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto">
+        <button class="btn btn-sm" id="evidence-daily-btn" onclick="runEvidenceBundle('daily')">日常线索</button>
+        <button class="btn btn-sm" id="evidence-deep-btn" onclick="runEvidenceBundle('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量线索</button>
+      </div>
     </div>
+    ${statusHtml}
   </div>`;
 }
 
@@ -120,18 +115,41 @@ async function startCleanupFlow(){
   if(btn){btn.disabled=true;btn.textContent='整理中...'}
   const list=$('issues-list');
   if(list){
-    list.innerHTML='<div class="empty" style="padding:30px 0">正在生成推荐清理，当前只做预案，不会移动文件。</div>';
+    list.innerHTML='<div class="empty" style="padding:30px 0">正在汇总日常线索：目录依据、同名/相似和可执行推荐都会合并到这里。</div>';
   }
   try{
-    await runCleanupPlan('daily',{silent:true,deferRender:true});
-    await runExecutionPlan('declutter',{silent:true});
-    toast('整理建议已生成：可直接移入垃圾站，也可先排除个别项');
+    await runEvidenceBundle('daily',{silent:true,execution:true});
+    toast('日常线索已汇总：需要删除的项请先看路径/对比，再勾选处理');
   }finally{
     if(btn){btn.disabled=false;btn.textContent='开始整理'}
   }
 }
 
-async function runScan(scope='daily'){
+async function runEvidenceBundle(scope='daily',opts={}){
+  const dailyBtn=$('evidence-daily-btn');
+  const deepBtn=$('evidence-deep-btn');
+  const startBtn=$('cleanup-start-btn');
+  const label=scope==='deep'?'全量线索':'日常线索';
+  if(dailyBtn)dailyBtn.disabled=true;
+  if(deepBtn)deepBtn.disabled=true;
+  if(startBtn)startBtn.disabled=true;
+  if(scope==='deep'&&deepBtn)deepBtn.textContent='汇总中...';
+  if(scope!=='deep'&&dailyBtn)dailyBtn.textContent='汇总中...';
+  try{
+    await runCleanupPlan(scope,{silent:true,deferRender:true});
+    await runScan(scope,{silent:true,deferRender:true});
+    await runExecutionPlan('declutter',{silent:true});
+    if(!opts.silent)toast(`${label}已汇总：目录依据、同名/相似和推荐清理已合并展示`);
+  }catch(e){
+    toast(`${label}汇总失败: ${e.message}`,'error');
+  }finally{
+    if(dailyBtn){dailyBtn.disabled=false;dailyBtn.textContent='日常线索'}
+    if(deepBtn){deepBtn.disabled=false;deepBtn.textContent='全量线索'}
+    if(startBtn){startBtn.disabled=false;startBtn.textContent='开始整理'}
+  }
+}
+
+async function runScan(scope='daily',opts={}){
   const btn=$('scan-run-btn');
   const deepBtn=$('scan-run-deep-btn');
   if(btn)btn.disabled=true;
@@ -164,9 +182,9 @@ async function runScan(scope='daily'){
     };
     _issueCategoryTab='user';
     _issueShowAll=false;
-    renderIssues();
+    if(!opts.deferRender)renderIssues();
     updateDiagBadges();
-    toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
+    if(!opts.silent)toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
   }catch(e){toast('扫描失败: '+e.message,'error')}
   finally{
     if(btn){btn.disabled=false;btn.textContent='同名/相似线索'}
@@ -357,8 +375,8 @@ function renderExecutionPlan(){
     <div class="card" style="border-left:3px solid var(--red)">
       <div class="card-head">
         <div>
-          <h3>推荐清理</h3>
-          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${strategyLabel} · 推荐项先移入垃圾站，可恢复 · ${executionPlan.generated_at||''}</div>
+          <h3>人工处理区</h3>
+          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${strategyLabel} · 线索先给推荐，人再勾选；只移入垃圾站，可恢复 · ${executionPlan.generated_at||''}</div>
         </div>
         <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="查看本机记录的运行状态，不随 Git 提交">本地决策</button>
         <button class="btn btn-sm" onclick="executionPlan=null;renderIssues()">收起推荐</button>
@@ -366,7 +384,7 @@ function renderExecutionPlan(){
         <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选 skill 移入垃圾站，不永久删除">移入垃圾站 ${executableActions.length}</button>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
-        <div class="scope-card primary"><div class="scope-name"><span>建议移走</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>可勾选处理</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
         <div class="scope-card warn"><div class="scope-name"><span>涉及内容</span><b>${executableSkillCount}</b></div><div class="scope-desc">skills</div></div>
         <div class="scope-card"><div class="scope-name"><span>多端部署</span><b>${deployCount}</b></div><div class="scope-desc">默认保留</div></div>
         <div class="scope-card"><div class="scope-name"><span>已排除</span><b>${excludedCount}</b></div><div class="scope-desc">不会处理</div></div>
@@ -697,8 +715,8 @@ function renderIssues(){
     <div style="display:flex;align-items:center;gap:12px;padding:4px 0">
       <div style="font-size:28px;font-weight:700;color:var(--accent)">${totalFiltered}</div>
       <div style="flex:1">
-        <div style="font-size:13px;font-weight:600">待复核线索</div>
-        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${_issueShowAll?'全量展示':'重点预览'}</div>
+        <div style="font-size:13px;font-weight:600">人工判断线索</div>
+        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${_issueShowAll?'全量展示':'重点预览'} · 初筛不等于可删</div>
       </div>
       ${hiddenActionable?`<button class="btn btn-sm" onclick="_issueShowAll=true;renderIssues()">显示全量 ${totalFiltered}</button>`:`${_issueShowAll?'<button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">回到重点</button>':''}`}
     </div>
@@ -731,7 +749,7 @@ function renderIssues(){
   // ── Similar section (overlaps + per-agent) ──
   const hasSimilar=visibleOverlaps.length||Object.keys(visibleAgentSimilar).length;
   if(hasSimilar){
-    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔍 相似分析</div>
+    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔍 相似线索</div>
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
 
     // Per-directory overlaps — group by source directory/agent
@@ -754,8 +772,8 @@ function renderIssues(){
         const shortDir=dir.replace(/^\/Users\/[^/]+/,'~');
         const dirCat=_dirCategory(dir);
         const dirCm=CAT_META[dirCat]||CAT_META.unknown;
-        h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span></div>
-          <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px;display:flex;align-items:center;gap:4px">${dirCm.emoji} ${shortDir}</div>`;
+        h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+          <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px;display:flex;align-items:center;gap:4px">${dirCm.emoji} ${shortDir} · 相似只提示可能重复，需人工对比后勾选。</div>`;
         groups.forEach(g=>{
           const pct=Math.round((g.score||0)*100);
           const catLabel2=CAT_NAMES[g.category]||g.category||'';
@@ -778,8 +796,9 @@ function renderIssues(){
                 const sKey=s+'|'+sDir;
                 const sCat=_dirCategory(sDir);
                 const sCm=CAT_META[sCat]||CAT_META.unknown;
-                return `<div style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+                return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                   <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
+                  <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
                   <div style="min-width:0">
                     <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
                     ${renderIssuePath(sDir)}
@@ -796,8 +815,8 @@ function renderIssues(){
 
     // Per-agent similar
     Object.entries(visibleAgentSimilar).sort((a,b)=>b[1].length-a[1].length).forEach(([agent,groups])=>{
-      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span></div>
-        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录轻量关键词比对，相似度 ≥30%；用于合并判断，不作为删除依据。</div>`;
+      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>🔍 ${agent} 内相似</h3><span class="sub">${groups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+        <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 跨目录轻量关键词比对，相似度 ≥30%；用于人工合并判断，不作为自动删除依据。</div>`;
       groups.forEach(g=>{
         const pct=Math.round((g.score||0)*100);
         const catLabel2=CAT_NAMES[g.category]||g.category||'';
@@ -820,8 +839,9 @@ function renderIssues(){
               const sKey=s+'|'+sDir;
               const sCat=_dirCategory(sDir);
               const sCm=CAT_META[sCat]||CAT_META.unknown;
-              return `<div style="display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+              return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
                 <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
+                <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(s)}" data-sdir="${esc(sDir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
                 <div style="min-width:0">
                   <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(s)}','${esc(sDir)}')">${s}</span>
                   <span style="font-size:9px;color:var(--text-muted);margin-left:6px">${m.agent||''}</span>
