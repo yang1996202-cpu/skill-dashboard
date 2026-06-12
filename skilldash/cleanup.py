@@ -226,6 +226,20 @@ def _execution_action_for_item(item, strategy="conservative"):
             "requires_confirmation": False,
         }
 
+    if strategy == "declutter" and layer in ("fixture-example",):
+        return {
+            **base,
+            "phase": "candidate",
+            "operation": "move_skills_to_trash",
+            "label": "示例包移入垃圾站",
+            "to_state": "垃圾站/确认后再清空",
+            "why": "这是示例或测试用 skill 包，不像当前宿主正在使用的技能库；适合在全量线索里集中处理。",
+            "rollback": "先移入本工具垃圾站，确认无误后再清空。",
+            "ready": False,
+            "destructive": True,
+            "requires_confirmation": True,
+        }
+
     if group == "hide":
         return {
             **base,
@@ -538,10 +552,13 @@ def _is_cleanup_execute_allowed(skills_dir):
         if not path.is_relative_to(Path.home().resolve()):
             return False, "path outside home"
         governance = _classify_skill_dir_detail(path)
+        layer = governance.get("layer")
+        if layer == "fixture-example":
+            return True, "ok"
         if governance.get("policy") != "review":
             return False, f"policy is {governance.get('policy')}, not review"
-        if governance.get("layer") not in ("backup-snapshot", "imported-copy", "downloaded-package"):
-            return False, f"layer {governance.get('layer')} is not executable candidate"
+        if layer not in ("backup-snapshot", "imported-copy", "downloaded-package"):
+            return False, f"layer {layer} is not executable candidate"
         return True, "ok"
     except Exception as e:
         return False, str(e)

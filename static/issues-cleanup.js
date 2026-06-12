@@ -1065,15 +1065,18 @@ function renderTrash(){
   let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center">
     <h3 style="font-size:14px;font-weight:600">🗑 垃圾站</h3>
     <span style="font-size:11px;color:var(--text-muted)">${trashItems.length} 个已删除项</span>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm btn-danger" onclick="emptyTrash()" ${trashItems.length?'':'disabled'} style="font-size:10px">清空全部</button>
   </div>`;
   if(!trashItems.length){h+='<div class="empty">垃圾站为空</div>';$('trash-list').innerHTML=h;return}
   trashItems.forEach(t=>{
     const dateStr=t.trashed_at?t.trashed_at.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/,'$1-$2-$3 $4:$5:$6'):'';
+    const countLabel=t.kind==='symlink'?'链接入口':`${t.skill_count||1} skill${(t.skill_count||1)>1?'s':''}`;
     h+=`<div class="card" style="margin-bottom:8px">
       <div style="display:flex;align-items:center;gap:10px">
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:13px">${t.name}</div>
-          <div style="font-size:11px;color:var(--text-muted)">原路径: ${t.original_path||'未知'} · ${t.skill_count} skills · ${dateStr}</div>
+          <div style="font-size:11px;color:var(--text-muted)">原路径: ${t.original_path||'未知'} · ${countLabel} · ${dateStr}</div>
         </div>
         <button class="btn btn-sm btn-primary" onclick="restoreTrash('${t.id}')" style="font-size:10px">恢复</button>
         <button class="btn btn-sm btn-danger" onclick="permanentDeleteTrash('${t.id}','${esc(t.name)}')" style="font-size:10px">永久删除</button>
@@ -1098,4 +1101,16 @@ async function permanentDeleteTrash(id,name){
     if(d.ok){toast('已永久删除');await loadTrash()}
     else{toast(d.error||'删除失败','error')}
   }catch{toast('删除失败','error')}
+}
+async function emptyTrash(){
+  if(!trashItems.length)return;
+  if(!confirm(`清空垃圾站中的 ${trashItems.length} 个已删除项？\n\n这一步不可恢复。`))return;
+  try{
+    const r=await fetch('/api/trash',{method:'DELETE'});
+    const d=await r.json();
+    if(d.ok){
+      toast(`已清空垃圾站：${d.deleted||0} 项${d.failed?`，${d.failed} 项失败`:''}`);
+      await loadTrash();
+    }else{toast(d.error||'清空失败','error')}
+  }catch(e){toast('清空失败: '+e.message,'error')}
 }

@@ -8,7 +8,7 @@ async function refreshAfterDelete(changedPaths){
   (changedPaths||[]).forEach(p=>delete sourceSkillsCache[p]);
   // Re-fetch targets
   try{
-    const r=await fetch('/api/targets');
+    const r=await fetch('/api/targets?refresh=1&t='+Date.now());
     const d=await r.json();
     const newTargets=d.targets||[];
     targets.length=0;

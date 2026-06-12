@@ -2,6 +2,7 @@
 """Skill Dashboard — 零依赖本地 WebUI，可视化管理 AI skill 文件"""
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -569,6 +570,20 @@ _targets_cache_ts = 0  # timestamp of last targets cache
 _github_rate_limited = False  # global flag: stop querying after hitting rate limit
 
 
+def _invalidate_runtime_caches():
+    """Invalidate filesystem-derived caches after moving/deleting skills."""
+    global _targets_cache, _targets_cache_ts
+    _targets_cache = None
+    _targets_cache_ts = 0
+    for cache_name in ("global-categories.json",):
+        try:
+            (CACHE_DIR / cache_name).unlink()
+        except FileNotFoundError:
+            pass
+        except Exception:
+            pass
+
+
 def _github_api_get(url):
     """Fetch GitHub API with TTL cache and rate-limit detection.
     Returns (data, rate_limited_bool).
@@ -862,6 +877,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._remove_duplicate_decision()
         elif path == "/api/similar-decision":
             self._remove_similar_decision()
+        elif path == "/api/trash":
+            self._empty_trash()
         elif path.startswith("/api/trash/"):
             # Permanent delete: DELETE /api/trash/{trash_dir_name}
             self._delete_trash(path)
@@ -1518,14 +1535,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     meta = json.loads(meta_path.read_text("utf-8"))
                 except Exception:
                     meta = {"name": d.name, "original_path": "", "trashed_at": ""}
-                # Count skills inside
-                skill_count = sum(1 for c in d.iterdir() if c.is_dir() and (c / "SKILL.md").exists()) if d.is_dir() else 0
+                kind = meta.get("kind", "skill")
+                if kind == "symlink":
+                    payload = d / meta.get("payload", meta.get("name", ""))
+                    skill_count = 1 if payload.exists() or payload.is_symlink() else 0
+                elif (d / "SKILL.md").exists():
+                    skill_count = 1
+                    kind = "skill"
+                else:
+                    skill_count = sum(
+                        1 for c in d.iterdir()
+                        if (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
+                    ) if d.is_dir() else 0
+                    kind = kind or "collection"
                 items.append({
                     "id": d.name,
                     "name": meta.get("name", d.name),
                     "original_path": meta.get("original_path", ""),
                     "trashed_at": meta.get("trashed_at", ""),
                     "skill_count": skill_count,
+                    "kind": kind,
                 })
         self._json_response({"items": items, "count": len(items)})
 
@@ -1545,6 +1574,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             meta = json.loads(meta_path.read_text("utf-8"))
             original = meta.get("original_path", "")
         except Exception:
+            meta = {}
             original = ""
         # Determine restore destination
         if original and Path(original).parent.is_dir():
@@ -1552,14 +1582,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
         else:
             # Fallback: current target
             dest = Path(self._current_target()) / meta.get("name", trash_id.split("_", 2)[-1])
-        if dest.exists():
+        if dest.exists() or dest.is_symlink():
             self._json_response({"error": f"目标已存在: {dest}", "status": "conflict"}, status=409)
             return
         try:
+            if meta.get("kind") == "symlink":
+                payload = meta.get("payload", meta.get("name", ""))
+                payload_path = trash_dir / payload
+                if not payload_path.exists() and not payload_path.is_symlink():
+                    self._json_response({"error": "trashed symlink payload missing"}, status=500)
+                    return
+                shutil.move(str(payload_path), str(dest))
+                shutil.rmtree(trash_dir)
+                _invalidate_runtime_caches()
+                self._json_response({"ok": True, "restored_to": str(dest)})
+                return
             # Remove meta file before moving
             if meta_path.exists():
                 meta_path.unlink()
             shutil.move(str(trash_dir), str(dest))
+            _invalidate_runtime_caches()
             self._json_response({"ok": True, "restored_to": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
@@ -1579,6 +1621,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"ok": True, "deleted": trash_id})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
+
+    def _empty_trash(self):
+        """Permanently delete every item in the project trash."""
+        trash_dir = STATE_DIR.parent / "trash"
+        if not trash_dir.is_dir():
+            self._json_response({"ok": True, "deleted": 0})
+            return
+        deleted, failed, details = 0, 0, []
+        for item in sorted(trash_dir.iterdir()):
+            if not item.is_dir():
+                continue
+            try:
+                shutil.rmtree(item)
+                deleted += 1
+            except Exception as e:
+                failed += 1
+                details.append({"id": item.name, "error": str(e)})
+        self._json_response({"ok": True, "deleted": deleted, "failed": failed, "details": details[:20]})
 
     def _fast_scan(self):
         """Direct Python directory scan — milliseconds instead of bash subprocess."""
@@ -1958,7 +2018,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """
         global _targets_cache, _targets_cache_ts
         now = time.time()
-        if _targets_cache and (now - _targets_cache_ts) < 180:
+        query = parse_qs(urlparse(self.path).query)
+        force_refresh = query.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
+        if _targets_cache and not force_refresh and (now - _targets_cache_ts) < 180:
             # Refresh is_current flag against current target
             current = self._current_target()
             cached = json.loads(json.dumps(_targets_cache))  # deep copy
@@ -2082,8 +2144,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _trash_dir(self, skill_dir):
         """Move a skill directory to trash. Returns trash path."""
-        if skill_dir.is_symlink():
-            raise RuntimeError("refusing to trash symlink skill; remove the link manually")
         trash = STATE_DIR.parent / "trash"
         trash.mkdir(parents=True, exist_ok=True)
         ts = time.strftime("%Y%m%d_%H%M%S")
@@ -2095,10 +2155,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 if not candidate.exists():
                     dest = candidate
                     break
+        if skill_dir.is_symlink():
+            dest.mkdir(parents=True, exist_ok=False)
+            payload = dest / skill_dir.name
+            shutil.move(str(skill_dir), str(payload))
+            meta = {
+                "original_path": str(skill_dir),
+                "trashed_at": ts,
+                "name": skill_dir.name,
+                "kind": "symlink",
+                "payload": skill_dir.name,
+                "link_target": os.readlink(payload) if payload.is_symlink() else "",
+            }
+            (dest / ".trash-meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+            _invalidate_runtime_caches()
+            return dest
         shutil.move(str(skill_dir), str(dest))
         # Save metadata for restore
-        meta = {"original_path": str(skill_dir), "trashed_at": ts, "name": skill_dir.name}
+        meta = {"original_path": str(skill_dir), "trashed_at": ts, "name": skill_dir.name, "kind": "skill"}
         (dest / ".trash-meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        _invalidate_runtime_caches()
         return dest
 
     def _delete_skill(self, name, target=None):
@@ -2110,7 +2186,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": "target must be under home directory"}, status=400)
                 return
             skill_dir = target_path / name
-            if skill_dir.is_dir():
+            if (skill_dir.is_dir() or skill_dir.is_symlink()) and (skill_dir / "SKILL.md").exists():
                 try:
                     dest = self._trash_dir(skill_dir)
                     self._json_response({"ok": True, "name": name, "trashed": str(dest)})
@@ -2161,9 +2237,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 fail += 1
                 details.append({"name": name, "error": "path outside home"})
                 continue
-            skill_dir = target_path / name
-            if not skill_dir.is_dir():
+            safe_name = self._validate_skill_name(name)
+            if not safe_name:
                 fail += 1
+                details.append({"name": name, "error": "invalid skill name"})
+                continue
+            skill_dir = target_path / safe_name
+            if not ((skill_dir.is_dir() or skill_dir.is_symlink()) and (skill_dir / "SKILL.md").exists()):
+                fail += 1
+                details.append({"name": safe_name, "error": "not a skill directory"})
                 continue
             try:
                 dest = self._trash_dir(skill_dir)
