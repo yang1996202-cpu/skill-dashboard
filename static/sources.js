@@ -2,6 +2,106 @@
 /* ── Sources (穿透浏览 + 常用目录) ── */
 let sourceSkillsCache={};
 
+function sourceRuntimeBadge(t){
+  const state=t?.runtime_state;
+  if(!state)return '';
+  const meta={
+    loaded:{label:'已加载',cls:'loaded',desc:'当前宿主 enabledPlugins 已启用，且匹配 installed_plugins 安装路径。'},
+    installed:{label:'已安装未启用',cls:'installed',desc:'installed_plugins 里有记录，但当前没有启用。'},
+    catalog:{label:t?.loaded_elsewhere?'市场目录 · 同名已启用':'市场目录',cls:'catalog',desc:'marketplace 货架目录，不等于当前上下文已加载。'},
+    orphaned:{label:'旧包缓存',cls:'orphaned',desc:'同一插件的旧版本缓存，通常不是当前加载对象。'},
+    stale:{label:'非当前安装包',cls:'orphaned',desc:'同名插件另有当前安装路径，此目录只是遗留副本。'},
+    cache:{label:'插件包缓存',cls:'cache',desc:'位于插件缓存区，未匹配到当前安装记录。'},
+  }[state];
+  if(!meta)return '';
+  return `<span class="source-status ${meta.cls}" title="${esc(t.runtime_reason||meta.desc)}">${meta.label}</span>`;
+}
+
+function sourceMiniChip(label,title){
+  if(!label)return '';
+  return `<span class="source-mini-chip" title="${esc(title||label)}">${label}</span>`;
+}
+
+function sourceDisplayTitle(t){
+  if(t?.plugin_id)return t.plugin_id;
+  return t?.rel||t?.path||'未知目录';
+}
+
+function sourceDisplaySub(t){
+  const ev=(t?.evidence||[]).slice(-2).join(' · ');
+  if(t?.plugin_id){
+    const version=t.plugin_version?` · ${t.plugin_version}`:'';
+    return `${t.rel||t.path}${version}${ev?` · ${ev}`:''}`;
+  }
+  return ev||sourceLayerLabel(t);
+}
+
+function sourceSubLabel(t){
+  const rel=t?.rel||'';
+  if(rel.includes('/backups/'))return '备份';
+  if(rel.includes('/connectors/'))return '连接器';
+  if(rel.includes('/hermes-agent/'))return 'hermes-agent';
+  if(rel.includes('/skills-marketplace/'))return '商店';
+  if(rel.includes('/extensions/'))return '扩展';
+  if(rel.includes('/skill-backups/'))return '旧备份';
+  if(rel.includes('/workspaces/'))return 'workspace';
+  if(rel.includes('/openclaw-imports'))return 'imports';
+  if(rel.includes('gstack'))return 'gstack';
+  return '';
+}
+
+function sourceCategoryHint(catDirs,cat){
+  const loaded=catDirs.filter(t=>t.runtime_state==='loaded').length;
+  const installed=catDirs.filter(t=>t.runtime_state==='installed').length;
+  const catalog=catDirs.filter(t=>t.runtime_state==='catalog').length;
+  const stale=catDirs.filter(t=>['orphaned','stale','cache'].includes(t.runtime_state)).length;
+  const parts=[];
+  if(loaded)parts.push(`已加载 ${loaded}`);
+  if(installed)parts.push(`已安装未启用 ${installed}`);
+  if(catalog)parts.push(`市场目录 ${catalog}`);
+  if(stale)parts.push(`缓存/旧包 ${stale}`);
+  if(parts.length)return parts.join(' · ');
+  if(cat==='marketplace')return '只解释来源，默认不删除';
+  if(cat==='cache')return '缓存、备份和样例默认收起';
+  return '';
+}
+
+function renderSourceDirRow(t,safeId,padLeft){
+  const fav=isFav(t.path);
+  const canDelete=sourceCanDelete(t);
+  const subLabel=sourceSubLabel(t);
+  const layerLabel=sourceLayerLabel(t);
+  const runtime=sourceRuntimeBadge(t);
+  const title=sourceDisplayTitle(t);
+  const sub=sourceDisplaySub(t);
+  const statusBits=[
+    runtime,
+    runtime?sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel):sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel),
+    sourcePolicyBadge(t),
+    t.loaded_elsewhere?sourceMiniChip('同名已启用','这份目录是市场目录，实际启用来自 installed plugin cache。'):'',
+    subLabel?sourceMiniChip(subLabel):'',
+  ].filter(Boolean).join('');
+  return `<div style="border-top:1px solid var(--border-subtle)">
+    <div class="target-opt source-dir-row${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px ${padLeft}px" title="${esc(t.path)}">
+      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
+      <div class="source-dir-main">
+        <div class="source-dir-titleline">
+          <span class="source-dir-title">${esc(title)}</span>
+          <span class="source-dir-badges">${statusBits}</span>
+        </div>
+        <div class="source-dir-sub">${esc(sub)}</div>
+      </div>
+      <span class="to-count">${t.count}</span>
+      ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
+      ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${esc(t.path)}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
+           :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
+      ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
+      <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
+    </div>
+    <div id="${safeId}" style="display:none;padding:4px 14px 8px ${padLeft+20}px;font-size:11px;color:var(--text-muted)">加载中...</div>
+  </div>`;
+}
+
 // Lightweight refresh after delete: re-fetch targets, update counts in-place, preserve expand state
 async function refreshAfterDelete(changedPaths){
   // Clear skill caches for changed paths
@@ -143,37 +243,19 @@ function renderSources(){
         const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
         const catDeletable=g.dirs.filter(sourceCanDelete);
         const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
+        const catHint=sourceCategoryHint(g.dirs,cat);
         h+=`<div style="border-top:1px solid var(--border-subtle)">
           <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
             <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
             <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${catCount} skills)</span>
+            ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
             <span style="flex:1"></span>
             ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
           </div>
           <div id="${catFoldId}">`;
         g.dirs.forEach((t,di)=>{
-          const subLabel=t.rel.includes('/backups/')?'备份':t.rel.includes('/connectors/')?'连接器':t.rel.includes('/hermes-agent/')?'hermes-agent':t.rel.includes('/skills-marketplace/')?'商店':t.rel.includes('/extensions/')?'扩展':t.rel.includes('/skill-backups/')?'旧备份':t.rel.includes('/workspaces/')?'workspace':t.rel.includes('/openclaw-imports')?'imports':t.rel.includes('gstack')?'gstack':'';
           const safeId='sd-'+Math.random().toString(36).slice(2,8);
-          const fav=isFav(t.path);
-          const canDelete=sourceCanDelete(t);
-          const layerLabel=sourceLayerLabel(t);
-          const evidence=(t.evidence||[]).join(' · ');
-          h+=`<div style="border-top:1px solid var(--border-subtle)">
-            <div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px 36px" title="${t.rel}">
-              <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
-              <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
-              <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0" title="${esc(evidence||layerLabel)}">${layerLabel}</span>
-              ${sourcePolicyBadge(t)}
-              ${subLabel?`<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${subLabel}</span>`:''}
-              <span class="to-count">${t.count}</span>
-              ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
-              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
-                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
-              ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
-              <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
-            </div>
-            <div id="${safeId}" style="display:none;padding:4px 14px 8px 56px;font-size:11px;color:var(--text-muted)">加载中...</div>
-          </div>`;
+          h+=renderSourceDirRow(t,safeId,36);
         });
         h+=`</div></div>`;
       }else{
@@ -184,33 +266,19 @@ function renderSources(){
           const catCount=catDirs.reduce((s,d)=>s+d.count,0);
           const catDeletable=catDirs.filter(sourceCanDelete);
           const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
+          const catHint=sourceCategoryHint(catDirs,cat);
           h+=`<div style="border-top:1px solid var(--border-subtle)">
             <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
               <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
               <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
+              ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
               <span style="flex:1"></span>
               ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
             </div>
             <div id="${catFoldId}">`;
           catDirs.forEach(t=>{
             const safeId='sd-'+Math.random().toString(36).slice(2,8);
-            const fav=isFav(t.path);
-            const canDelete=sourceCanDelete(t);
-            const layerLabel=sourceLayerLabel(t);
-            const evidence=(t.evidence||[]).join(' · ');
-            h+=`<div class="target-opt${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:6px 14px 6px 52px" title="${t.rel}">
-              <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
-              <span style="flex:1;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.rel}</span>
-              <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0" title="${esc(evidence||layerLabel)}">${layerLabel}</span>
-              ${sourcePolicyBadge(t)}
-              <span class="to-count">${t.count}</span>
-              ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
-              ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
-                   :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${t.path}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
-              ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
-              <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
-            </div>
-            <div id="${safeId}" style="display:none;padding:4px 14px 8px 64px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
+            h+=renderSourceDirRow(t,safeId,52);
           });
           h+=`</div></div>`;
         });
@@ -221,15 +289,7 @@ function renderSources(){
     visibleTargets.forEach((t,di)=>{
 
       const safeId='fb-'+di;
-      h+=`<div class="target-opt" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" title="${t.rel}">
-        <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
-        <span style="flex:1;font-size:11px">${t.name}</span>
-        <span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);padding:0 4px;border-radius:3px;flex-shrink:0">${sourceLayerLabel(t)}</span>
-        ${sourcePolicyBadge(t)}
-        <span class="to-count">${t.count}</span>
-        <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
-      </div>
-      <div id="${safeId}" style="display:none;padding:4px 14px 8px 36px;font-size:11px;color:var(--text-muted)">加载中...</div>`;
+      h+=renderSourceDirRow(t,safeId,10);
     });
   }
   $('sources-list').innerHTML=h;

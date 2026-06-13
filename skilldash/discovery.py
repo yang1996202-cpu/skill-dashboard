@@ -9,6 +9,188 @@ from pathlib import Path
 from .classification import _classify_skill, _read_skill_description
 from .paths import CACHE_DIR, STATE_DIR
 
+_CLAUDE_PLUGIN_STATE = None
+_CLAUDE_PLUGIN_STATE_SIG = None
+
+
+def _read_json_file(path, default):
+    try:
+        return json.loads(path.read_text("utf-8"))
+    except Exception:
+        return default
+
+
+def _norm_path(value):
+    if not value:
+        return ""
+    try:
+        return str(Path(value).expanduser()).replace("\\", "/").rstrip("/")
+    except Exception:
+        return str(value).replace("\\", "/").rstrip("/")
+
+
+def _load_claude_plugin_state():
+    """Read non-sensitive Claude plugin runtime state.
+
+    settings.json may contain env secrets, so this helper only returns
+    enabledPlugins and installed plugin paths.
+    """
+    global _CLAUDE_PLUGIN_STATE, _CLAUDE_PLUGIN_STATE_SIG
+    home = Path.home()
+    watched_files = (
+        home / ".claude" / "settings.json",
+        home / ".claude" / "plugins" / "installed_plugins.json",
+        home / ".claude" / "plugins" / "known_marketplaces.json",
+    )
+    sig = []
+    for file_path in watched_files:
+        try:
+            sig.append((str(file_path), file_path.stat().st_mtime_ns))
+        except OSError:
+            sig.append((str(file_path), 0))
+    sig = tuple(sig)
+    if _CLAUDE_PLUGIN_STATE is not None and _CLAUDE_PLUGIN_STATE_SIG == sig:
+        return _CLAUDE_PLUGIN_STATE
+
+    settings = _read_json_file(home / ".claude" / "settings.json", {})
+    installed_file = _read_json_file(home / ".claude" / "plugins" / "installed_plugins.json", {})
+    marketplaces = _read_json_file(home / ".claude" / "plugins" / "known_marketplaces.json", {})
+
+    enabled = {
+        key for key, value in (settings.get("enabledPlugins") or {}).items()
+        if value
+    }
+    installed = {}
+    installed_by_path = []
+    for plugin_id, records in (installed_file.get("plugins") or {}).items():
+        if not isinstance(records, list):
+            continue
+        installed[plugin_id] = []
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            install_path = _norm_path(record.get("installPath"))
+            item = {
+                "plugin_id": plugin_id,
+                "install_path": install_path,
+                "version": record.get("version") or "",
+                "scope": record.get("scope") or "",
+                "git_commit": record.get("gitCommitSha") or "",
+            }
+            installed[plugin_id].append(item)
+            if install_path:
+                installed_by_path.append(item)
+
+    _CLAUDE_PLUGIN_STATE = {
+        "enabled": enabled,
+        "installed": installed,
+        "installed_by_path": installed_by_path,
+        "marketplaces": marketplaces if isinstance(marketplaces, dict) else {},
+    }
+    _CLAUDE_PLUGIN_STATE_SIG = sig
+    return _CLAUDE_PLUGIN_STATE
+
+
+def _claude_plugin_context(dir_path):
+    """Return package/runtime metadata for Claude plugin skill directories."""
+    path = Path(dir_path).expanduser()
+    home = Path.home()
+    try:
+        rel_parts = path.relative_to(home).parts
+    except Exception:
+        return {}
+    if len(rel_parts) < 4 or rel_parts[0] != ".claude" or rel_parts[1] != "plugins":
+        return {}
+
+    section = rel_parts[2]
+    state = _load_claude_plugin_state()
+    enabled = state["enabled"]
+    installed = state["installed"]
+    installed_by_path = state["installed_by_path"]
+    norm = _norm_path(path)
+
+    def installed_record_for_path():
+        for record in installed_by_path:
+            install_path = record.get("install_path", "")
+            if install_path and (norm == install_path or norm.startswith(install_path + "/")):
+                return record
+        return None
+
+    if section == "cache" and len(rel_parts) >= 6:
+        marketplace = rel_parts[3]
+        plugin = rel_parts[4]
+        version = rel_parts[5]
+        plugin_id = f"{plugin}@{marketplace}"
+        package_root = home.joinpath(*rel_parts[:6])
+        record = installed_record_for_path()
+        same_plugin_installed = bool(installed.get(plugin_id))
+        is_enabled = plugin_id in enabled
+        is_orphaned = (package_root / ".orphaned_at").exists()
+
+        if is_orphaned:
+            runtime_state = "orphaned"
+            runtime_label = "旧包缓存"
+            runtime_reason = "同一插件的旧安装包，当前不会作为上下文加载。"
+        elif record and is_enabled:
+            runtime_state = "loaded"
+            runtime_label = "已启用插件"
+            runtime_reason = "settings.json enabledPlugins 已启用，且路径匹配 installed_plugins。"
+        elif record:
+            runtime_state = "installed"
+            runtime_label = "已安装未启用"
+            runtime_reason = "installed_plugins 记录了该安装包，但 enabledPlugins 未启用。"
+        elif same_plugin_installed:
+            runtime_state = "stale"
+            runtime_label = "非当前安装包"
+            runtime_reason = "同名插件另有 installed_plugins 记录，此目录不是当前安装路径。"
+        else:
+            runtime_state = "cache"
+            runtime_label = "插件包缓存"
+            runtime_reason = "位于 Claude 插件缓存目录，但未匹配到当前安装记录。"
+
+        return {
+            "package_role": "claude-plugin-cache",
+            "runtime_state": runtime_state,
+            "runtime_label": runtime_label,
+            "runtime_reason": runtime_reason,
+            "plugin_id": plugin_id,
+            "plugin_name": plugin,
+            "plugin_marketplace": marketplace,
+            "plugin_version": record.get("version") if record else version,
+            "plugin_scope": record.get("scope") if record else "",
+            "package_root": str(package_root),
+            "loaded_elsewhere": False,
+        }
+
+    if section == "marketplaces" and len(rel_parts) >= 4:
+        marketplace = rel_parts[3]
+        plugin = ""
+        package_root = home.joinpath(*rel_parts[:4])
+        if len(rel_parts) >= 6 and rel_parts[4] in ("plugins", "external_plugins"):
+            plugin = rel_parts[5]
+            package_root = home.joinpath(*rel_parts[:6])
+        elif len(rel_parts) >= 5 and rel_parts[4] != "skills":
+            plugin = rel_parts[4]
+            package_root = home.joinpath(*rel_parts[:5])
+        plugin_id = f"{plugin}@{marketplace}" if plugin else marketplace
+        loaded_elsewhere = plugin_id in enabled if plugin else False
+        return {
+            "package_role": "claude-plugin-marketplace",
+            "runtime_state": "catalog",
+            "runtime_label": "市场目录",
+            "runtime_reason": "本地 marketplace 货架目录，不等于当前会话已加载。"
+                              + (" 同名插件已在安装包中启用。" if loaded_elsewhere else ""),
+            "plugin_id": plugin_id,
+            "plugin_name": plugin,
+            "plugin_marketplace": marketplace,
+            "plugin_version": "",
+            "plugin_scope": "",
+            "package_root": str(package_root),
+            "loaded_elsewhere": loaded_elsewhere,
+        }
+
+    return {}
+
 
 def _agent_from_path(dir_path):
     """Infer agent name from directory path."""
@@ -103,6 +285,7 @@ def _classify_skill_dir_detail(dir_path):
     policy = "manage"
     confidence = "medium"
     evidence = []
+    plugin_context = _claude_plugin_context(path)
 
     def mark(new_layer, new_policy, reason, new_category=None, new_confidence="high"):
         nonlocal layer, policy, category, confidence
@@ -188,6 +371,16 @@ def _classify_skill_dir_detail(dir_path):
     if any(sig in p for sig in ("openclaw-imports", "/imports/")):
         mark("imported-copy", "review", "imported skills bucket", "cross-copy")
 
+    if plugin_context:
+        role = plugin_context.get("package_role")
+        if role == "claude-plugin-cache":
+            mark("plugin-package", "observe", "Claude plugin installed/cache package", "marketplace")
+        elif role == "claude-plugin-marketplace":
+            mark("plugin-marketplace", "observe", "Claude plugin marketplace catalogue", "marketplace")
+        runtime_label = plugin_context.get("runtime_label")
+        if runtime_label:
+            evidence.append(runtime_label)
+
     policy_labels = {
         "manage": "可管理",
         "review": "待复核",
@@ -204,11 +397,12 @@ def _classify_skill_dir_detail(dir_path):
         "backup-snapshot": "备份/快照",
         "package-cache": "包管理缓存",
         "plugin-cache": "插件缓存",
+        "plugin-package": "已安装插件包",
         "plugin-marketplace": "插件市场/目录",
         "vendor-bundled": "宿主内置包",
         "fixture-example": "测试样例",
     }
-    return {
+    detail = {
         "category": category,
         "layer": layer,
         "layer_label": layer_labels.get(layer, layer),
@@ -219,6 +413,9 @@ def _classify_skill_dir_detail(dir_path):
         "is_deletable": policy == "manage",
         "is_daily": policy in ("manage", "review"),
     }
+    if plugin_context:
+        detail.update(plugin_context)
+    return detail
 
 def _sample_skill_names(skills_dir, limit=6):
     """Return a small stable sample of skill names in a skills directory."""

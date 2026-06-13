@@ -3,7 +3,8 @@
 ## GBrain / GStack
 
 - 这个项目优先使用 GBrain MCP/HTTP 能力查询项目记忆；不要把本地 `gbrain search` CLI 当首选入口。
-- 如果 MCP/HTTP 不可用，才使用 CLI fallback；若 CLI 出现 PGLite/WASM 初始化失败或命令不在 PATH，记录失败原因后继续用仓库证据推进，不要反复重试同一条 CLI。
+- GBrain HTTP 单例由 launchd 管理，健康检查用 `curl -sS http://127.0.0.1:14243/health`；不要探测旧端口 `14242`。
+- 如果 MCP/HTTP 不可用，才使用 CLI fallback。Codex 桌面执行环境的 `PATH` 可能不包含 `~/.local/bin`，不要直接跑裸 `gbrain`；用稳定入口 `/Users/yang/.local/bin/gbrain`，这个 wrapper 会补上 bun 路径。当前机器上 CLI search 可能触发 macOS/PGLite/WASM 初始化失败；这种情况下只用 `doctor` 记录健康状态，继续用 HTTP/MCP 或仓库证据推进，不要反复重试同一条 CLI。
 - 新的清理准则、扫描分类口径、可恢复删除边界等长期决策，应该同步写进本文件或项目文档，避免后续 Agent 重复摸索。
 
 ## 是什么
