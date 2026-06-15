@@ -775,8 +775,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(detect_cross_dir_overlaps())
         elif path == "/api/scan-result":
             self._serve_json(CACHE_DIR / "scan-result.json")
-        elif path == "/api/favorite-dirs":
-            self._get_favorite_dirs()
         elif path == "/api/trash":
             self._list_trash()
         elif path.startswith("/api/trash/") and path.endswith("/restore"):
@@ -831,8 +829,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._batch_delete()
         elif path == "/api/custom-sources":
             self._add_custom_source()
-        elif path == "/api/favorite-dirs":
-            self._save_favorite_dirs()
         elif path == "/api/category-order":
             try:
                 length = int(self.headers.get('Content-Length', 0))
@@ -1537,31 +1533,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             paths.remove(rm_path)
             self._save_custom_sources(paths)
         self._json_response({"ok": True, "paths": paths})
-
-    # ── Favorite directories ──
-
-    def _get_favorite_dirs(self):
-        """Return user-pinned favorite directory paths."""
-        fav_file = STATE_DIR / "favorite-dirs.json"
-        try:
-            return self._json_response(json.loads(fav_file.read_text("utf-8")))
-        except Exception:
-            self._json_response([])
-
-    def _save_favorite_dirs(self):
-        """Save user-pinned favorite directory paths."""
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8') if length else '[]'
-        try:
-            dirs = json.loads(body)
-        except Exception:
-            return self._json_response({"error": "invalid JSON"}, status=400)
-        if not isinstance(dirs, list):
-            return self._json_response({"error": "expected array"}, status=400)
-        STATE_DIR.mkdir(parents=True, exist_ok=True)
-        (STATE_DIR / "favorite-dirs.json").write_text(
-            json.dumps(dirs, ensure_ascii=False, indent=2), encoding="utf-8")
-        self._json_response({"ok": True, "count": len(dirs)})
 
     # ── Trash ──
 
