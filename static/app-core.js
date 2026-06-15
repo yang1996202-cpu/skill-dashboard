@@ -38,7 +38,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'全部目录技能',trash:'垃圾站'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'全部目录技能',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
 }
