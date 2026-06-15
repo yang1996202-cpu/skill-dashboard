@@ -43,6 +43,7 @@
     <div class="nav-group">
       <div class="nav-group-label">回收</div>
       <div class="nav-item" onclick="switchView('trash',this)"><span>🗑</span> 垃圾站 <span class="badge" id="badge-trash">0</span></div>
+      <div class="nav-item" onclick="switchView('history',this); loadHistory()"><span>📜</span> 操作日志</div>
     </div>
   </aside>
 
@@ -102,6 +103,8 @@
       <div class="view" id="view-sources"><div id="sources-list"></div></div>
       <!-- Trash -->
       <div class="view" id="view-trash"><div id="trash-list"></div></div>
+      <!-- History -->
+      <div class="view" id="view-history"><div id="history-list"></div></div>
     </div>
   </div>
 </div>

@@ -957,6 +957,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except FileNotFoundError:
             self._json_response([])
 
+    def _log_history(self, op, paths=None, count=0, source="", status="ok", detail=None):
+        """Append one operation entry to history.jsonl.
+
+        Args:
+            op: operation key, e.g. move_to_trash, empty_trash, restore, delete
+            paths: list of affected paths (relative to home when possible)
+            count: number of skills/items affected
+            source: which UI/API triggered the action
+            status: ok|failed|blocked
+            detail: arbitrary extra context
+        """
+        try:
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            hist_file = STATE_DIR / "history.jsonl"
+            home = str(Path.home())
+            rel_paths = []
+            for p in (paths or []):
+                s = str(p)
+                if s.startswith(home):
+                    s = "~" + s[len(home):]
+                rel_paths.append(s)
+            entry = {
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                "op": op,
+                "source": source,
+                "status": status,
+                "count": count,
+                "paths": rel_paths[:50],
+                "detail": detail or {},
+            }
+            with hist_file.open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        except Exception:
+            pass
+
     def _serve_skill_content(self, name):
         """Return SKILL.md content for a named skill."""
         target = self._current_target()
@@ -1375,6 +1410,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "changed_paths": changed_paths,
             "details": details,
         })
+        self._log_history(
+            "move_to_trash",
+            paths=changed_paths,
+            count=ok,
+            source="cleanup_execute",
+            status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"),
+            detail={"failed": fail, "skipped": skipped, "actions": len(actions)},
+        )
 
     def _list_source_skills(self):
         """Return skills in a given source directory (for穿透 browsing)."""
@@ -1595,6 +1638,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 shutil.move(str(payload_path), str(dest))
                 shutil.rmtree(trash_dir)
                 _invalidate_runtime_caches()
+                self._log_history("restore", paths=[str(dest)], count=1, source="trash_restore", status="ok", detail={"trash_id": trash_id, "kind": "symlink"})
                 self._json_response({"ok": True, "restored_to": str(dest)})
                 return
             # Remove meta file before moving
@@ -1602,6 +1646,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 meta_path.unlink()
             shutil.move(str(trash_dir), str(dest))
             _invalidate_runtime_caches()
+            self._log_history("restore", paths=[str(dest)], count=1, source="trash_restore", status="ok", detail={"trash_id": trash_id, "kind": "skill"})
             self._json_response({"ok": True, "restored_to": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
@@ -1616,8 +1661,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not trash_dir.is_dir():
             self._json_response({"error": "not found"}, status=404)
             return
+        original = ""
+        try:
+            meta = json.loads((trash_dir / ".trash-meta.json").read_text("utf-8"))
+            original = meta.get("original_path", "")
+        except Exception:
+            pass
         try:
             shutil.rmtree(trash_dir)
+            self._log_history("delete", paths=[original or str(trash_dir)], count=1, source="trash_delete", status="ok", detail={"trash_id": trash_id, "permanent": True})
             self._json_response({"ok": True, "deleted": trash_id})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
@@ -1629,15 +1681,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"ok": True, "deleted": 0})
             return
         deleted, failed, details = 0, 0, []
+        item_names = []
         for item in sorted(trash_dir.iterdir()):
             if not item.is_dir():
                 continue
+            item_names.append(item.name)
             try:
                 shutil.rmtree(item)
                 deleted += 1
             except Exception as e:
                 failed += 1
                 details.append({"id": item.name, "error": str(e)})
+        self._log_history("empty_trash", paths=[str(trash_dir)], count=deleted, source="trash_empty", status="ok" if failed == 0 else "partial", detail={"failed": failed, "items": item_names[:50]})
         self._json_response({"ok": True, "deleted": deleted, "failed": failed, "details": details[:20]})
 
     def _fast_scan(self):
@@ -2014,13 +2069,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _list_targets(self):
         """List all discovered skill directories grouped by agent.
         Uses shared _discover_skill_dirs for directory discovery.
-        Results are cached for 3 minutes to avoid repeated filesystem scans.
+        Results are cached for 60 seconds to avoid repeated filesystem scans.
         """
         global _targets_cache, _targets_cache_ts
         now = time.time()
         query = parse_qs(urlparse(self.path).query)
         force_refresh = query.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
-        if _targets_cache and not force_refresh and (now - _targets_cache_ts) < 180:
+        if _targets_cache and not force_refresh and (now - _targets_cache_ts) < 60:
             # Refresh is_current flag against current target
             current = self._current_target()
             cached = json.loads(json.dumps(_targets_cache))  # deep copy
@@ -2189,6 +2244,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if (skill_dir.is_dir() or skill_dir.is_symlink()) and (skill_dir / "SKILL.md").exists():
                 try:
                     dest = self._trash_dir(skill_dir)
+                    self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "target": target})
                     self._json_response({"ok": True, "name": name, "trashed": str(dest)})
                 except Exception as e:
                     self._json_response({"error": str(e)}, status=500)
@@ -2202,6 +2258,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         try:
             dest = self._trash_dir(skill_dir)
+            self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name})
             self._json_response({"ok": True, "name": name, "trashed": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)
@@ -2255,6 +2312,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 details.append({"name": name, "error": str(e)})
 
         self._json_response({"ok": True, "deleted": ok, "failed": fail, "details": details})
+        moved_paths = [str(Path(item.get("target", "")).expanduser().resolve() / item.get("name", "")) for item in items[:500] if item.get("target") and item.get("name")]
+        self._log_history("move_to_trash", paths=moved_paths, count=ok, source="batch_delete", status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"), detail={"failed": fail, "total": len(items)})
 
     def _resolve_skill_dir(self, name):
         """Find skill directory on disk. Uses current target first."""

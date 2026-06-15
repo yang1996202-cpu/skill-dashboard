@@ -115,11 +115,16 @@ async function startCleanupFlow(){
   if(btn){btn.disabled=true;btn.textContent='整理中...'}
   const list=$('issues-list');
   if(list){
-    list.innerHTML='<div class="empty" style="padding:30px 0">正在汇总日常线索：目录依据、同名/相似和可执行推荐都会合并到这里。</div>';
+    list.innerHTML='<div class="empty" style="padding:30px 0">正在生成目录依据和可执行推荐...</div>';
   }
   try{
-    await runEvidenceBundle('daily',{silent:true,execution:true});
-    toast('日常线索已汇总：需要删除的项请先看路径/对比，再勾选处理');
+    // 快速路径：只跑目录治理计划和执行预案，不跑同名/相似/上游的慢扫描
+    // 同名、相似、上游证据通过「日常线索」「全量线索」按钮单独触发
+    await runCleanupPlan('daily');
+    await runExecutionPlan('declutter');
+    toast('推荐清理已生成：需要删除的项请先看路径/对比，再勾选处理');
+  }catch(e){
+    toast('整理失败: '+e.message,'error');
   }finally{
     if(btn){btn.disabled=false;btn.textContent='开始整理'}
   }

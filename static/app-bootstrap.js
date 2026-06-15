@@ -16,6 +16,8 @@ async function refreshData(){
       });
       render();
     }
+    // Force refresh targets so newly installed skills appear immediately
+    await updateTargetSelector(true);
     await loadSourcesFallback();
     toast('已刷新');
   }catch(e){toast('刷新失败','error')}
@@ -32,9 +34,9 @@ document.addEventListener('click',e=>{
 });
 
 let targetGroups=[];
-async function updateTargetSelector(){
+async function updateTargetSelector(force=false){
   let data;
-  try{data=await fetch('/api/targets').then(r=>r.json())}catch{return}
+  try{data=await fetch('/api/targets'+(force?'?refresh=1':'')).then(r=>r.json())}catch{return}
   targets=data.targets||data;
   targetGroups=data.groups||[];
   const cur=targets.find(t=>t.is_current)||targets[0];
@@ -300,4 +302,50 @@ function showCopyToast(msg){
   if(!t){t=document.createElement('div');t.className='copy-toast';document.body.appendChild(t);}
   t.textContent=msg;t.classList.add('show');
   setTimeout(function(){t.classList.remove('show');},2200);
+}
+
+/* ── Operation history ── */
+const HISTORY_OP_LABELS={
+  move_to_trash:'移入垃圾站',
+  empty_trash:'清空垃圾站',
+  delete:'永久删除',
+  restore:'恢复'
+};
+const HISTORY_STATUS_LABELS={
+  ok:'成功',
+  partial:'部分成功',
+  failed:'失败',
+  blocked:'被阻止'
+};
+async function loadHistory(){
+  const list=$('history-list');
+  if(!list)return;
+  list.innerHTML='<div class="empty" style="padding:30px 0">加载中...</div>';
+  try{
+    const rows=await fetch('/api/history').then(r=>r.json()).catch(()=>[]);
+    if(!rows||!rows.length){
+      list.innerHTML='<div class="empty" style="padding:30px 0">暂无操作记录</div>';
+      return;
+    }
+    const html=rows.slice().reverse().map(row=>{
+      const op=HISTORY_OP_LABELS[row.op]||row.op;
+      const status=HISTORY_STATUS_LABELS[row.status]||row.status;
+      const statusColor=row.status==='ok'?'var(--green)':row.status==='partial'?'var(--amber)':'var(--red)';
+      const paths=(row.paths||[]).map(p=>`<div style="font-family:monospace;font-size:11px;color:var(--text-dim);line-height:1.5;padding:2px 0;word-break:break-all">${escapeHtml(p)}</div>`).join('');
+      const detail=row.detail?`<details style="margin-top:6px"><summary style="font-size:11px;color:var(--text-muted);cursor:pointer">详情</summary><pre style="font-size:10px;color:var(--text-dim);background:var(--bg-card-alt);padding:8px;border-radius:6px;margin-top:6px;overflow:auto;max-height:200px">${escapeHtml(JSON.stringify(row.detail,null,2))}</pre></details>`:'';
+      return `<div class="card" style="margin-bottom:10px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+          <span style="font-size:12px;font-weight:600;color:var(--text)">${escapeHtml(op)}</span>
+          <span style="font-size:11px;color:${statusColor};font-weight:500">${escapeHtml(status)}</span>
+          <span style="font-size:11px;color:var(--text-muted)">${row.count||0} 项</span>
+          <span style="font-size:11px;color:var(--text-muted);margin-left:auto">${escapeHtml(row.ts||'')}</span>
+        </div>
+        <div style="margin-top:4px">${paths}</div>
+        ${detail}
+      </div>`;
+    }).join('');
+    list.innerHTML=`<div style="margin-bottom:12px;font-size:12px;color:var(--text-muted)">最近 ${rows.length} 条操作记录（最多保留 50 条）</div>${html}`;
+  }catch(e){
+    list.innerHTML='<div class="empty" style="padding:30px 0;color:var(--red)">加载失败：'+escapeHtml(e.message)+'</div>';
+  }
 }
