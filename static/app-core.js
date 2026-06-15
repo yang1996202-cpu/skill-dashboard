@@ -261,19 +261,19 @@ function renderWorkbench(){
   const queue=[
     {
       title:m.outdated?`更新过时来源`:'先扫日常目录',
-      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析可管理/待复核目录；缓存和市场包留给全量审计',
+      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析用户、项目和导入副本目录；缓存和市场包留给全量审计',
       count:m.outdated||'未扫描',
       action:'issues'
     },
     {
-      title:m.sameName?`合并同名重复`:'检查当前常用目录',
+      title:m.sameName?`合并同名重复`:'检查当前目录重复',
       desc:m.sameName?`先看用户自建和跨 Agent 副本，不急着碰 marketplace`:`${currentName} 当前 ${skills.length} 个 skills`,
       count:m.sameName||skills.length,
       action:m.sameName?'issues':'skills'
     },
     {
-      title:m.similar?`复核相似功能`:'整理目录地图',
-      desc:m.similar?`相似不等于重复，默认只展示需要人工复核的线索`:`${targetGroups.length||'?'} 个应用分组，按常用目录优先`,
+      title:m.similar?`复核相似功能`:'浏览全部来源',
+      desc:m.similar?`相似不等于重复，默认只展示需要人工复核的线索`:`${targetGroups.length||'?'} 个应用分组，按 skill 数排序`,
       count:m.similar||targetGroups.length||'--',
       action:m.similar?'issues':'sources'
     }
@@ -302,9 +302,9 @@ function renderWorkbench(){
     <div class="card">
       <div class="card-head"><h3>整理范围</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>可管理目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">当前/用户技能库，可作为日常整理对象。</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>待复核目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">导入副本和项目级 skill，先对比再删除。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>观察/隐藏</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>用户/项目目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">用户自建和项目级 skill 库，可作为日常整理对象。</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>导入/副本目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">跨 Agent 副本和导入 skill，先对比再删除。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>生态/缓存目录</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
       </div>
     </div>
   </div>`;

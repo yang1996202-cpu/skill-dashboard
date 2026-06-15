@@ -34,6 +34,12 @@ document.addEventListener('click',e=>{
 });
 
 let targetGroups=[];
+let _targetDropdownView=localStorage.getItem('sd-target-dropdown-view')||'daily';
+function setTargetDropdownView(mode){
+  _targetDropdownView=mode==='deep'?'deep':'daily';
+  localStorage.setItem('sd-target-dropdown-view',_targetDropdownView);
+  updateTargetSelector();
+}
 async function updateTargetSelector(force=false){
   let data;
   try{data=await fetch('/api/targets'+(force?'?refresh=1':'')).then(r=>r.json())}catch{return}
@@ -46,15 +52,22 @@ async function updateTargetSelector(force=false){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
+  // Filter groups/dirs by daily/deep view; current dir always shown
+  const dailyFilter=d=>_targetDropdownView==='deep'||sourceIsDaily(d);
+  const displayGroups=targetGroups.map(g=>({...g,dirs:g.dirs.filter(dailyFilter),total_skills:g.dirs.filter(dailyFilter).reduce((s,d)=>s+d.count,0)})).filter(g=>g.dirs.length);
   // Sort groups by total skill count descending; current group first
-  const sorted=[...targetGroups].sort((a,b)=>{
+  const sorted=[...displayGroups].sort((a,b)=>{
     const aCur=a.dirs.some(t=>t.is_current);
     const bCur=b.dirs.some(t=>t.is_current);
     if(aCur!==bCur)return aCur?-1:1;
     return b.total_skills-a.total_skills;
   });
+  const viewToggle=`<div style="display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--border-subtle);background:var(--bg-card-alt)">
+    <button class="btn btn-sm ${_targetDropdownView==='daily'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('daily')" style="flex:1;font-size:11px">日常目录</button>
+    <button class="btn btn-sm ${_targetDropdownView==='deep'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('deep')" style="flex:1;font-size:11px">全量目录</button>
+  </div>`;
   // Show all groups with directories sorted by skill count
-  $('target-dropdown').innerHTML=sorted.map(g=>{
+  $('target-dropdown').innerHTML=viewToggle+sorted.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
     const visibleDirs=[...g.dirs].sort((a,b)=>{
       const aCur=a.is_current?1:0;

@@ -1,6 +1,12 @@
 
-/* ── Sources (穿透浏览 + 常用目录) ── */
+/* ── Sources (穿透浏览 + 来源目录) ── */
 let sourceSkillsCache={};
+let _sourceSortMode=localStorage.getItem('sd-source-sort')||'default'; // default | skills | dirs
+function setSourceSortMode(mode){
+  _sourceSortMode=mode||'default';
+  localStorage.setItem('sd-source-sort',_sourceSortMode);
+  renderSources();
+}
 
 function sourceRuntimeBadge(t){
   const state=t?.runtime_state;
@@ -138,6 +144,11 @@ function renderSources(){
     <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <span style="flex:1"></span>
     <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
+      <button class="btn btn-sm ${_sourceSortMode==='default'?'btn-primary':''}" onclick="setSourceSortMode('default')" title="按拖拽自定义顺序">默认</button>
+      <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
+      <button class="btn btn-sm ${_sourceSortMode==='dirs'?'btn-primary':''}" onclick="setSourceSortMode('dirs')" title="按目录数量降序">按目录</button>
+    </div>
+    <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
       <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
       <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
     </div>
@@ -146,8 +157,12 @@ function renderSources(){
   h+=`<div class="notice-line"><span>当前视图：${visibleTargets.length}/${targets.length} 个目录${_sourceViewMode==='daily'&&hiddenByPolicy>0?` · 已收起 ${hiddenByPolicy} 个缓存/市场/内置目录`:''}</span>${_sourceViewMode==='daily'&&hiddenByPolicy>0?`<button class="btn btn-sm" onclick="setSourceViewMode('deep')">查看全量</button>`:''}</div>`;
   const visibleGroups=getVisibleSourceGroups();
   if(visibleGroups.length){
-    // Apply saved category order
-    if(categoryOrder.length){
+    // Apply sort: default uses saved drag order; skills/dirs override it
+    if(_sourceSortMode==='skills'){
+      visibleGroups.sort((a,b)=>b.total_skills-a.total_skills);
+    }else if(_sourceSortMode==='dirs'){
+      visibleGroups.sort((a,b)=>b.dirs.length-a.dirs.length);
+    }else if(categoryOrder.length){
       const ordered=[...visibleGroups];
       ordered.sort((a,b)=>{
         const ia=categoryOrder.indexOf(a.agent);

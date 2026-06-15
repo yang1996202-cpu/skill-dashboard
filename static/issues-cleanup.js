@@ -18,10 +18,10 @@ const CAT_META={
   unknown:{emoji:'❓',label:'未知',color:'#9ca3af'},
 };
 const POLICY_META={
-  manage:{emoji:'✅',label:'可管理',desc:'当前/用户技能库，可作为日常整理对象'},
-  review:{emoji:'🟡',label:'待复核',desc:'导入副本或项目目录，先看内容再处理'},
-  observe:{emoji:'👁',label:'只观察',desc:'市场/内置包，默认不做删除动作'},
-  hidden:{emoji:'🚫',label:'默认隐藏',desc:'缓存/测试样例，只在全量审计里看'},
+  manage:{emoji:'⭐',label:'用户/项目',desc:'用户自建或项目级技能库，可作为日常整理对象'},
+  review:{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 副本或导入目录，先看内容再处理'},
+  observe:{emoji:'📦',label:'生态目录',desc:'marketplace 或内置包，默认不做删除动作'},
+  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在全量审计里看'},
 };
 const LAYER_FALLBACK={
   user:'用户技能库',
@@ -88,7 +88,7 @@ function renderScanConfig(){
     const scopeLabel=scanResult.scope==='daily'?'日常扫描':scanResult.scope==='deep'?'全量审计':'自定义扫描';
     const pc=scanResult.scanned_policy_counts||{};
     const policyText=(pc.manage||pc.review||pc.observe||pc.hidden)
-      ? ` · 可管理 ${pc.manage||0} / 待复核 ${pc.review||0} / 观察隐藏 ${(pc.observe||0)+(pc.hidden||0)}`
+      ? ` · 用户/项目 ${pc.manage||0} / 导入/副本 ${pc.review||0} / 生态/缓存 ${(pc.observe||0)+(pc.hidden||0)}`
       : '';
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
       <span>上次线索扫描：${scopeLabel}</span>
