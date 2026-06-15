@@ -73,7 +73,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | 端点 | 方法 | 作用 |
 |---|---|---|
 | `/api/fast-scan` | GET | 列出当前目标库的 skills |
-| `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组） |
+| `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
@@ -149,12 +149,29 @@ screenshots/       — 截图（当前只有 .gitkeep）
 ### 前端数据流
 
 - `loadData()` 只跑轻量 API（fast-scan、targets、global-stats）
+- `/api/targets` 通过 `fetchTargets(force)` 读取，前端带 3 分钟 TTL 内存缓存，避免重复请求
+- `render()` 改为视图感知：只有在「全部目录技能」页激活时才渲染 sources 列表，其他视图只更新 sidebar/badge/stats
+- `updateTargetSelector(force, scope)` 按 `dropdown/sidebar/full` 控制渲染范围，避免切换目录或视图时级联重渲染
+- 目录切换后只做乐观 `is_current` 更新 + 本地缓存同步，不再强制刷新 `/api/targets`
 - 扫描结果通过 `runScan()` 调 `/api/scan-run`，映射到 `health` 和 `globalOverlap` 变量
 - `renderIssues()` 复用现有的卡片渲染逻辑
 - `loadCachedScanResult()` 在页面加载时检查缓存
 
+### 目录视图抽象层
+
+sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同一套目录视图抽象（定义在 `static/issues-cleanup.js`）：
+
+- `filterGroupsByView(groups, viewMode)`：按 daily/deep 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
+- `sortGroupsByCurrentAndSize(groups)`：current 组优先，再按 skill 数量降序
+- `sourceIsDaily(t)` 决定目录是否进入日常视图；当前目录始终可见
+- `fetchTargets(force)` 为 `/api/targets` 提供前端 3 分钟 TTL 缓存
+- 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，sidebar 与 sources 页切换同步
+
 ### 全部目录技能页 UX
 
+- **视图与 sidebar 同步**：日常/全量视图状态和 sidebar「目录技能切换」下拉共用 `_sourceViewMode`，切换一边另一边同步
+- **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（日常视图 / 全量审计）使用 `.segmented-control` 组件，与 sidebar 下拉风格一致
+- **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
 - **分类折叠**：每个 Agent 卡片内，按 5 分类（user/marketplace/cache/cross-copy/project）分组显示，每个分类标题可点击展开/收起
 - **分类一键删除**：分类子标题有 `🗑 删除全部` 按钮，调 `deleteCategoryDirs()`
 - **Agent 级操作**：卡片头部有 `🗑 删除全部` 按钮和 `⭐ 常用目录` 切换
