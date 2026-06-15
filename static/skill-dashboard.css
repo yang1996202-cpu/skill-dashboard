@@ -65,6 +65,13 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .btn-sm{padding:3px 8px;font-size:11px}
 .btn:disabled{opacity:.3;cursor:not-allowed}
 
+/* ── Segmented control ── */
+.segmented-control{display:inline-flex;gap:2px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px}
+.segmented-control .btn{border:none;background:transparent;color:var(--text-dim)}
+.segmented-control .btn:hover{background:var(--bg-hover);color:var(--text)}
+.segmented-control .btn.btn-primary{background:var(--accent);color:#fff;border-radius:6px}
+.segmented-control .btn-sm{padding:3px 10px;font-size:11px}
+
 /* ── Stats — Linear data grid ── */
 .stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;margin-bottom:24px;background:var(--border);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
 .stat{background:var(--bg-card);padding:18px 20px;transition:background .15s ease}
@@ -90,9 +97,9 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .queue-count{font-size:12px;font-weight:650;color:var(--text-dim);font-variant-numeric:tabular-nums}
 .scope-grid{display:grid;gap:8px}
 .scope-card{padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt)}
-.scope-card.primary{border-color:color-mix(in srgb,var(--green) 28%,var(--border));background:var(--green-bg)}
-.scope-card.warn{border-color:color-mix(in srgb,var(--amber) 28%,var(--border));background:var(--amber-bg)}
-.scope-card.muted{background:var(--bg-card);color:var(--text-dim)}
+.scope-card.primary{border-color:color-mix(in srgb,var(--green) 40%,var(--border));background:var(--green-bg)}
+.scope-card.warn{border-color:color-mix(in srgb,var(--amber) 40%,var(--border));background:var(--amber-bg)}
+.scope-card.muted{border-color:var(--border);background:var(--bg-card);color:var(--text-dim);opacity:.92}
 .scope-name{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:650;margin-bottom:4px}
 .scope-name b{font-size:16px;font-variant-numeric:tabular-nums}
 .scope-desc{font-size:11px;color:var(--text-muted);line-height:1.45}

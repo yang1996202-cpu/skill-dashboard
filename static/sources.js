@@ -108,8 +108,7 @@ async function refreshAfterDelete(changedPaths){
   (changedPaths||[]).forEach(p=>delete sourceSkillsCache[p]);
   // Re-fetch targets
   try{
-    const r=await fetch('/api/targets?refresh=1&t='+Date.now());
-    const d=await r.json();
+    const d=await fetchTargets(true);
     const newTargets=d.targets||[];
     targets.length=0;
     targets.push(...newTargets);
@@ -138,23 +137,27 @@ function renderSources(){
   try{
   const curTarget=targets.find(t=>t.is_current);
   const visibleTargets=getVisibleSourceTargets();
-  const hiddenByPolicy=targets.length-visibleTargets.length;
-  let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
-    <h3 style="font-size:14px;font-weight:600">📚 全部目录技能</h3>
-    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
-    <span style="flex:1"></span>
-    <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
-      <button class="btn btn-sm ${_sourceSortMode==='default'?'btn-primary':''}" onclick="setSourceSortMode('default')" title="按拖拽自定义顺序">默认</button>
-      <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
-      <button class="btn btn-sm ${_sourceSortMode==='dirs'?'btn-primary':''}" onclick="setSourceSortMode('dirs')" title="按目录数量降序">按目录</button>
+  let h=`<div style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <h3 style="font-size:15px;font-weight:600">📚 全部目录技能</h3>
+      <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录</span>
+      <span style="flex:1"></span>
+      <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
     </div>
-    <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
-      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
-      <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--text-muted)">当前: ${curTarget?curTarget.name:'-'}</span>
+      <span style="flex:1"></span>
+      <div class="segmented-control">
+        <button class="btn btn-sm ${_sourceSortMode==='default'?'btn-primary':''}" onclick="setSourceSortMode('default')" title="按拖拽自定义顺序">默认排序</button>
+        <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
+        <button class="btn btn-sm ${_sourceSortMode==='dirs'?'btn-primary':''}" onclick="setSourceSortMode('dirs')" title="按目录数量降序">按目录</button>
+      </div>
+      <div class="segmented-control">
+        <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
+        <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
+      </div>
     </div>
-    <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
   </div>`;
-  h+=`<div class="notice-line"><span>当前视图：${visibleTargets.length}/${targets.length} 个目录${_sourceViewMode==='daily'&&hiddenByPolicy>0?` · 已收起 ${hiddenByPolicy} 个缓存/市场/内置目录`:''}</span>${_sourceViewMode==='daily'&&hiddenByPolicy>0?`<button class="btn btn-sm" onclick="setSourceViewMode('deep')">查看全量</button>`:''}</div>`;
   const visibleGroups=getVisibleSourceGroups();
   if(visibleGroups.length){
     // Apply sort: default uses saved drag order; skills/dirs override it

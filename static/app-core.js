@@ -41,6 +41,10 @@ function switchView(v,el){
   const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'全部目录技能',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
+  if(v==='sources'){
+    renderSources();
+    updateTargetSelector(false,'full');
+  }
 }
 function goView(v){
   switchView(v,document.querySelector(`.nav-item[onclick*="${v}"]`));
@@ -49,6 +53,9 @@ function goView(v){
 /* ── Data ── */
 let globalStats=null;
 let globalOverlap=null;
+let _targetsCache=null;
+let _targetsCacheTs=0;
+const TARGETS_CACHE_TTL=3*60*1000; // 3 minutes, matching backend TTL
 let scanResult=null; // cached scan results from /api/scan-run
 let cleanupPlan=null; // dry-run governance plan from /api/cleanup-plan
 let executionPlan=null; // executable-shaped preview; does not run actions
@@ -63,6 +70,21 @@ let _sourceViewMode=localStorage.getItem('sd-source-view')||'daily'; // daily | 
 let _expandedSourceAgent=null;
 async function loadGlobalOverlap(){
   try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
+}
+
+async function fetchTargets(force=false){
+  const now=Date.now();
+  if(!force&&_targetsCache&&(now-_targetsCacheTs)<TARGETS_CACHE_TTL){
+    return _targetsCache;
+  }
+  try{
+    const data=await fetch('/api/targets'+(force?'?refresh=1':'')).then(r=>r.json());
+    _targetsCache=data;
+    _targetsCacheTs=now;
+    return data;
+  }catch(e){
+    return _targetsCache;
+  }
 }
 
 function isVisibleSimilarityGroup(g){
@@ -125,19 +147,16 @@ async function loadData(){
   // Fallback: load targets as sources (directory list)
   if(!scan?.sources?.length){
     try{
-      const td=await fetch('/api/targets').then(r=>r.json());
+      const td=await fetchTargets();
       const ts=td.targets||td;
       if(ts?.length){
         targets=ts;targetGroups=td.groups||[];
         scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
-        // Only rebuild if sources view hasn't been rendered yet by render()
-        // (avoids destroying user's expanded state during slow /api/targets)
-        if(!$('sources-list')?.children?.length){
+        if($('view-sources').classList.contains('active')){
           renderSources();
+          updateTargetSelector(false,'full');
         }else{
-          // Just update badges and sidebar — don't touch the DOM
-          $('badge-sources').textContent=td.groups?.length||ts.length;
-          updateTargetSelector();
+          updateTargetSelector(false,'sidebar');
         }
         renderStats();renderWorkbench();
       }
@@ -177,8 +196,14 @@ function classifySkillJS(name,desc){
 
 function render(){
   renderTarget();renderStats();renderWorkbench();renderCategories();
-  renderIssues();renderSources();renderSkillsList();
-  updateTargetSelector();
+  renderIssues();renderSkillsList();
+  const onSources=$('view-sources')?.classList.contains('active');
+  if(onSources){
+    renderSources();
+    updateTargetSelector(false,'full');
+  }else{
+    updateTargetSelector(false,'sidebar');
+  }
   $('badge-skills').textContent=skills.length;
   // badge-sources is maintained by updateTargetSelector / loadData targets fetch
   updateDiagBadges();
@@ -302,9 +327,9 @@ function renderWorkbench(){
     <div class="card">
       <div class="card-head"><h3>整理范围</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>用户/项目目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">用户自建和项目级 skill 库，可作为日常整理对象。</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>导入/副本目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">跨 Agent 副本和导入 skill，先对比再删除。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>生态/缓存目录</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>🛡️ 用户/项目目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">用户自建和项目级 skill 库，可作为日常整理对象。</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>🔎 导入/副本目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">跨 Agent 副本和导入 skill，先对比再删除。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>👁️ 生态/缓存目录</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
       </div>
     </div>
   </div>`;

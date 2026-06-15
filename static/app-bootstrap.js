@@ -34,15 +34,13 @@ document.addEventListener('click',e=>{
 });
 
 let targetGroups=[];
-let _targetDropdownView=localStorage.getItem('sd-target-dropdown-view')||'daily';
 function setTargetDropdownView(mode){
-  _targetDropdownView=mode==='deep'?'deep':'daily';
-  localStorage.setItem('sd-target-dropdown-view',_targetDropdownView);
-  updateTargetSelector();
+  setSourceViewMode(mode);
+  updateTargetSelector(false,'dropdown');
 }
-async function updateTargetSelector(force=false){
+async function updateTargetSelector(force=false,scope='full'){
   let data;
-  try{data=await fetch('/api/targets'+(force?'?refresh=1':'')).then(r=>r.json())}catch{return}
+  try{data=await fetchTargets(force)}catch{return}
   targets=data.targets||data;
   targetGroups=data.groups||[];
   const cur=targets.find(t=>t.is_current)||targets[0];
@@ -52,22 +50,16 @@ async function updateTargetSelector(force=false){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  // Filter groups/dirs by daily/deep view; current dir always shown
-  const dailyFilter=d=>_targetDropdownView==='deep'||sourceIsDaily(d);
-  const displayGroups=targetGroups.map(g=>({...g,dirs:g.dirs.filter(dailyFilter),total_skills:g.dirs.filter(dailyFilter).reduce((s,d)=>s+d.count,0)})).filter(g=>g.dirs.length);
-  // Sort groups by total skill count descending; current group first
-  const sorted=[...displayGroups].sort((a,b)=>{
-    const aCur=a.dirs.some(t=>t.is_current);
-    const bCur=b.dirs.some(t=>t.is_current);
-    if(aCur!==bCur)return aCur?-1:1;
-    return b.total_skills-a.total_skills;
-  });
-  const viewToggle=`<div style="display:flex;gap:4px;padding:8px;border-bottom:1px solid var(--border-subtle);background:var(--bg-card-alt)">
-    <button class="btn btn-sm ${_targetDropdownView==='daily'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('daily')" style="flex:1;font-size:11px">日常目录</button>
-    <button class="btn btn-sm ${_targetDropdownView==='deep'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('deep')" style="flex:1;font-size:11px">全量目录</button>
+  // Filter/sort groups through shared abstraction
+  const displayGroups=sortGroupsByCurrentAndSize(filterGroupsByView(targetGroups,_sourceViewMode));
+  const viewToggle=`<div style="padding:8px;border-bottom:1px solid var(--border-subtle);background:var(--bg-card-alt)">
+    <div class="segmented-control" style="width:100%;display:flex">
+      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('daily')" style="flex:1">日常视图</button>
+      <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('deep')" style="flex:1">全量审计</button>
+    </div>
   </div>`;
   // Show all groups with directories sorted by skill count
-  $('target-dropdown').innerHTML=viewToggle+sorted.map(g=>{
+  $('target-dropdown').innerHTML=viewToggle+displayGroups.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
     const visibleDirs=[...g.dirs].sort((a,b)=>{
       const aCur=a.is_current?1:0;
@@ -96,7 +88,9 @@ async function updateTargetSelector(force=false){
     </div>`;
   }).join('');
   $('badge-sources').textContent=targetGroups.length||targets.length;
-  renderStats();renderWorkbench();renderSources();
+  if(scope==='dropdown') return;
+  renderStats();renderWorkbench();
+  if(scope==='full') renderSources();
 }
 
 function toggleTgSub(id,head){
@@ -126,21 +120,15 @@ async function switchTarget(path){
         s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'
       }else{s.categorySource='frontmatter'}
     });
+    // Optimistically mark the new current target and sync the cache so dropdown stays correct
+    targets.forEach(t=>{t.is_current=(t.path===path)});
+    if(_targetsCache&&_targetsCache.targets){
+      _targetsCache.targets.forEach(t=>{t.is_current=(t.path===path)});
+    }
     render();
     toast(`已切换 (${d.duration_ms}ms)`);
-    // Refresh targets + groups so dashboard/sources stay in sync
-    try{
-      const td=await fetch('/api/targets').then(r=>r.json());
-      const ts=td.targets||td;
-      if(ts?.length){
-        targets=ts;targetGroups=td.groups||[];
-        if(!scan?.sources?.length) scan.sources=ts.map(t=>({name:t.name,display_name:t.name,path:t.rel||t.path,count:t.count}));
-        renderSources();
-        $('badge-sources').textContent=targetGroups.length||ts.length;
-        renderStats();renderWorkbench();
-      }
-    }catch(e){}
-    // Refresh global stats
+    updateTargetSelector(false,'sidebar');
+    // Refresh global stats asynchronously
     fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
       if(gs){globalStats=gs;renderStats();renderWorkbench();renderCategories()}
     });

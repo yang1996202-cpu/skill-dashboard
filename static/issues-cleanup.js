@@ -56,24 +56,40 @@ function sourcePolicyBadge(t){
   const meta=POLICY_META[p]||POLICY_META.review;
   return `<span style="font-size:9px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);padding:1px 5px;border-radius:999px;white-space:nowrap" title="${esc(meta.desc)}">${meta.emoji} ${meta.label}</span>`;
 }
+
+// Shared directory list abstraction
+function filterGroupsByView(groups,viewMode){
+  const isDeep=viewMode==='deep';
+  const filtered=groups.map(g=>{
+    const dirs=isDeep?g.dirs:g.dirs.filter(sourceIsDaily);
+    return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+(d.count||0),0)};
+  }).filter(g=>g.dirs.length);
+  return filtered;
+}
+function sortGroupsByCurrentAndSize(groups){
+  return [...groups].sort((a,b)=>{
+    const aCur=a.dirs.some(t=>t.is_current);
+    const bCur=b.dirs.some(t=>t.is_current);
+    if(aCur!==bCur)return aCur?-1:1;
+    return b.total_skills-a.total_skills;
+  });
+}
 function getVisibleSourceTargets(){
-  if(_sourceViewMode==='deep')return targets;
-  return targets.filter(sourceIsDaily);
+  return filterGroupsByView(targetGroups,_sourceViewMode).flatMap(g=>g.dirs);
 }
 function getVisibleSourceGroups(){
-  const base=_sourceViewMode==='deep'
-    ? targetGroups
-    : targetGroups.map(g=>{
-        const dirs=g.dirs.filter(sourceIsDaily);
-        return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+d.count,0)};
-      }).filter(g=>g.dirs.length);
-  return base;
+  return filterGroupsByView(targetGroups,_sourceViewMode);
 }
 function setSourceViewMode(mode){
   _sourceViewMode=mode==='deep'?'deep':'daily';
   localStorage.setItem('sd-source-view',_sourceViewMode);
   _sourcesShowAll=false;
-  renderSources();
+  if($('view-sources')?.classList.contains('active')){
+    renderSources();
+  }
+  if(typeof updateTargetSelector==='function'){
+    updateTargetSelector(false,'dropdown');
+  }
 }
 
 function renderScanConfig(){
