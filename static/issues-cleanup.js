@@ -46,7 +46,7 @@ function sourceLayerLabel(t){
 }
 function sourceIsDaily(t){
   const p=sourcePolicy(t);
-  return p==='manage'||p==='review'||t?.is_current||isFav(t?.path);
+  return p==='manage'||p==='review'||t?.is_current;
 }
 function sourceCanDelete(t){
   return sourcePolicy(t)==='manage'&&t?.is_deletable!==false;

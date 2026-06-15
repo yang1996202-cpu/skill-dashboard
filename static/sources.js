@@ -67,8 +67,6 @@ function sourceCategoryHint(catDirs,cat){
 }
 
 function renderSourceDirRow(t,safeId,padLeft){
-  const fav=isFav(t.path);
-  const canDelete=sourceCanDelete(t);
   const subLabel=sourceSubLabel(t);
   const layerLabel=sourceLayerLabel(t);
   const runtime=sourceRuntimeBadge(t);
@@ -77,13 +75,12 @@ function renderSourceDirRow(t,safeId,padLeft){
   const statusBits=[
     runtime,
     runtime?sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel):sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel),
-    sourcePolicyBadge(t),
     t.loaded_elsewhere?sourceMiniChip('同名已启用','这份目录是市场目录，实际启用来自 installed plugin cache。'):'',
     subLabel?sourceMiniChip(subLabel):'',
   ].filter(Boolean).join('');
   return `<div style="border-top:1px solid var(--border-subtle)">
     <div class="target-opt source-dir-row${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px ${padLeft}px" title="${esc(t.path)}">
-      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${fav?'⭐':t.scope==='global'?'🌐':'📁'}</span>
+      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
       <div class="source-dir-main">
         <div class="source-dir-titleline">
           <span class="source-dir-title">${esc(title)}</span>
@@ -93,9 +90,6 @@ function renderSourceDirRow(t,safeId,padLeft){
       </div>
       <span class="to-count">${t.count}</span>
       ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
-      ${fav?`<span style="display:inline-flex;align-items:center;gap:0;margin-left:2px;flex-shrink:0"><span class="btn btn-sm" style="font-size:9px;padding:2px 6px;border-color:var(--amber);color:var(--amber);cursor:default">⭐ 常用目录</span><button class="btn btn-sm btn-danger" onclick="event.stopPropagation();toggleFav('${esc(t.path)}')" style="font-size:9px;padding:2px 4px;border-left:none;border-top-left-radius:0;border-bottom-left-radius:0" title="取消常用目录">✕</button></span>`
-           :`<button class="btn btn-sm" onclick="event.stopPropagation();toggleFav('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:2px;flex-shrink:0">设为常用目录</button>`}
-      ${canDelete?`<button class="btn btn-sm btn-danger" onclick="event.stopPropagation();deleteDirSkills('${esc(t.path)}','${t.count}')" style="font-size:9px;padding:2px 5px;margin-left:2px;flex-shrink:0" title="删除此可管理目录下所有 skills">🗑</button>`:''}
       <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
     </div>
     <div id="${safeId}" style="display:none;padding:4px 14px 8px ${padLeft+20}px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -139,35 +133,17 @@ function renderSources(){
   const curTarget=targets.find(t=>t.is_current);
   const visibleTargets=getVisibleSourceTargets();
   const hiddenByPolicy=targets.length-visibleTargets.length;
-  const manageCount=targets.filter(t=>sourcePolicy(t)==='manage').length;
-  const reviewCount=targets.filter(t=>sourcePolicy(t)==='review').length;
-  const observeCount=targets.filter(t=>sourcePolicy(t)==='observe'||sourcePolicy(t)==='hidden').length;
   let h=`<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;flex-wrap:wrap">
     <h3 style="font-size:14px;font-weight:600">📚 全部目录技能</h3>
-    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · 日常 ${visibleTargets.length}/${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
+    <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录 · 当前: ${curTarget?curTarget.name:'-'}</span>
     <span style="flex:1"></span>
     <div style="display:flex;gap:4px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px">
-      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示可管理和待复核目录">日常视图</button>
+      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
       <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
     </div>
     <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
   </div>`;
-  h+=`<div class="notice-line"><span>分层结果：${manageCount} 个可管理 · ${reviewCount} 个待复核 · ${observeCount} 个只观察/默认隐藏${_sourceViewMode==='daily'&&hiddenByPolicy>0?` · 已收起 ${hiddenByPolicy} 个缓存/市场/内置目录`:''}</span>${_sourceViewMode==='daily'&&hiddenByPolicy>0?`<button class="btn btn-sm" onclick="setSourceViewMode('deep')">查看全量</button>`:''}</div>`;
-  // Quick-switch chips
-  const allDirs=visibleTargets.filter(t=>!t.is_current).map(t=>({name:t.name,path:t.path,rel:t.rel,count:t.count,scope:t.scope,agent:t.name,policy:t.policy}));
-  const favDirsList=allDirs.filter(d=>isFav(d.path));
-  const autoDirs=allDirs.filter(d=>!isFav(d.path)).sort((a,b)=>b.count-a.count);
-  const chipDirs=favDirsList.length?[...favDirsList,...autoDirs].slice(0,8):autoDirs.slice(0,6);
-  if(chipDirs.length){
-    h+=`<div style="margin-bottom:14px"><div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">${favDirsList.length?'⚡ 快速切换 · ⭐ 常用目录优先':'⚡ 推荐切换'}</div><div style="display:flex;gap:6px;flex-wrap:wrap">`;
-    chipDirs.forEach(d=>{
-      const fav=isFav(d.path);
-      h+=`<button class="btn btn-sm" onclick="switchTarget('${d.path}')" title="${d.rel}" style="display:inline-flex;align-items:center;gap:4px;${fav?'border-color:var(--amber);background:var(--amber-bg)':''}">
-        <span style="font-size:10px">${fav?'⭐':d.scope==='global'?'🌐':'📁'}</span>${d.name}<span style="color:var(--text-muted);font-size:10px">${d.count}</span>
-      </button>`;
-    });
-    h+=`</div></div>`;
-  }
+  h+=`<div class="notice-line"><span>当前视图：${visibleTargets.length}/${targets.length} 个目录${_sourceViewMode==='daily'&&hiddenByPolicy>0?` · 已收起 ${hiddenByPolicy} 个缓存/市场/内置目录`:''}</span>${_sourceViewMode==='daily'&&hiddenByPolicy>0?`<button class="btn btn-sm" onclick="setSourceViewMode('deep')">查看全量</button>`:''}</div>`;
   const visibleGroups=getVisibleSourceGroups();
   if(visibleGroups.length){
     // Apply saved category order
@@ -185,27 +161,18 @@ function renderSources(){
     }
     let groupsToRender=visibleGroups;
     if(!_sourcesShowAll&&visibleGroups.length>12){
-      const priority=visibleGroups.filter(g=>g.dirs.some(t=>t.is_current||isFav(t.path)));
+      const priority=visibleGroups.filter(g=>g.dirs.some(t=>t.is_current));
       const used=new Set(priority.map(g=>g.agent));
       const rest=visibleGroups.filter(g=>!used.has(g.agent));
       groupsToRender=[...priority,...rest].slice(0,12);
       const hidden=visibleGroups.length-groupsToRender.length;
-      h+=`<div class="notice-line"><span>默认显示当前/常用和高频应用，共 ${groupsToRender.length} 个；其余 ${hidden} 个应用先收起。</span><button class="btn btn-sm" onclick="_sourcesShowAll=true;renderSources()">显示全部</button></div>`;
+      h+=`<div class="notice-line"><span>默认显示当前和高频应用，共 ${groupsToRender.length} 个；其余 ${hidden} 个应用先收起。</span><button class="btn btn-sm" onclick="_sourcesShowAll=true;renderSources()">显示全部</button></div>`;
     }else if(_sourcesShowAll&&visibleGroups.length>12){
       h+=`<div class="notice-line"><span>已显示全部 ${visibleGroups.length} 个应用分组。</span><button class="btn btn-sm" onclick="_sourcesShowAll=false;renderSources()">回到重点</button></div>`;
     }
     groupsToRender.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
-      const hasFav=g.dirs.some(t=>isFav(t.path));
-      const favDir=g.dirs.find(t=>isFav(t.path));
-      const mainDir=g.dirs.find(t=>t.is_current)||g.dirs[0];
-      const favPath=favDir?favDir.path:mainDir.path;
       const isExpanded=_expandedSourceAgent===g.agent;
-      const deletableDirs=g.dirs.filter(sourceCanDelete);
-      const policySummary=['manage','review','observe','hidden'].map(p=>{
-        const n=g.dirs.filter(t=>sourcePolicy(t)===p).length;
-        return n?`${POLICY_META[p].label} ${n}`:'';
-      }).filter(Boolean).join(' · ');
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
@@ -215,11 +182,8 @@ function renderSources(){
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
             </div>
-            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills${policySummary?` · ${policySummary}`:''}</div>
+            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
           </div>
-          <button class="btn btn-sm" style="font-size:10px;padding:3px 8px;flex-shrink:0;border-color:${hasFav?'var(--amber)':'var(--border)'};color:${hasFav?'var(--amber)':'var(--text-muted)'}" onclick="event.stopPropagation();toggleGroupFav('${esc(favPath)}',this)" title="${hasFav?'取消常用目录':'设为常用目录'}">${hasFav?'⭐ 常用目录':'☆ 设为常用目录'}</button>
-          ${deletableDirs.length?`<button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 8px;flex-shrink:0" onclick="event.stopPropagation();deleteAgentSkills('${esc(g.agent)}')" title="只删除可管理目录里的 skills">🗑 删除可管理</button>`
-            :`<span style="font-size:10px;color:var(--text-muted);flex-shrink:0" title="此分组只有待复核/只观察/隐藏目录">不可批量删</span>`}
         </div>
         <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
       if(!isExpanded){
@@ -241,7 +205,6 @@ function renderSources(){
         const cat=catKeys[0]||'unknown';
         const cm=CAT_META[cat]||CAT_META.unknown;
         const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
-        const catDeletable=g.dirs.filter(sourceCanDelete);
         const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
         const catHint=sourceCategoryHint(g.dirs,cat);
         h+=`<div style="border-top:1px solid var(--border-subtle)">
@@ -249,8 +212,6 @@ function renderSources(){
             <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
             <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${catCount} skills)</span>
             ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
-            <span style="flex:1"></span>
-            ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
           </div>
           <div id="${catFoldId}">`;
         g.dirs.forEach((t,di)=>{
@@ -264,7 +225,6 @@ function renderSources(){
           const cm=CAT_META[cat]||CAT_META.unknown;
           const catDirs=dirsByCat[cat];
           const catCount=catDirs.reduce((s,d)=>s+d.count,0);
-          const catDeletable=catDirs.filter(sourceCanDelete);
           const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
           const catHint=sourceCategoryHint(catDirs,cat);
           h+=`<div style="border-top:1px solid var(--border-subtle)">
@@ -272,8 +232,6 @@ function renderSources(){
               <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
               <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
               ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
-              <span style="flex:1"></span>
-              ${catDeletable.length?`<button class="btn btn-sm btn-danger" style="font-size:9px;padding:1px 5px" onclick="event.stopPropagation();deleteCategoryDirs('${esc(g.agent)}','${cat}')" title="只删除此分类下可管理目录里的 skills">🗑 删除可管理</button>`:''}
             </div>
             <div id="${catFoldId}">`;
           catDirs.forEach(t=>{
@@ -329,8 +287,7 @@ function applySmartFolding(){
       if(!r.isDir){visible.push(r);return} // keep category headers
       const opt=r.el.querySelector('.target-opt');
       const isCurrent=opt&&opt.classList.contains('active');
-      const isFav_=opt&&opt.querySelector('button[onclick*="toggleFav"]')&&opt.textContent.includes('⭐');
-      if(isCurrent||isFav_||shown<MAX_SHOW){visible.push(r);shown++}
+      if(isCurrent||shown<MAX_SHOW){visible.push(r);shown++}
       else hidden.push(r);
     });
     if(!hidden.length){body.dataset.folded='1';return}
@@ -418,11 +375,6 @@ function saveCategoryOrder(){
   });
 }
 
-async function toggleGroupFav(path,btn){
-  await toggleFav(path);
-  // Re-render to update the button state
-}
-
 async function browseSourceDir(safeId,path,head){
   const container=$(safeId);
   if(!container)return;
@@ -505,96 +457,6 @@ function updateSrcBatchUI(){
   if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
 }
 
-// Delete all skills under a specific category within an agent group
-async function deleteCategoryDirs(agentName,category){
-  const group=targetGroups.find(g=>g.agent===agentName);
-  if(!group)return;
-  const allCatDirs=group.dirs.filter(d=>(d.category||'unknown')===category);
-  const catDirs=allCatDirs.filter(sourceCanDelete);
-  if(!allCatDirs.length){toast('该分类下无目录');return}
-  if(!catDirs.length){toast('该分类只有待复核/只观察目录，未执行删除','error');return}
-  const catCount=catDirs.reduce((s,d)=>s+d.count,0);
-  const cm=CAT_META[category]||CAT_META.unknown;
-  if(!confirm(`确认删除「${agentName}」下 ${cm.emoji} ${cm.label} 分类里的可管理 skills？\n\n将处理 ${catDirs.length}/${allCatDirs.length} 个目录 · ${catCount} 个 skill\n待复核/只观察/缓存目录不会删除。`))return;
-  const items=[];
-  for(const d of catDirs){
-    try{
-      const r=await fetch('/api/source/skills?path='+encodeURIComponent(d.path));
-      const data=await r.json();
-      const list=data.skills||data;
-      list.forEach(s=>items.push({target:d.path,name:s.name}));
-    }catch(e){console.error('fetch skills failed for',d.path,e)}
-  }
-  if(!items.length){toast('未找到可删除的 skill','error');return}
-  if(!confirm(`即将删除 ${items.length} 个 skill，确认？`))return;
-  try{
-    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
-    const d=await r.json();
-    if(d.ok){
-      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
-      refreshAfterDelete(catDirs.map(d=>d.path));
-      loadTrash();
-    }else{toast(d.error||'删除失败','error')}
-  }catch(e){toast('删除失败: '+e.message,'error')}
-}
-
-async function deleteAgentSkills(agentName){
-  const group=targetGroups.find(g=>g.agent===agentName);
-  if(!group)return;
-  const dirs=group.dirs.filter(sourceCanDelete);
-  if(!dirs.length){toast('该应用分组没有可管理目录，未执行删除','error');return}
-  const dirCount=dirs.length;
-  const skillCount=dirs.reduce((s,d)=>s+d.count,0);
-  if(!confirm(`确认删除「${agentName}」下可管理目录里的 skills？\n\n将处理 ${dirCount}/${group.dirs.length} 个目录 · ${skillCount} 个 skill\n待复核/只观察/缓存目录不会删除。`))return;
-  // Collect all skills from all directories under this agent
-  const items=[];
-  for(const d of dirs){
-    try{
-      const r=await fetch('/api/source/skills?path='+encodeURIComponent(d.path));
-      const data=await r.json();
-      const list=data.skills||data;
-      list.forEach(s=>items.push({target:d.path,name:s.name}));
-    }catch(e){console.error('fetch skills failed for',d.path,e)}
-  }
-  if(!items.length){toast('未找到可删除的 skill','error');return}
-  if(!confirm(`即将删除 ${items.length} 个 skill，确认？`))return;
-  try{
-    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
-    const d=await r.json();
-    if(d.ok){
-      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
-      refreshAfterDelete(dirs.map(d=>d.path));
-      loadTrash();
-    }else{toast(d.error||'删除失败','error')}
-  }catch(e){toast('删除失败: '+e.message,'error')}
-}
-async function deleteDirSkills(path,count){
-  const t=targets.find(t=>t.path===path);
-  if(!sourceCanDelete(t)){toast('该目录不是可管理目录，未执行删除','error');return}
-  if(!confirm(`确认删除此目录下所有 ${count} 个 skill？\n将移入垃圾站，可恢复。`))return;
-  // Use cache if available, otherwise fetch
-  let list=sourceSkillsCache[path];
-  if(!list){
-    try{
-      const r=await fetch('/api/source/skills?path='+encodeURIComponent(path));
-      const d=await r.json();
-      list=d.skills||d;
-      sourceSkillsCache[path]=list;
-    }catch(e){toast('获取 skill 列表失败','error');return}
-  }
-  if(!list.length){toast('目录为空');return}
-  const items=list.map(s=>({target:path,name:s.name}));
-  try{
-    const r=await fetch('/api/batch-delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({items})});
-    const d=await r.json();
-    if(d.ok){
-      toast(`已删除 ${d.deleted} 个 skill${d.failed?`，${d.failed} 个失败`:''}`);
-      delete sourceSkillsCache[path];
-      refreshAfterDelete([path]);
-      loadTrash();
-    }else{toast(d.error||'删除失败','error')}
-  }catch(e){toast('删除失败: '+e.message,'error')}
-}
 async function deleteSrcSkill(path,name){
   if(!confirm(`确认删除 ${name}？将移入垃圾站`))return;
   try{

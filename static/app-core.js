@@ -48,10 +48,6 @@ function goView(v){
 
 /* ── Data ── */
 let globalStats=null;
-let favDirs=[];
-async function loadFavDirs(){
-  try{favDirs=await fetch('/api/favorite-dirs').then(r=>r.json())}catch{favDirs=[]}
-}
 let globalOverlap=null;
 let scanResult=null; // cached scan results from /api/scan-run
 let cleanupPlan=null; // dry-run governance plan from /api/cleanup-plan
@@ -106,20 +102,7 @@ async function loadCachedScanResult(){
     updateDiagBadges();
   }
 }
-async function saveFavDirs(){
-  await fetch('/api/favorite-dirs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(favDirs)});
-}
-function isFav(path){return favDirs.includes(path)}
-async function toggleFav(path){
-  if(favDirs.includes(path)){
-    favDirs=favDirs.filter(p=>p!==path);
-  }else{
-    favDirs.push(path);
-  }
-  await saveFavDirs();renderSources();updateTargetSelector();
-}
 async function loadData(){
-  await loadFavDirs();
   // Layer 0: fast-scan (instant skill list + classification)
   const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
   scan=sr;skills=sr?.installed||[];

@@ -46,38 +46,29 @@ async function updateTargetSelector(force=false){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  // Empty state: guide user to mark favorites
-  if(!favDirs.length){
-    $('target-dropdown').innerHTML=`<div style="padding:16px 12px;text-align:center;color:var(--text-muted);font-size:12px">
-      <div style="margin-bottom:8px">还没有设置常用目录</div>
-      <div style="font-size:11px">去 <span style="color:var(--accent);cursor:pointer" onclick="switchView('sources',document.querySelector('.nav-item:nth-child(2)'));document.getElementById('target-dropdown').classList.remove('open')">📚 全部目录技能</span> 里标记 ⭐</div>
-    </div>`;
-    $('badge-sources').textContent=targetGroups.length||targets.length;
-    renderStats();renderWorkbench();renderSources();
-    return;
-  }
-  // Sort: current group first, then by skill count
+  // Sort groups by total skill count descending; current group first
   const sorted=[...targetGroups].sort((a,b)=>{
     const aCur=a.dirs.some(t=>t.is_current);
     const bCur=b.dirs.some(t=>t.is_current);
     if(aCur!==bCur)return aCur?-1:1;
     return b.total_skills-a.total_skills;
   });
-  // Filter: only show groups that have at least one favorite directory
-  const filtered=sorted.filter(g=>g.dirs.some(t=>isFav(t.path)));
-  // For each group, only show favorite directories
-  const visibleFor=(g)=>g.dirs.filter(t=>isFav(t.path));
-  // Show groups with expandable sub-directories (two-level menu)
-  $('target-dropdown').innerHTML=filtered.map(g=>{
+  // Show all groups with directories sorted by skill count
+  $('target-dropdown').innerHTML=sorted.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
-    const visibleDirs=visibleFor(g);
+    const visibleDirs=[...g.dirs].sort((a,b)=>{
+      const aCur=a.is_current?1:0;
+      const bCur=b.is_current?1:0;
+      if(aCur!==bCur)return bCur-aCur;
+      return b.count-a.count;
+    });
     const gId='tg-'+g.agent.replace(/[^a-zA-Z0-9]/g,'');
     return`<div class="tg-wrap${isCurGroup?' tg-active':''}" style="border-bottom:1px solid var(--border-subtle)">
       <div class="target-opt" onclick="toggleTgSub('${gId}',this)" style="padding:8px 10px">
         <span style="font-size:11px;transition:transform .15s" id="${gId}-arrow">${isCurGroup?'▼':'▶'}</span>
         <div style="flex:1;min-width:0">
           <div style="font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px">${g.agent}${isCurGroup?'<span style="font-size:9px;color:var(--accent);font-weight:400">当前</span>':''}</div>
-          <div style="font-size:10px;color:var(--text-muted)">${visibleDirs.length} 个目录 · ${g.total_skills} skills</div>
+          <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
         </div>
       </div>
       <div id="${gId}" style="display:${isCurGroup?'block':'none'};background:var(--bg-card-alt)">
@@ -86,7 +77,6 @@ async function updateTargetSelector(force=false){
             <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}" style="font-size:9px">${t.scope==='global'?'🌐':'📁'}</span>
             <span style="flex:1;font-size:11px">${t.rel}</span>
             <span class="to-count" style="font-size:10px">${t.count}</span>
-            <button class="btn btn-sm" style="font-size:8px;padding:1px 4px;margin-left:4px;flex-shrink:0;color:var(--text-muted);border-color:transparent" onclick="event.stopPropagation();toggleFav('${t.path}')" title="从常用移除">✕</button>
           </div>`;
         }).join('')}
       </div>
