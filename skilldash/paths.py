@@ -15,7 +15,6 @@ STATIC_DIR = BASE_DIR / "static"
 CACHE_DIR = BASE_DIR / ".data" / "cache"
 DIAG_LOG = CACHE_DIR / "diag.log"
 DUPLICATE_DECISIONS_FILE = STATE_DIR / "duplicate-decisions.json"
-SIMILAR_DECISIONS_FILE = STATE_DIR / "similar-decisions.json"
 CONTENT_HASH_FILE = STATE_DIR / "content-hashes.json"
 
 

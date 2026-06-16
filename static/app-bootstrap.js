@@ -177,7 +177,7 @@ function applyFullDiagnosis(d){
 async function runDiagnosis(){
   const curTarget=targets.find(t=>t.is_current)||targets[0];
   const name=curTarget?curTarget.name:'当前目标库';
-  if(!confirm(`确认对「${name}」运行完整诊断？\n\n将检测：相似度、上游追踪、结构问题\n预计耗时 5-15 秒`))return;
+  if(!confirm(`确认对「${name}」运行完整诊断？\n\n将检测：结构问题、上游追踪、内容变化\n预计耗时 5-15 秒`))return;
   const btn=$('diag-btn');
   const issuesBtn=$('issues-diag-btn');
   if(btn){btn.textContent='⏳ 启动中...';btn.disabled=true;btn.classList.add('running');}
@@ -219,7 +219,7 @@ function pollDiagnosis(){
       if(issuesBtn){issuesBtn.textContent='🔧 重新检测';issuesBtn.disabled=false;issuesBtn.classList.remove('running');}
       diagState='error';
     }else if(r.status==='running'){
-      const phase=r.phase==='check'?'相似度分析':'扫描来源';
+      const phase=r.phase==='check'?'结构检查':'扫描来源';
       const text=`⏳ ${phase}... ${(r.elapsed_ms/1000).toFixed(0)}s`;
       if(btn)btn.textContent=text;
       if(issuesBtn)issuesBtn.textContent=text;
@@ -300,7 +300,17 @@ const HISTORY_OP_LABELS={
   move_to_trash:'移入垃圾站',
   empty_trash:'清空垃圾站',
   delete:'永久删除',
-  restore:'恢复'
+  restore:'恢复',
+  switch_target:'切换目标目录',
+  install:'安装 skill',
+  copy:'复制 skill',
+  update:'更新 skill',
+  fix:'修复 skill',
+  mark_duplicate_decision:'标记多端部署',
+  remove_duplicate_decision:'撤销多端部署标记',
+  add_source:'添加来源',
+  remove_source:'移除来源',
+  rehash:'确认内容变更'
 };
 const HISTORY_STATUS_LABELS={
   ok:'成功',

@@ -56,6 +56,16 @@ function sourceSubLabel(t){
   return '';
 }
 
+function formatSourceCounts(dirs){
+  const total=dirs.reduce((s,d)=>s+(d.count||0),0);
+  const cmdCount=dirs.filter(d=>d.type==='commands').reduce((s,d)=>s+(d.count||0),0);
+  const skillCount=total-cmdCount;
+  const parts=[];
+  if(skillCount)parts.push(`${skillCount} skills`);
+  if(cmdCount)parts.push(`${cmdCount} commands`);
+  return parts.join(' · ')||'0 项';
+}
+
 function sourceCategoryHint(catDirs,cat){
   const loaded=catDirs.filter(t=>t.runtime_state==='loaded').length;
   const installed=catDirs.filter(t=>t.runtime_state==='installed').length;
@@ -78,6 +88,7 @@ function renderSourceDirRow(t,safeId,padLeft){
   const runtime=sourceRuntimeBadge(t);
   const title=sourceDisplayTitle(t);
   const sub=sourceDisplaySub(t);
+  const isCommands=t.type==='commands';
   const statusBits=[
     runtime,
     runtime?sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel):sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel),
@@ -86,7 +97,7 @@ function renderSourceDirRow(t,safeId,padLeft){
   ].filter(Boolean).join('');
   return `<div style="border-top:1px solid var(--border-subtle)">
     <div class="target-opt source-dir-row${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px ${padLeft}px" title="${esc(t.path)}">
-      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${t.scope==='global'?'🌐':'📁'}</span>
+      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${isCommands?'⌨️':(t.scope==='global'?'🌐':'📁')}</span>
       <div class="source-dir-main">
         <div class="source-dir-titleline">
           <span class="source-dir-title">${esc(title)}</span>
@@ -95,7 +106,7 @@ function renderSourceDirRow(t,safeId,padLeft){
         <div class="source-dir-sub">${esc(sub)}</div>
       </div>
       <span class="to-count">${t.count}</span>
-      ${!t.is_current?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
+      ${!t.is_current&&!isCommands?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
       <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
     </div>
     <div id="${safeId}" style="display:none;padding:4px 14px 8px ${padLeft+20}px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -150,7 +161,6 @@ function renderSources(){
       <div class="segmented-control">
         <button class="btn btn-sm ${_sourceSortMode==='default'?'btn-primary':''}" onclick="setSourceSortMode('default')" title="按拖拽自定义顺序">默认排序</button>
         <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
-        <button class="btn btn-sm ${_sourceSortMode==='dirs'?'btn-primary':''}" onclick="setSourceSortMode('dirs')" title="按目录数量降序">按目录</button>
       </div>
       <div class="segmented-control">
         <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
@@ -200,7 +210,7 @@ function renderSources(){
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
             </div>
-            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${g.total_skills} skills</div>
+            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}</div>
           </div>
         </div>
         <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
@@ -209,7 +219,7 @@ function renderSources(){
         return;
       }
       // Group dirs by category within this agent
-      const catOrder=['user','marketplace','cache','cross-copy','project','unknown'];
+      const catOrder=['user','marketplace','cache','cross-copy','project','commands','unknown'];
       const dirsByCat={};
       g.dirs.forEach(t=>{
         const c=t.category||'unknown';
@@ -228,7 +238,7 @@ function renderSources(){
         h+=`<div style="border-top:1px solid var(--border-subtle)">
           <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
             <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
-            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${catCount} skills)</span>
+            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${formatSourceCounts(g.dirs)})</span>
             ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
           </div>
           <div id="${catFoldId}">`;
@@ -248,7 +258,7 @@ function renderSources(){
           h+=`<div style="border-top:1px solid var(--border-subtle)">
             <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
               <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
-              <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${catCount} skills)</span>
+              <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${formatSourceCounts(catDirs)})</span>
               ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
             </div>
             <div id="${catFoldId}">`;
@@ -319,7 +329,7 @@ function applySmartFolding(){
     const btn=document.createElement('div');
     btn.dataset.moreToggle='1';
     btn.style.cssText='border-top:1px solid var(--border-subtle);padding:6px 14px 6px 36px;cursor:pointer;font-size:11px;color:var(--text-muted);display:flex;align-items:center;gap:4px;user-select:none';
-    btn.innerHTML='<span style="font-size:8px;transition:transform .15s">▶</span><span>还有 '+hidden.length+' 个目录</span><span style="font-size:9px;color:var(--text-dim)">('+totalSkills+' skills)</span>';
+    btn.innerHTML='<span style="font-size:8px;transition:transform .15s">▶</span><span>还有 '+hidden.length+' 个目录</span><span style="font-size:9px;color:var(--text-dim)">('+totalSkills+' items)</span>';
     btn.onclick=function(){
       const expanded=hidden[0].el.style.display!=='none';
       hidden.forEach(r=>{r.el.style.display=expanded?'none':''});
@@ -417,31 +427,35 @@ async function browseSourceDir(safeId,path,head){
 }
 
 let srcSelectedSkills=new Set();
-function renderBrowseDir(path,skillList,container){
+function renderBrowseDir(path,itemList,container){
   const installed=new Set(skills.map(s=>s.name));
   const curTarget=targets.find(t=>t.is_current);
   const isCurrentTarget=curTarget&&path===curTarget.path;
+  const isCommands=itemList.length>0&&itemList[0].kind==='command';
   let h='';
-  if(!skillList.length){h='<div style="padding:6px;color:var(--text-muted)">空目录</div>';container.innerHTML=h;return}
+  if(!itemList.length){h='<div style="padding:6px;color:var(--text-muted)">空目录</div>';container.innerHTML=h;return}
   // Batch actions bar
   const bId=esc(path).replace(/[^a-z0-9]/gi,'');
   h+=`<div style="display:flex;gap:6px;align-items:center;margin-bottom:6px;padding:2px 0;flex-wrap:wrap">
     <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:3px;cursor:pointer">
       <input type="checkbox" id="src-selall-${bId}" onchange="toggleAllSrcSkills(this.checked)" style="cursor:pointer"> 全选
     </label>
-    ${!isCurrentTarget?`<button class="btn btn-sm btn-primary" id="src-batch-sync-${bId}" onclick="batchSyncSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量同步到当前目录</button>`:''}
-    <button class="btn btn-sm btn-danger" id="src-batch-del-${bId}" onclick="batchDeleteSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量删除</button>
+    ${!isCurrentTarget&&!isCommands?`<button class="btn btn-sm btn-primary" id="src-batch-sync-${bId}" onclick="batchSyncSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量同步到当前目录</button>`:''}
+    ${!isCommands?`<button class="btn btn-sm btn-danger" id="src-batch-del-${bId}" onclick="batchDeleteSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量删除</button>`:''}
     <span style="font-size:10px;color:var(--text-muted)" id="src-sel-count-${bId}"></span>
   </div>`;
-  skillList.forEach(s=>{
+  itemList.forEach(s=>{
     const isInstalled=installed.has(s.name);
     const selKey=path+'::'+s.name;
+    const isBroken=s.kind==='broken_symlink'||s.kind==='broken_skill_link';
+    const kindLabel=s.kind==='broken_symlink'?'断链':(s.kind==='broken_skill_link'?'目录壳':'');
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer;color:var(--accent)" onclick="showSkill('${esc(s.name)}','${esc(path)}')">${s.name}</span>
-      ${!isCurrentTarget&&!isInstalled?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">复制到当前目录</button>`:''}
-      ${isInstalled?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
-      <button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}">${s.name}</span>
+      ${kindLabel?`<span style="font-size:9px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);border-radius:999px;padding:1px 5px">${kindLabel}</span>`:''}
+      ${!isCurrentTarget&&!isInstalled&&!isCommands?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">复制到当前目录</button>`:''}
+      ${isInstalled&&!isCommands?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
+      ${!isCommands?`<button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>`:''}
     </div>`;
   });
   container.innerHTML=h;

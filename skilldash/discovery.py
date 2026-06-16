@@ -3,11 +3,39 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from pathlib import Path
 
 from .classification import _classify_skill, _read_skill_description
 from .paths import CACHE_DIR, STATE_DIR
+
+
+DEFAULT_CONFIG_PATH = Path.home() / ".config" / "skill-dashboard" / "config.json"
+
+
+def _read_skill_dashboard_config():
+    """Load user config from default path or legacy home-level JSON."""
+    # 1. Default XDG-style config
+    if DEFAULT_CONFIG_PATH.exists():
+        try:
+            return json.loads(DEFAULT_CONFIG_PATH.read_text("utf-8"))
+        except Exception:
+            pass
+    # 2. Legacy home-level config
+    legacy = Path.home() / ".skill-dashboard.json"
+    if legacy.exists():
+        try:
+            return json.loads(legacy.read_text("utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _env_roots(var_name):
+    """Parse colon-separated path list from environment variable."""
+    value = os.environ.get(var_name, "")
+    return [p.strip() for p in value.split(os.pathsep) if p.strip()]
 
 _CLAUDE_PLUGIN_STATE = None
 _CLAUDE_PLUGIN_STATE_SIG = None
@@ -213,19 +241,122 @@ def _agent_from_path(dir_path):
             return part.lstrip(".")
     return Path(p).name
 
+def _is_in_git_repo(dir_path):
+    """Check if directory is inside a Git repository (not at agent root)."""
+    path = Path(dir_path).resolve()
+    home = Path.home().resolve()
+    
+    # Don't treat agent root dirs as project-level even if they're in git
+    try:
+        rel_parts = path.relative_to(home).parts
+        # ~/.agent/skills is agent root, not project
+        if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
+            return False
+    except Exception:
+        pass
+    
+    # Walk up to find .git directory
+    current = path
+    while current != current.parent:
+        if (current / ".git").exists():
+            # Found git repo — verify it's not just home dir itself
+            if current != home:
+                return True
+            break
+        current = current.parent
+    return False
+
+
+def _is_user_level_skill(dir_path):
+    """Check if directory is a user-level (global) skill directory.
+    
+    User-level means: located at ~/.xxx/skills/ (directly under home directory)
+    
+    Examples:
+    - ~/.claude/skills/      → user-level ✅
+    - ~/.kiro/skills/        → user-level ✅
+    - ~/AI-Skills/           → NOT user-level ❌ (not under ~/.<agent>/)
+    - ~/projects/app/.claude/skills/ → NOT user-level ❌ (not directly under home)
+    """
+    try:
+        home = Path.home()
+        path = Path(dir_path).resolve()
+        
+        # Must be relative to home
+        rel_parts = path.relative_to(home).parts
+        
+        # User-level pattern: ~/.agent/skills/ (exactly 2 levels deep)
+        # rel_parts[0] must be a dot-prefixed directory (agent name)
+        # rel_parts[1] must be "skills"
+        if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
+            return True
+            
+    except Exception:
+        pass
+    
+    return False
+
+
+def _is_project_agent_skill(dir_path):
+    """Check if directory is a project-level agent skill directory.
+    
+    Project-level agent skill means: .agent/skills/ within a project (not at home)
+    
+    Examples:
+    - ~/projects/my-app/.claude/skills/    → project agent skill ✅
+    - ~/projects/foo/.kiro/skills/         → project agent skill ✅
+    - ~/projects/bar/src/.cursor/skills/   → project agent skill ✅
+    - ~/.claude/skills/                    → NOT project (user-level) ❌
+    - ~/AI-Skills/                         → NOT project agent skill ❌
+    - ~/.antigravity/extensions/.../skills → NOT project (home agent extension) ❌
+    """
+    try:
+        path = Path(dir_path).resolve()
+        home = Path.home().resolve()
+        
+        # Must not be directly under home (that's user-level)
+        try:
+            rel_parts = path.relative_to(home).parts
+            # If path is ~/.xxx/... (starts with dot-directory), check depth
+            if len(rel_parts) > 0 and rel_parts[0].startswith("."):
+                # This is under home's agent dir, not a project
+                # Unless it's explicitly in a projects-like subdirectory
+                # For now, treat all ~/.agent/... as non-project
+                return False
+        except ValueError:
+            # Not under home at all → could be project
+            pass
+        
+        # Check if path matches pattern: .../.agent/skills/
+        # Path should have at least: /some/path/.agent/skills
+        parts = path.parts
+        if len(parts) >= 2:
+            # Last part should be "skills", second-to-last should be dot-prefixed
+            if parts[-1] == "skills" and parts[-2].startswith(".") and not parts[-2].startswith(".."):
+                # Additional check: must be in a project-like location (not under ~/.agent/)
+                # Verify by checking if it's NOT directly under home
+                if path.parent.parent != home:
+                    return True
+    
+    except Exception:
+        pass
+    
+    return False
+
+
 def _classify_skill_dir(dir_path):
     """Classify a skill directory by its nature based on path patterns.
 
-    Returns one of:
-    - 'user'       : User-created skills (main skills/ dir, no marketplace/cache/backup patterns)
-    - 'marketplace': Ecosystem/plugin marketplace skills (marketplace, plugins, agent-plugins, extensions)
-    - 'cache'      : Installation artifacts (snapshots, backups, cache, plugins-backup, vendor_imports)
-    - 'cross-copy' : Cross-agent copies (e.g., gstack/.cursor/skills inside a skill dir)
-    - 'project'    : Project-level skills (under ~/projects/)
+    Classification rules (按 Agent 应用分组):
+    - 'user'       : Agent 全局技能 (在家目录: ~/.agent/skills/)
+    - 'project'    : Agent 项目级技能 (在项目内: ~/projects/xxx/.agent/skills/) 或其他非全局位置
+    - 'marketplace': 生态/插件市场技能
+    - 'cache'      : 安装制品 (快照、备份、缓存)
+    - 'cross-copy' : 跨 Agent 复制 (嵌套的 agent skills)
     """
     p = str(dir_path).lower()
     home = str(Path.home()).lower()
-    rel = p.replace(home + "/", "").replace(home + "\\", "")
+    path = Path(dir_path)
 
     # Cache/backup: snapshots, backups, plugin caches, vendor imports
     cache_signals = [".snapshots", "backup", "plugins-backup", "plugins/cache",
@@ -235,22 +366,30 @@ def _classify_skill_dir(dir_path):
         if sig in p:
             return "cache"
 
-    # Project-level: under ~/projects/ — check BEFORE cross-copy
-    # because ~/projects/xz/.claude/skills is project-level, not cross-copy
-    if "/projects/" in p or "\\projects\\" in p:
+    # User-level: ~/.agent/skills/ only (Agent 全局技能)
+    if _is_user_level_skill(dir_path):
+        return "user"
+
+    # Project-level agent skill: ~/projects/xxx/.agent/skills/ (Agent 项目级技能)
+    if _is_project_agent_skill(dir_path):
         return "project"
 
-    # Cross-agent copy: .<agent>/skills at depth > 0 from home
-    # Pattern: any .xxx/skills that is NOT the agent's own root skills dir.
-    # Root: ~/.claude/skills (i=0 in rel_parts)
-    # Cross-copy: ~/.skillslm/gstack/.cursor/skills (.cursor/skills at depth > 0)
-    parts = Path(dir_path).parts
-    home_parts = Path(Path.home()).parts
-    rel_parts = parts[len(home_parts):]
-    for i, pt in enumerate(rel_parts):
-        if pt.startswith(".") and not pt.startswith("..") and i + 1 < len(rel_parts) and rel_parts[i + 1] == "skills":
-            if i > 0:  # Not at agent root level (i=0 means ~/.agent/skills)
-                return "cross-copy"
+    # Cross-agent copy: .<agent>/skills nested WITHIN home/.xxx/ directory (depth > 0)
+    # Pattern: ~/.skillslm/gstack/.cursor/skills (.cursor/skills inside another agent's dir)
+    # But: ~/projects/app/.claude/skills is project-level, NOT cross-copy
+    # Rule: Only check for cross-copy if first level under home is a dot-directory
+    try:
+        rel_parts = path.relative_to(Path.home()).parts
+        # Cross-copy only applies when first level is ~/.xxx/ (agent dir)
+        if len(rel_parts) > 0 and rel_parts[0].startswith("."):
+            # We're inside a ~/.xxx/ directory, now check for nested .yyy/skills
+            for i, pt in enumerate(rel_parts):
+                if pt.startswith(".") and not pt.startswith("..") and i + 1 < len(rel_parts) and rel_parts[i + 1] == "skills":
+                    if i > 0:  # Not at home root level (i=0 means ~/.agent/skills which is user-level)
+                        return "cross-copy"
+    except ValueError:
+        # Path is not relative to home → must be project-level
+        pass
 
     # Marketplace: plugin stores, extension stores, agent-plugin repos
     market_signals = ["marketplace", "agent-plugins", "/plugins/", "\\plugins\\",
@@ -265,8 +404,13 @@ def _classify_skill_dir(dir_path):
             else:
                 return "marketplace"
 
-    # Default: user-created
-    return "user"
+    # Default: Everything else is project-level
+    # This includes:
+    # - ~/AI-Skills/                          (非标准路径，不在家目录 agent 下)
+    # - ~/projects/my-skills-repo/skills/     (非标准路径，在项目内)
+    # - ~/Downloads/skills-pack/              (下载目录)
+    # Rule: 只有 ~/.agent/skills/ 是 user-level; 其他都是 project-level
+    return "project"
 
 def _classify_skill_dir_detail(dir_path):
     """Return directory governance metadata used by the UI.
@@ -302,26 +446,16 @@ def _classify_skill_dir_detail(dir_path):
         rel_parts = path.parts
     top = rel_parts[0].lower() if rel_parts else ""
 
-    # Exact agent root, e.g. ~/.claude/skills or ~/.agents/skills.
+    # Exact agent root at home level: ~/.claude/skills or ~/.agents/skills
     if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
         mark("active-root", "manage", "agent root skills directory", "user")
 
-    # User-level non-hidden collections, e.g. ~/AI-Skills or ~/some/skills.
-    elif category == "user":
-        mark("user-installed", "manage", "user-level skills collection", "user", "medium")
+    # User-level non-agent collections are now classified as project by _classify_skill_dir
+    # No special handling needed here
 
-    # Local app inventories and downloaded packs are useful to review, but are
-    # not automatically connected to a runtime.
-    if top in ("downloads", "desktop", "documents"):
-        mark("downloaded-package", "review", "downloaded or manually unpacked skill package", category)
-    if top in ("projects", "code", "workspace"):
-        mark("project-local", "review", "project/workspace level skills", "project")
-    if top == ".skillslm":
-        mark("app-local-library", "review", "SkillsLM local library, not necessarily active in a host", category)
-
-    # Project-local skills are often real, but deleting them can change a repo.
+    # Project-local skills: anything not in ~/.xxx/skills/
     if category == "project":
-        mark("project-local", "review", "project-local skills should be reviewed before deleting", "project")
+        mark("project-local", "review", "project-level skills (not in home directory)", "project")
 
     # Cross-agent/imported copies are useful cleanup candidates, not automatic deletes.
     if category == "cross-copy":
@@ -381,6 +515,10 @@ def _classify_skill_dir_detail(dir_path):
         if runtime_label:
             evidence.append(runtime_label)
 
+    # Suspicious paths: temp/download/trash/node_modules — high-risk cleanup candidates
+    suspicious_signals = [".trash", "/downloads/", "/tmp/", "node_modules", "/.cache/"]
+    is_suspicious = any(sig in p for sig in suspicious_signals)
+
     policy_labels = {
         "manage": "可管理",
         "review": "待复核",
@@ -410,8 +548,9 @@ def _classify_skill_dir_detail(dir_path):
         "policy_label": policy_labels.get(policy, policy),
         "confidence": confidence,
         "evidence": evidence[:4],
-        "is_deletable": policy == "manage",
+        "is_deletable": policy == "manage" and not is_suspicious,
         "is_daily": policy in ("manage", "review"),
+        "is_suspicious": is_suspicious,
     }
     if plugin_context:
         detail.update(plugin_context)
@@ -563,7 +702,7 @@ def _discover_skill_dirs():
     except (PermissionError, OSError):
         pass
 
-    # 2b. ~/Downloads/ — scan subdirs for skill collections (depth 3)
+    # 2b. ~/Downloads/ — scan subdirs for skill collections + .agent/skills (depth 3)
     downloads = home / "Downloads"
     if downloads.is_dir():
         try:
@@ -573,19 +712,26 @@ def _discover_skill_dirs():
                 if _has_skill_md(d):
                     add_dir(d, _validated=True)
                 _scan_agent_deep(d, max_depth=2, _depth=1)
+                
+                # Also check for .agent/skills within downloads subdirs
+                # This catches: ~/Downloads/vault_template/.claude/skills
+                for agent_name in [".claude", ".kiro", ".cursor", ".codex", ".alice"]:
+                    agent_dir = d / agent_name
+                    if agent_dir.is_dir():
+                        skills_path = agent_dir / "skills"
+                        if skills_path.is_dir():
+                            add_dir(skills_path)
         except (PermissionError, OSError):
             pass
 
     # 3. ~/projects/*//skills/ — project-level skill directories
-    #    Discover non-hidden project roots dynamically instead of hardcoding
-    #    case variants (projects/Projects, code/Code) which cause duplicates
-    #    on case-insensitive filesystems (macOS).
+    #    Recursive scan using os.walk to find .agent/skills at any depth (like skill-discover)
     _project_roots_seen = set()  # inode dedup for project root dirs
     for entry in home.iterdir():
         if not entry.is_dir() or entry.name.startswith("."):
             continue
         # Only scan common project root names (case-insensitive match)
-        if entry.name.lower() not in ("projects", "code", "workspace"):
+        if entry.name.lower() not in ("projects", "code", "workspace", "dev", "work", "src", "repos"):
             continue
         try:
             st = entry.stat()
@@ -595,27 +741,39 @@ def _discover_skill_dirs():
             _project_roots_seen.add(inode_key)
         except OSError:
             continue
+        
+        # Recursive scan for .agent/skills/ directories (inspired by skill-discover)
         try:
-            for proj in entry.iterdir():
-                if not proj.is_dir():
+            for root, dirs, _files in os.walk(entry):
+                # Calculate depth from project root
+                depth = root.count(os.sep) - str(entry).count(os.sep)
+                if depth >= 5:  # Max depth 5 to avoid going too deep
+                    del dirs[:]
                     continue
-                add_dir(proj / "skills")
-                # Check any .xxx/skills/ inside the project
-                for sub in proj.iterdir():
-                    if sub.is_dir() and sub.name.startswith(".") and not sub.name.startswith(".."):
-                        add_dir(sub / "skills")
+                
+                # Filter out system junk directories
+                dirs[:] = [d for d in dirs if d not in _SKIP_DEEP]
+                
+                # Check if current directory is an agent config dir (.claude, .kiro, etc.)
+                root_basename = os.path.basename(root)
+                if root_basename.startswith(".") and not root_basename.startswith(".."):
+                    # This is a .agent directory, check for skills/ subdirectory
+                    skills_path = Path(root) / "skills"
+                    if skills_path.is_dir():
+                        add_dir(skills_path)
         except (PermissionError, OSError):
             pass
 
-    # 4. .skill-dashboard.json config files
-    home_config = home / ".skill-dashboard.json"
-    if home_config.exists():
-        try:
-            cfg = json.loads(home_config.read_text("utf-8"))
-            for p in cfg.get("paths", []):
-                add_dir(Path(p).expanduser())
-        except Exception:
-            pass
+    # 4. Config files (XDG + legacy)
+    cfg = _read_skill_dashboard_config()
+    for p in cfg.get("skill_paths", []):
+        add_dir(Path(p).expanduser())
+    for p in cfg.get("paths", []):
+        add_dir(Path(p).expanduser())
+
+    # 4b. Environment variables
+    for p in _env_roots("CLAUDE_SKILL_ROOTS"):
+        add_dir(Path(p).expanduser())
     for entry in home.iterdir():
         if not entry.is_dir() or entry.name.startswith("."):
             continue
@@ -661,6 +819,122 @@ def _discover_skill_dirs():
                 (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
                 for c in d.iterdir()
             ))]
+
+def _discover_command_dirs():
+    """Discover all command directories on the system.
+
+    Command directories contain .md files (not SKILL.md subdirs).
+    Primary pattern: ~/.claude/commands/ and .claude/commands/ under projects.
+    """
+    home = Path.home()
+    candidates = []
+    seen = set()
+
+    def add_dir(d):
+        d = d.resolve()
+        if not d.is_dir() or str(d) in seen:
+            return
+        seen.add(str(d))
+        candidates.append(d)
+
+    # Agent roots: ~/.xxx/commands/
+    try:
+        for entry in home.iterdir():
+            if not entry.is_dir() or not entry.name.startswith("."):
+                continue
+            commands_dir = entry / "commands"
+            if commands_dir.is_dir():
+                add_dir(commands_dir)
+    except (PermissionError, OSError):
+        pass
+
+    # Project-level: recursively scan common project roots for commands/ dirs.
+    # This catches .claude/commands, src/commands, cli-anything-plugin/commands, etc.
+    _CMD_SKIP = {"node_modules", ".git", "__pycache__", "venv", ".venv", "env",
+                 "dist", "build", "logs", ".cache", ".npm", "Library",
+                 ".snapshots", ".tmp", ".temp", ".Trash"}
+
+    def _is_command_dir(d):
+        """A directory is a command dir if it contains .md files and no SKILL.md subdirs."""
+        if not d.is_dir():
+            return False
+        has_md = False
+        try:
+            for f in d.iterdir():
+                if f.name in _CMD_SKIP:
+                    continue
+                if f.is_file() and f.suffix == ".md":
+                    has_md = True
+                if f.is_dir() and (f / "SKILL.md").exists():
+                    return False
+        except (PermissionError, OSError):
+            return False
+        return has_md
+
+    def _scan_project_commands(root, max_depth=5, _depth=0):
+        if _depth >= max_depth:
+            return
+        try:
+            for entry in root.iterdir():
+                if not entry.is_dir() or entry.name in _CMD_SKIP:
+                    continue
+                # Direct commands/ dir
+                if entry.name == "commands" and _is_command_dir(entry):
+                    add_dir(entry)
+                # .xxx/commands/ (e.g. .claude/commands)
+                if entry.name.startswith(".") and not entry.name.startswith(".."):
+                    commands_dir = entry / "commands"
+                    if commands_dir.is_dir() and _is_command_dir(commands_dir):
+                        add_dir(commands_dir)
+                    # .xxx/skills/ that only holds .md files is likely misnamed commands
+                    skills_dir = entry / "skills"
+                    if skills_dir.is_dir() and _is_command_dir(skills_dir):
+                        add_dir(skills_dir)
+                _scan_project_commands(entry, max_depth, _depth + 1)
+        except (PermissionError, OSError):
+            pass
+
+    for root_name in ("projects", "code", "workspace", "dev", "work", "src", "repos"):
+        root = home / root_name
+        if root.is_dir():
+            _scan_project_commands(root, max_depth=5)
+
+    # Config files
+    cfg = _read_skill_dashboard_config()
+    for p in cfg.get("command_paths", []):
+        add_dir(Path(p).expanduser())
+
+    # Environment variables
+    for p in _env_roots("CLAUDE_COMMAND_ROOTS"):
+        add_dir(Path(p).expanduser())
+
+    return [d for d in candidates if _is_command_dir(d)]
+
+
+def _scan_commands(commands_dirs):
+    """Return list of command dicts from command directories."""
+    commands = []
+    seen = set()
+    for cmd_dir in commands_dirs:
+        try:
+            for f in sorted(cmd_dir.iterdir()):
+                if not f.is_file() or f.suffix != ".md":
+                    continue
+                name = f.stem
+                key = f"{cmd_dir}/{name}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                commands.append({
+                    "name": name,
+                    "dir": str(cmd_dir),
+                    "agent": _agent_from_path(str(cmd_dir)),
+                    "path": str(f),
+                })
+        except (PermissionError, OSError):
+            pass
+    return commands
+
 
 def _scan_global_categories():
     """Scan all skill dirs, classify unique skills, return distribution.

@@ -14,7 +14,7 @@ import urllib.request
 import urllib.parse
 import webbrowser
 from collections import Counter
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -30,19 +30,18 @@ from skilldash.content_hash import check_content_changes, record_content_hash
 from skilldash.decisions import (
     _duplicate_decision_key,
     _load_duplicate_decisions,
-    _load_similar_decisions,
     _save_duplicate_decisions,
-    _save_similar_decisions,
 )
 from skilldash.discovery import (
     _agent_from_path,
     _classify_skill_dir_detail,
+    _discover_command_dirs,
     _discover_skill_dirs,
+    _load_claude_plugin_state,
+    _scan_commands,
     _scan_global_categories,
 )
 from skilldash.overlap import (
-    _compute_signature_similarity,
-    _find_agent_cross_dir_similar,
     _find_same_name_duplicates,
     detect_cross_dir_overlaps,
 )
@@ -52,11 +51,37 @@ from skilldash.paths import (
     DUPLICATE_DECISIONS_FILE,
     HTML_FILE,
     PORT,
-    SIMILAR_DECISIONS_FILE,
     STATE_DIR,
     STATIC_DIR,
     load_cached_diagnosis,
 )
+
+def _skill_marker_exists(skill_dir):
+    """True for a real SKILL.md or a broken SKILL.md symlink."""
+    marker = Path(skill_dir) / "SKILL.md"
+    return marker.exists() or marker.is_symlink()
+
+def _is_skill_entry(skill_dir, include_broken=False):
+    """Return whether a path is a skill entry the UI should manage.
+
+    Broken symlinks do not have readable SKILL.md, but they are still cleanup
+    residues in a skills directory and should be removable through the UI.
+    """
+    p = Path(skill_dir)
+    if p.is_symlink():
+        return include_broken or (p / "SKILL.md").exists()
+    if not p.is_dir():
+        return False
+    return (p / "SKILL.md").exists() or (include_broken and (p / "SKILL.md").is_symlink())
+
+def _skill_entry_kind(skill_dir):
+    p = Path(skill_dir)
+    marker = p / "SKILL.md"
+    if p.is_symlink():
+        return "symlink" if p.exists() else "broken_symlink"
+    if marker.is_symlink() and not marker.exists():
+        return "broken_skill_link"
+    return "entity"
 
 def python_quick_check(target_path):
     """Python-only structure check — no bash, no dashboard.
@@ -73,47 +98,46 @@ def python_quick_check(target_path):
     entities = 0
 
     for d in sorted(target_dir.iterdir()):
-        if not d.is_dir() and not d.is_symlink():
+        if not _is_skill_entry(d, include_broken=True):
             continue
         skill_md = d / "SKILL.md"
         name = d.name
 
         # Kind detection
-        if d.is_symlink():
-            if d.resolve().exists():
-                kind = "symlink"
-                symlinks += 1
-            else:
-                kind = "broken_symlink"
-                broken += 1
-                structure_issues.append({"name": name, "note": "broken symlink", "kind": "broken_symlink"})
+        kind = _skill_entry_kind(d)
+        if kind == "symlink":
+            symlinks += 1
+        elif kind == "broken_symlink":
+            broken += 1
+            structure_issues.append({"name": name, "note": "broken symlink", "kind": "broken_symlink"})
+        elif kind == "broken_skill_link":
+            broken += 1
+            structure_issues.append({"name": name, "note": "broken SKILL.md symlink", "kind": "broken_skill_link"})
         else:
-            if not skill_md.exists():
-                continue
-            kind = "entity"
             entities += 1
 
         # Parse frontmatter
         description = ""
         has_fm = False
         oversized = False
-        try:
-            text = skill_md.read_text("utf-8", errors="ignore")
-            if len(text.splitlines()) > 500:
-                oversized = True
-            if text.startswith("---"):
-                has_fm = True
-                end = text.find("---", 3)
-                if end > 0:
-                    fm = text[3:end]
-                    for line in fm.splitlines():
-                        line = line.strip()
-                        if line.startswith("description:"):
-                            description = line.split(":", 1)[1].strip().strip("'\"")
-            else:
-                structure_issues.append({"name": name, "note": "missing frontmatter", "kind": "no_frontmatter"})
-        except Exception:
-            structure_issues.append({"name": name, "note": "read error", "kind": "read_error"})
+        if skill_md.exists():
+            try:
+                text = skill_md.read_text("utf-8", errors="ignore")
+                if len(text.splitlines()) > 500:
+                    oversized = True
+                if text.startswith("---"):
+                    has_fm = True
+                    end = text.find("---", 3)
+                    if end > 0:
+                        fm = text[3:end]
+                        for line in fm.splitlines():
+                            line = line.strip()
+                            if line.startswith("description:"):
+                                description = line.split(":", 1)[1].strip().strip("'\"")
+                else:
+                    structure_issues.append({"name": name, "note": "missing frontmatter", "kind": "no_frontmatter"})
+            except Exception:
+                structure_issues.append({"name": name, "note": "read error", "kind": "read_error"})
 
         if not description:
             no_desc += 1
@@ -234,15 +258,6 @@ def python_quick_check(target_path):
     else:
         level = "red"
 
-    # Default similarity: light, explainable signature comparison.
-    try:
-        overlap_groups = _compute_signature_similarity([
-            {"name": s["name"], "dir": str(target_dir), "agent": _agent_from_path(target_path)}
-            for s in skills
-        ])
-    except Exception:
-        overlap_groups = []
-
     # Content change detection
     content_changes = check_content_changes(target_path)
 
@@ -253,7 +268,6 @@ def python_quick_check(target_path):
             "accuracy_estimate": accuracy,
         },
         "structure_issues": structure_issues,
-        "overlap_groups": overlap_groups,
         "upstream_sources": upstream_sources,
         "cleanup_candidates": list(dict.fromkeys(cleanup_candidates)),  # dedup, preserve order
         "content_changes": content_changes,
@@ -694,14 +708,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return None
 
     @staticmethod
+    def _path_part(path, index):
+        parts = path.split("/")
+        if len(parts) <= index:
+            return ""
+        return urllib.parse.unquote(parts[index])
+
+    @staticmethod
     def _validate_skill_name(name):
         """Sanitize skill name from URL. Rejects path traversal attempts."""
         if not name or '..' in name or '/' in name or '\\' in name:
             return None
         if name.startswith('.') or name.startswith('-'):
             return None
-        # Allow letters, digits, hyphens, underscores, dots, @, +
-        if not re.match(r'^[a-zA-Z0-9._@+\-]+$', name):
+        # Allow chars observed in skill directory names while blocking paths.
+        if not re.match(r'^[a-zA-Z0-9._@+\-()]+$', name):
             return None
         return name
 
@@ -747,8 +768,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._cleanup_execution_plan()
         elif path == "/api/duplicate-decisions":
             self._list_duplicate_decisions()
-        elif path == "/api/similar-decisions":
-            self._list_similar_decisions()
         elif path == "/api/category-order":
             f = STATE_DIR / "category-order.json"
             data = f.read_text(encoding="utf-8") if f.exists() else "[]"
@@ -771,6 +790,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._get_custom_sources()
         elif path == "/api/global-stats":
             self._json_response(_scan_global_categories())
+        elif path == "/api/installed-plugins":
+            self._json_response(self._installed_plugins())
         elif path == "/api/global-overlap":
             self._json_response(detect_cross_dir_overlaps())
         elif path == "/api/scan-result":
@@ -780,7 +801,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/trash/") and path.endswith("/restore"):
             self._restore_trash(path)
         elif path.startswith("/api/skill/") and path.endswith("/content"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
@@ -796,7 +817,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error(400, "Missing dir or name")
         elif path.startswith("/api/skill/") and path.endswith("/upstream"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
@@ -819,8 +840,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._cleanup_execute()
         elif path == "/api/duplicate-decision":
             self._duplicate_decision()
-        elif path == "/api/similar-decision":
-            self._similar_decision()
         elif path == "/api/steal":
             self._steal_skill()
         elif path == "/api/copy-skill":
@@ -846,7 +865,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/trash/") and path.endswith("/restore"):
             self._restore_trash(path)
         elif path.startswith("/api/skill/") and path.endswith("/rehash"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
@@ -861,7 +880,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         query = parse_qs(urlparse(self.path).query)
         if path.startswith("/api/skill/"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
@@ -871,8 +890,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._remove_custom_source()
         elif path == "/api/duplicate-decision":
             self._remove_duplicate_decision()
-        elif path == "/api/similar-decision":
-            self._remove_similar_decision()
         elif path == "/api/trash":
             self._empty_trash()
         elif path.startswith("/api/trash/"):
@@ -1143,9 +1160,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/duplicate-decisions", "desc": "List local exact-duplicate handling decisions"},
                 {"method": "POST", "path": "/api/duplicate-decision", "desc": "Persist exact-duplicate handling decisions"},
                 {"method": "DELETE", "path": "/api/duplicate-decision?key=", "desc": "Remove a local exact-duplicate handling decision"},
-                {"method": "GET", "path": "/api/similar-decisions", "desc": "List local not-similar decisions"},
-                {"method": "POST", "path": "/api/similar-decision", "desc": "Persist not-similar group decisions"},
-                {"method": "DELETE", "path": "/api/similar-decision?key=", "desc": "Remove a local not-similar decision"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
                 {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
@@ -1160,6 +1174,26 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
             ],
         })
+
+    def _installed_plugins(self):
+        """Return Claude plugins installed on this machine."""
+        state = _load_claude_plugin_state()
+        plugins = []
+        for plugin_id, records in state.get("installed", {}).items():
+            for rec in records:
+                plugins.append({
+                    "id": plugin_id,
+                    "marketplace": plugin_id.split("@")[-1] if "@" in plugin_id else "",
+                    "install_path": rec.get("install_path", ""),
+                    "version": rec.get("version", ""),
+                    "scope": rec.get("scope", ""),
+                    "enabled": plugin_id in state.get("enabled", set()),
+                })
+        return {
+            "plugins": plugins,
+            "enabled": list(state.get("enabled", set())),
+            "marketplaces": list(state.get("marketplaces", {}).keys()),
+        }
 
     def _cleanup_plan(self):
         """Return a conservative dry-run cleanup plan for discovered skill dirs."""
@@ -1228,6 +1262,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         data.setdefault("multi_agent_deployment", {})[key] = entry
         _save_duplicate_decisions(data)
         self._json_response({"ok": True, "key": key, "entry": entry})
+        self._log_history(
+            "mark_duplicate_decision",
+            paths=[body.get("path", "")],
+            count=1,
+            source="duplicate_decision",
+            status="ok",
+            detail={"skill_name": skill_name, "content_hash": content_hash, "decision": decision},
+        )
 
     def _remove_duplicate_decision(self):
         """Remove one local exact-duplicate handling decision."""
@@ -1243,67 +1285,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             del bucket[key]
             _save_duplicate_decisions(data)
         self._json_response({"ok": True, "removed": existed, "key": key})
-
-    def _list_similar_decisions(self):
-        """Return local not-similar decisions."""
-        data = _load_similar_decisions()
-        entries = []
-        for key, entry in data.get("not_similar", {}).items():
-            if not isinstance(entry, dict):
-                continue
-            item = dict(entry)
-            item["key"] = key
-            entries.append(item)
-        entries.sort(key=lambda x: x.get("decided_at", ""), reverse=True)
-        self._json_response({
-            "schema": 1,
-            "state_file": str(SIMILAR_DECISIONS_FILE),
-            "ignored_by_git": True,
-            "decisions": entries,
-            "count": len(entries),
-        })
-
-    def _similar_decision(self):
-        """Persist a local not-similar decision for one similarity group."""
-        body = self._read_json() or {}
-        decision = body.get("decision", "")
-        group_key = body.get("group_key", "")
-        if decision != "not_similar":
-            self._json_response({"error": "unsupported decision"}, status=400)
-            return
-        if not re.match(r'^[a-fA-F0-9]{20}$', group_key or ""):
-            self._json_response({"error": "invalid group key"}, status=400)
-            return
-        members = body.get("members", [])
-        if not isinstance(members, list):
-            members = []
-        entry = {
-            "decision": decision,
-            "group_key": group_key,
-            "source": body.get("source", "signature"),
-            "members": members[:10],
-            "reason": body.get("reason", ""),
-            "decided_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        data = _load_similar_decisions()
-        data.setdefault("not_similar", {})[group_key] = entry
-        _save_similar_decisions(data)
-        self._json_response({"ok": True, "key": group_key, "entry": entry})
-
-    def _remove_similar_decision(self):
-        """Remove one local not-similar decision."""
-        query = parse_qs(urlparse(self.path).query)
-        key = query.get("key", [""])[0]
-        if not re.match(r'^[a-fA-F0-9]{20}$', key or ""):
-            self._json_response({"error": "invalid decision key"}, status=400)
-            return
-        data = _load_similar_decisions()
-        bucket = data.setdefault("not_similar", {})
-        existed = key in bucket
-        if existed:
-            del bucket[key]
-            _save_similar_decisions(data)
-        self._json_response({"ok": True, "removed": existed, "key": key})
+        self._log_history(
+            "remove_duplicate_decision",
+            paths=[],
+            count=1 if existed else 0,
+            source="duplicate_decision",
+            status="ok" if existed else "blocked",
+            detail={"key": key, "existed": existed},
+        )
 
     def _cleanup_execute(self):
         """Execute selected cleanup candidate actions by moving skills to trash."""
@@ -1416,7 +1405,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
     def _list_source_skills(self):
-        """Return skills in a given source directory (for穿透 browsing)."""
+        """Return skills or commands in a given source directory (for穿透 browsing)."""
         query = parse_qs(urlparse(self.path).query)
         source_path = query.get("path", [""])[0]
         if not source_path:
@@ -1435,39 +1424,56 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"error": f"not a dir: {source_path}"}, status=400)
             return
 
+        is_commands = source_dir.name == "commands"
+        with_understanding = query.get("understanding", ["0"])[0].lower() in ("1", "true", "yes")
         result = []
-        for d in sorted(source_dir.iterdir()):
-            if not d.is_dir() and not d.is_symlink():
-                continue
-            skill_md = d / "SKILL.md"
-            if not skill_md.exists():
-                continue
-            name = d.name
-            description = ""
-            try:
-                text = skill_md.read_text("utf-8", errors="ignore")[:2000]
-                if text.startswith("---"):
-                    end = text.find("---", 3)
-                    if end > 0:
-                        fm = text[3:end]
-                        for line in fm.splitlines():
-                            line = line.strip()
-                            if line.startswith("description:"):
-                                description = line.split(":", 1)[1].strip().strip("'\"")
-            except Exception:
-                pass
-            understanding = None
-            try:
-                understanding = compact_understanding(understand_skill(d, CACHE_DIR))
-            except Exception:
+        t_parse = time.time()
+        if is_commands:
+            for f in sorted(source_dir.iterdir()):
+                if not f.is_file() or f.suffix != ".md":
+                    continue
+                result.append({
+                    "name": f.stem,
+                    "description": "",
+                    "kind": "command",
+                    "understanding": None,
+                })
+        else:
+            for d in sorted(source_dir.iterdir()):
+                if not _is_skill_entry(d, include_broken=True):
+                    continue
+                skill_md = d / "SKILL.md"
+                name = d.name
+                description = ""
+                kind = _skill_entry_kind(d)
+                if skill_md.exists():
+                    try:
+                        text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                        if text.startswith("---"):
+                            end = text.find("---", 3)
+                            if end > 0:
+                                fm = text[3:end]
+                                for line in fm.splitlines():
+                                    line = line.strip()
+                                    if line.startswith("description:"):
+                                        description = line.split(":", 1)[1].strip().strip("'\"")
+                    except Exception:
+                        pass
                 understanding = None
-            result.append({
-                "name": name,
-                "description": description,
-                "understanding": understanding,
-            })
+                if with_understanding and skill_md.exists():
+                    try:
+                        understanding = compact_understanding(understand_skill(d, CACHE_DIR))
+                    except Exception:
+                        understanding = None
+                result.append({
+                    "name": name,
+                    "description": description,
+                    "kind": kind,
+                    "understanding": understanding,
+                })
         self._json_response({
             "source": str(source_dir).replace(str(Path.home()), "~"),
+            "type": "commands" if is_commands else "skills",
             "skills": result,
             "count": len(result),
         })
@@ -1510,16 +1516,33 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     if d.resolve().stat().st_dev == new_inode[0] and d.resolve().stat().st_ino == new_inode[1]:
                         self._json_response({"ok": True, "path": new_path, "skipped": True,
                                              "message": f"已在自动发现中: {d}"})
+                        self._log_history(
+                            "add_source",
+                            paths=[new_path],
+                            count=0,
+                            source="custom_sources",
+                            status="blocked",
+                            detail={"path": new_path, "reason": f"already discovered: {d}"},
+                        )
                         return
                 except OSError:
                     continue
         except OSError:
             pass
         paths = self._load_custom_sources()
-        if new_path not in paths:
+        added = new_path not in paths
+        if added:
             paths.append(new_path)
             self._save_custom_sources(paths)
         self._json_response({"ok": True, "path": new_path, "paths": paths})
+        self._log_history(
+            "add_source",
+            paths=[new_path],
+            count=1,
+            source="custom_sources",
+            status="ok",
+            detail={"path": new_path, "added": added},
+        )
 
     def _remove_custom_source(self):
         """Remove a custom source path."""
@@ -1529,10 +1552,19 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"error": "missing path"}, status=400)
             return
         paths = self._load_custom_sources()
-        if rm_path in paths:
+        removed = rm_path in paths
+        if removed:
             paths.remove(rm_path)
             self._save_custom_sources(paths)
         self._json_response({"ok": True, "paths": paths})
+        self._log_history(
+            "remove_source",
+            paths=[rm_path],
+            count=1 if removed else 0,
+            source="custom_sources",
+            status="ok" if removed else "blocked",
+            detail={"path": rm_path, "removed": removed},
+        )
 
     # ── Trash ──
 
@@ -1677,54 +1709,51 @@ class DashboardHandler(BaseHTTPRequestHandler):
         start = time.time()
         skills = []
         for d in sorted(target_dir.iterdir()):
-            if not d.is_dir():
+            if not _is_skill_entry(d, include_broken=True):
                 continue
             skill_md = d / "SKILL.md"
-            if not skill_md.exists():
-                continue
             name = d.name
             description = ""
             category = ""
-            kind = "entity"
+            kind = _skill_entry_kind(d)
             # Quick frontmatter parse
-            try:
-                text = skill_md.read_text("utf-8", errors="ignore")[:2000]
-                if text.startswith("---"):
-                    end = text.find("---", 3)
-                    if end > 0:
-                        fm = text[3:end]
-                        fm_lines = fm.splitlines()
-                        for i, line in enumerate(fm_lines):
-                            stripped = line.strip()
-                            if stripped.startswith("description:"):
-                                val = stripped.split(":", 1)[1].strip()
-                                # Strip YAML multiline indicators (>, |, >-, |-, >+, |+)
-                                if val in (">", "|", ">-", "|-", ">+", "|+"):
-                                    # Collect indented continuation lines
-                                    parts = []
-                                    for cont in fm_lines[i + 1:]:
-                                        if cont and not cont[0].isspace():
-                                            break
-                                        parts.append(cont.strip())
-                                    description = " ".join(parts)
-                                elif val.startswith('"') and val.endswith('"'):
-                                    description = val[1:-1]
-                                elif val.startswith("'") and val.endswith("'"):
-                                    description = val[1:-1]
-                                else:
-                                    description = val.strip("'\"")
-                            elif stripped.startswith("category:"):
-                                category = stripped.split(":", 1)[1].strip().strip("'\"")
-            except Exception:
-                pass
-            # Check if symlink
-            if d.is_symlink():
-                kind = "symlink" if d.resolve().exists() else "broken_symlink"
+            if skill_md.exists():
+                try:
+                    text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end > 0:
+                            fm = text[3:end]
+                            fm_lines = fm.splitlines()
+                            for i, line in enumerate(fm_lines):
+                                stripped = line.strip()
+                                if stripped.startswith("description:"):
+                                    val = stripped.split(":", 1)[1].strip()
+                                    # Strip YAML multiline indicators (>, |, >-, |-, >+, |+)
+                                    if val in (">", "|", ">-", "|-", ">+", "|+"):
+                                        # Collect indented continuation lines
+                                        parts = []
+                                        for cont in fm_lines[i + 1:]:
+                                            if cont and not cont[0].isspace():
+                                                break
+                                            parts.append(cont.strip())
+                                        description = " ".join(parts)
+                                    elif val.startswith('"') and val.endswith('"'):
+                                        description = val[1:-1]
+                                    elif val.startswith("'") and val.endswith("'"):
+                                        description = val[1:-1]
+                                    else:
+                                        description = val.strip("'\"")
+                                elif stripped.startswith("category:"):
+                                    category = stripped.split(":", 1)[1].strip().strip("'\"")
+                except Exception:
+                    pass
             understanding = None
-            try:
-                understanding = compact_understanding(understand_skill(d, CACHE_DIR))
-            except Exception:
-                understanding = None
+            if skill_md.exists():
+                try:
+                    understanding = compact_understanding(understand_skill(d, CACHE_DIR))
+                except Exception:
+                    understanding = None
             skills.append({
                 "name": name,
                 "description": description,
@@ -1737,6 +1766,24 @@ class DashboardHandler(BaseHTTPRequestHandler):
         # Build scan-like response
         home = Path.home()
         rel = str(target_dir).replace(str(home), "~")
+
+        # Discover commands for the current target's agent
+        commands = []
+        try:
+            agent_root = target_dir.parent
+            if agent_root.name == ".claude":
+                commands_dir = agent_root / "commands"
+                if commands_dir.is_dir():
+                    commands = _scan_commands([commands_dir])
+        except Exception:
+            pass
+
+        broken = [s for s in skills if s["kind"] in ("broken_symlink", "broken_skill_link")]
+        structure_issues = [
+            {"name": s["name"], "kind": s["kind"], "dir": str(target_dir / s["name"])}
+            for s in broken
+        ]
+
         result = {
             "target": {
                 "path": rel,
@@ -1744,10 +1791,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "total": len(skills),
                 "entities": len([s for s in skills if s["kind"] == "entity"]),
                 "symlinks": len([s for s in skills if s["kind"] == "symlink"]),
-                "broken_symlinks": len([s for s in skills if s["kind"] == "broken_symlink"]),
+                "broken_symlinks": len(broken),
             },
             "installed": skills,
-            "totals": {"skills": len(skills)},
+            "commands": commands,
+            "structure_issues": structure_issues,
+            "totals": {"skills": len(skills), "commands": len(commands)},
             "sources": [],
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "scan_mode": "fast",
@@ -1781,7 +1830,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 if (x.is_dir() or x.is_symlink()) and (x / "SKILL.md").exists()) > 0]
 
         # Always run all check types
-        checks = body.get("checks", ["same-name", "similar", "upstream", "content-changes"])
+        checks = body.get("checks", ["same-name", "upstream", "content-changes"])
 
         # Validate directories
         valid_dirs = []
@@ -1796,15 +1845,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         t0 = time.time()
         result = {
             "upstream_sources": [],
-            "overlap_groups": [],
             "duplicates_same_name": [],
             "duplicates_identical": [],
-            "agent_similar": {},
             "content_changes": None,
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "scanned_dirs": len(valid_dirs),
             "scope": requested_scope,
-            "scan_schema_version": 3,
+            "scan_schema_version": 4,
+            "checks": checks,
             "scanned_policy_counts": dict(Counter(
                 _classify_skill_dir_detail(d).get("policy", "review") for d in valid_dirs
             )),
@@ -1822,15 +1870,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             if not dir_skills:
                 continue
-
-            # Similarity within this directory
-            if "similar" in checks and len(dir_skills) > 1:
-                groups = _compute_signature_similarity([
-                    {"name": s["name"], "dir": str(tdir), "agent": _agent_from_path(str(tdir))}
-                    for s in dir_skills
-                ])
-                if groups:
-                    result["overlap_groups"].extend(groups)
 
             # Upstream tracking
             if "upstream" in checks:
@@ -1870,8 +1909,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 dup_id, dup_sn = _find_same_name_duplicates(valid_dirs)
                 result["duplicates_identical"] = dup_id
                 result["duplicates_same_name"] = dup_sn
-            if "similar" in checks:
-                result["agent_similar"] = _find_agent_cross_dir_similar(valid_dirs)
 
         result["duration_ms"] = int((time.time() - t0) * 1000)
 
@@ -1899,26 +1936,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if len(dup.get("locations", [])) < 2:
                 warnings.append(f"same-name group '{dup.get('name','?')}' has {len(dup.get('locations',[]))} locations (need 2+)")
 
-        # 2. Overlap groups: each must have 2+ skills
-        ov = result.get("overlap_groups", [])
-        for g in ov:
-            if len(g.get("skills", [])) < 2:
-                warnings.append(f"overlap group has {len(g.get('skills',[]))} skills (need 2+)")
-
-        # 3. Agent-similar: each group must have 2+ skills
-        for agent, groups in result.get("agent_similar", {}).items():
-            for g in groups:
-                if len(g.get("skills", [])) < 2:
-                    warnings.append(f"agent_similar[{agent}] group has {len(g.get('skills',[]))} skills (need 2+)")
-
-        # 4. Upstream: each must have name and dir
+        # 2. Upstream: each must have name and dir
         for s in result.get("upstream_sources", []):
             if not s.get("name"):
                 warnings.append(f"upstream entry missing name: {s}")
             if not s.get("dir"):
                 warnings.append(f"upstream entry '{s.get('name','?')}' missing dir")
 
-        # 5. Cross-dir same-name: count groups that span 2+ agents
+        # 3. Cross-dir same-name: count groups that span 2+ agents
         cross_agent_count = sum(1 for dup in sn if len(set(l.get("agent", "") for l in dup.get("locations", []))) >= 2)
         within_agent_count = 0
         sn_by_agent = {}
@@ -1946,9 +1971,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "same_name_groups": len(sn),
             "cross_agent_groups": cross_agent_count,
             "within_agent_groups": within_agent_count,
-            "overlap_groups": len(ov),
             "upstream_sources": len(result.get("upstream_sources", [])),
-            "agent_similar_agents": len(result.get("agent_similar", {})),
         }}
 
     def _diagnose(self):
@@ -2060,6 +2083,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         # Reuse shared discovery
         skill_dirs = _discover_skill_dirs()
+        command_dirs = _discover_command_dirs()
 
         targets = []
         for skills_dir in skill_dirs:
@@ -2078,9 +2102,34 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 "name": agent,
                 "scope": scope,
                 "count": count,
+                "type": "skills",
                 "is_current": str(skills_dir) == current,
                 **governance,
             })
+
+        # Add command directories
+        for commands_dir in command_dirs:
+            count = sum(1 for f in commands_dir.iterdir() if f.is_file() and f.suffix == ".md")
+            if count == 0:
+                continue
+            rel = str(commands_dir).replace(str(home), "~")
+            agent = _agent_from_path(str(commands_dir))
+            scope = "project" if "projects/" in rel else "global"
+            targets.append({
+                "path": str(commands_dir),
+                "rel": rel,
+                "name": agent,
+                "scope": scope,
+                "count": count,
+                "type": "commands",
+                "is_current": False,
+                "category": "commands",
+                "policy": "review",
+                "layer": "commands",
+                "layer_label": "命令",
+                "policy_label": "复核",
+            })
+
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 
         # Group by agent name
@@ -2165,6 +2214,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         scan_file.write_text(json.dumps(scan_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
+        self._log_history(
+            "switch_target",
+            paths=[rel],
+            count=0,
+            source="target_switcher",
+            status="ok",
+            detail={"label": Path(target_path).parent.name},
+        )
+
         # Now do fast scan
         self._fast_scan()
 
@@ -2212,7 +2270,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self._json_response({"error": "target must be under home directory"}, status=400)
                 return
             skill_dir = target_path / name
-            if (skill_dir.is_dir() or skill_dir.is_symlink()) and (skill_dir / "SKILL.md").exists():
+            if _is_skill_entry(skill_dir, include_broken=True):
                 try:
                     dest = self._trash_dir(skill_dir)
                     self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "target": target})
@@ -2271,7 +2329,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 details.append({"name": name, "error": "invalid skill name"})
                 continue
             skill_dir = target_path / safe_name
-            if not ((skill_dir.is_dir() or skill_dir.is_symlink()) and (skill_dir / "SKILL.md").exists()):
+            if not _is_skill_entry(skill_dir, include_broken=True):
                 fail += 1
                 details.append({"name": safe_name, "error": "not a skill directory"})
                 continue
@@ -2305,7 +2363,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         except Exception:
             pass
         for d in candidates:
-            if d.exists():
+            if d.exists() or _is_skill_entry(d, include_broken=True):
                 return d
         return None
 
@@ -2324,13 +2382,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             data = {}
 
         if path.startswith("/api/skill/") and path.endswith("/update"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
                 self._update_upstream(name)
         elif path.startswith("/api/skill/") and path.endswith("/fix"):
-            name = self._validate_skill_name(path.split("/")[3])
+            name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
             else:
@@ -2348,6 +2406,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             return
         record_content_hash(skill_dir)
         self._json_response({"ok": True, "name": name})
+        self._log_history(
+            "rehash",
+            paths=[str(skill_dir)],
+            count=1,
+            source="skill_detail",
+            status="ok",
+            detail={"name": name},
+        )
 
     def _copy_skill(self):
         """Copy a skill from a local directory to the current target library."""
@@ -2381,6 +2447,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
         shutil.copytree(src_dir, dest)
         record_content_hash(dest)
         self._json_response({"ok": True, "name": skill_name, "output": f"Copied to {dest}"})
+        self._log_history(
+            "copy",
+            paths=[str(src_dir), str(dest)],
+            count=1,
+            source="copy_skill",
+            status="ok",
+            detail={"name": skill_name, "src": str(src_dir), "target": str(target_dir)},
+        )
 
     def _steal_skill(self):
         """Install a skill from GitHub URL — pure Python, no dashboard."""
@@ -2399,12 +2473,30 @@ class DashboardHandler(BaseHTTPRequestHandler):
         target = self._current_target()
         result = install_skill(source, target, preferred_name=skill_name or None)
         self._json_response(result)
+        status = "ok" if result.get("ok") or result.get("success") else "failed"
+        self._log_history(
+            "install",
+            paths=[result.get("path", "") or source],
+            count=1 if status == "ok" else 0,
+            source="steal",
+            status=status,
+            detail={"source": source, "name": skill_name or result.get("name", ""), "error": result.get("error", "")},
+        )
 
     def _update_upstream(self, name):
         """Update a skill from its upstream source — pure Python."""
         target = self._current_target()
         result = update_skill(name, target)
         self._json_response(result)
+        status = "ok" if result.get("ok") or result.get("success") else "failed"
+        self._log_history(
+            "update",
+            paths=[str(Path(target).expanduser().resolve() / name)],
+            count=1 if status == "ok" else 0,
+            source="update_upstream",
+            status=status,
+            detail={"name": name, "target": target, "error": result.get("error", "")},
+        )
 
     def _fix_skill(self, name, action, body=None):
         """Fix a skill issue."""
@@ -2424,6 +2516,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
             if not content.startswith("---"):
                 skill_md.write_text(f"---\nname: {name}\ndescription: ''\n---\n\n{content}", encoding="utf-8")
                 self._json_response({"ok": True, "name": name, "fixed": "added frontmatter"})
+                self._log_history(
+                    "fix",
+                    paths=[str(skill_dir)],
+                    count=1,
+                    source="fix_skill",
+                    status="ok",
+                    detail={"name": name, "action": "add_frontmatter"},
+                )
             else:
                 self._json_response({"ok": False, "error": "already has frontmatter"})
             return
@@ -2461,6 +2561,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 # No frontmatter at all — add both
                 skill_md.write_text(f"---\nname: {name}\ndescription: '{desc}'\n---\n\n{content}", encoding="utf-8")
             self._json_response({"ok": True, "name": name, "fixed": "added description"})
+            self._log_history(
+                "fix",
+                paths=[str(skill_dir)],
+                count=1,
+                source="fix_skill",
+                status="ok",
+                detail={"name": name, "action": "add_description", "description": desc},
+            )
             return
         self._json_response({"error": f"unknown action: {action}"}, status=400)
 
@@ -2489,7 +2597,7 @@ def main():
         print(f"  Creating {STATE_DIR}...")
         STATE_DIR.mkdir(parents=True, exist_ok=True)
 
-    server = HTTPServer(("127.0.0.1", PORT), DashboardHandler)
+    server = ThreadingHTTPServer(("127.0.0.1", PORT), DashboardHandler)
     url = f"http://localhost:{PORT}"
     print(f"🚀 Skill Dashboard running at {url}")
     print(f"   Data source: {STATE_DIR}")

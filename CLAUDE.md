@@ -26,11 +26,10 @@ serve.py           — 后端入口：HTTP handler + 路由编排（~2400 行）
 skilldash/paths.py          — 共享路径、端口、缓存文件定位
 skilldash/classification.py — skill 分类关键词和描述读取
 skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
-skilldash/overlap.py        — 跨目录同名、完全重复、轻量相似扫描
+skilldash/overlap.py        — 跨目录同名、完全重复扫描
 skilldash/cleanup.py        — 清理计划、执行预案、重复 skill 处理准则
 skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
-skilldash/decisions.py      — 本地运行态决策（多端部署/标记不相似）
-skilldash/similarity.py     — signature 相似度 + TF-IDF 深度审计能力
+skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
 index.html         — 前端 HTML 骨架（~150 行）
@@ -54,7 +53,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
           ↓ fetch API
        serve.py (HTTPServer, 端口 3457)
           ↓ 调用本地模块
-       skilldash/{discovery,cleanup,overlap,similarity,understanding,...}
+       skilldash/{discovery,cleanup,overlap,understanding,...}
           ↓ 读文件系统
        本地 skill 目录 (如 ~/.codex/skills/)
           ↓ GitHub REST API (无认证)
@@ -66,7 +65,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 2. **用户手动扫描**：`/api/scan-run`（选目录 + 选分析类型）
 3. **缓存读取**：`/api/scan-result`（上次扫描结果）
 
-分析功能（同名/相似/上游）不自动触发，由用户在"问题与整理"页面的"二哥扫描"面板手动选择。
+分析功能（同名/上游/内容变更）不自动触发，由用户在"问题与整理"页面的"二哥扫描"面板手动选择。
 
 ## 关键 API
 
@@ -77,7 +76,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
-| `/api/global-overlap` | GET | 跨目录同名 + 相似分析（遗留接口，前端不再自动调用） |
+| `/api/global-overlap` | GET | 跨目录同名重复分析（遗留接口，前端不再自动调用） |
 | `/api/quick-check` | GET | 健康评分 + 结构问题（遗留接口，前端不再自动调用） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
@@ -100,7 +99,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
 | `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |
 | `/api/duplicate-decision` | POST | 记录完全重复 skill 的本地处理决策，如多端部署副本 |
-| `/api/similar-decision` | POST/DELETE | 记录或撤销“这组不是相似 skill”的本地运行决策 |
 | `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
 | `/api/openapi` | GET | 返回路由清单（调试用） |
 
@@ -128,9 +126,9 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### 扫描 API：用户选范围 + 选类型
 
-`POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/相似/上游/内容变更）在用户选择的目录上。
+`POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/上游/内容变更）在用户选择的目录上。
 
-辅助函数 `_find_same_name_duplicates(dirs)` 和 `_find_agent_cross_dir_similar(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
+辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
 
 ### 清理执行准则：hash 一致不是直接删除依据
 
@@ -141,10 +139,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - 保留副本仍存在，且执行前 hash 没有变化
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
-
-默认相似度使用轻量 signature：`name + description + keywords + headings` 的关键词集合 Jaccard，阈值 0.30，强调可解释性和“为什么像”。TF-IDF 全文相似函数保留为深度审计能力，但不作为默认问题页口径。
-
-相似度只用于人工复核和合并判断，不参与自动清理。前端相似卡片不提供删除入口，只提供查看、并排对比、标记不相似。“标记不相似”写入 `.data/state/similar-decisions.json`，属于本机运行状态，不提交 Git。
 
 ### 前端数据流
 
@@ -195,26 +189,25 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
 - 完全重复处理决策：`.data/state/duplicate-decisions.json`（本地运行态，不提交）
-- 相似度误报处理决策：`.data/state/similar-decisions.json`（本地运行态，不提交）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 
 ## 注意事项
 
 - **零依赖**：只用 Python 标准库，不引入任何 pip 包
-- **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-]+`
+- **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-()]+`，路由层会先 URL decode
 - **CSRF 防护**：POST/DELETE/PATCH 校验 Origin/Referer
 - **GitHub API 限流**：未认证 60 次/小时，有 5 分钟 TTL 缓存 + 熔断
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
-- **Symlink 安全**：垃圾站移动拒绝 skill 目录 symlink，避免误移动链接本身造成宿主目录状态混乱
+- **Symlink 安全**：垃圾站移动 symlink 时只移动链接入口本身，不追随链接目标；broken symlink 可清理
 - **前端 JS 调试**：模板字符串嵌套 HTML 属性时注意引号冲突，优先抽全局函数而非内联 onclick
 
 ## 下一步方向
 
 **"问题与整理"页的分类展示与扫描规则优化**：
 - 当前分类 tab（5 类：user/marketplace/cache/cross-copy/project）的展示逻辑和切换体验
-- 二哥扫描的规则调优（同名检测、相似度阈值、上游比对策略）
+- 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
 - 分类标签与扫描结果的联动展示
 - 问题页的删除操作与全部目录技能页的分类删除联动
 

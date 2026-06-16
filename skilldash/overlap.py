@@ -1,4 +1,4 @@
-"""Cross-directory duplicate and similarity scans."""
+"""Cross-directory duplicate scans."""
 
 from __future__ import annotations
 
@@ -7,19 +7,8 @@ import json
 import time
 from pathlib import Path
 
-from .classification import _classify_skill
-from .decisions import _similar_ignored_keys
 from .discovery import _agent_from_path, _discover_skill_dirs
 from .paths import CACHE_DIR
-from .similarity import compute_signature_similarity
-
-
-def _compute_signature_similarity(skill_refs):
-    return compute_signature_similarity(
-        skill_refs,
-        ignored_keys=_similar_ignored_keys(),
-        classify_skill=_classify_skill,
-    )
 
 
 def _skill_md_hash(skill_dir):
@@ -83,59 +72,15 @@ def _find_same_name_duplicates(dirs):
     duplicates_same_name.sort(key=lambda d: d["dir_count"], reverse=True)
     return duplicates_identical, duplicates_same_name
 
-def _find_agent_cross_dir_similar(dirs):
-    """Per-agent light-signature cross-directory similarity for the given directory list.
-    Returns {agent_name: [overlap_groups]}.
-    """
-    dir_skills = {}  # dir_path -> [skill_names]
-    agent_dirs = {}  # agent -> [dir_paths]
-    for tdir in dirs:
-        dir_path = str(tdir)
-        skills_in_dir = []
-        try:
-            entries = sorted(tdir.iterdir())
-        except Exception:
-            continue
-        for d in entries:
-            if not (d.is_dir() or d.is_symlink()):
-                continue
-            if not (d / "SKILL.md").exists():
-                continue
-            skills_in_dir.append(d.name)
-        if skills_in_dir:
-            dir_skills[dir_path] = skills_in_dir
-            agent = _agent_from_path(dir_path)
-            agent_dirs.setdefault(agent, []).append(dir_path)
-
-    agent_similar = {}
-    for agent_name, agent_dir_list in agent_dirs.items():
-        if len(agent_dir_list) < 2:
-            continue
-        agent_refs = []
-        seen_names = set()
-        for dp in agent_dir_list:
-            for skill_name in dir_skills.get(dp, []):
-                if skill_name in seen_names:
-                    continue
-                seen_names.add(skill_name)
-                agent_refs.append({"name": skill_name, "dir": dp, "agent": agent_name})
-        if 1 < len(agent_refs):
-            groups = _compute_signature_similarity(agent_refs)
-            if groups:
-                agent_similar[agent_name] = groups
-    return agent_similar
 
 def detect_cross_dir_overlaps():
-    """Detect duplicate and similar skills across ALL directories.
-    Uses _find_same_name_duplicates and _find_agent_cross_dir_similar helpers.
-    Cached for 5 minutes.
-    """
+    """Detect duplicate skills across ALL directories. Cached for 5 minutes."""
     # Cache (5-min TTL)
     cache_file = CACHE_DIR / "cross-dir-overlaps.json"
     if cache_file.exists():
         try:
             cached = json.loads(cache_file.read_text("utf-8"))
-            if cached.get("_schema") == 3 and time.time() - cached.get("_ts", 0) < 300:
+            if cached.get("_schema") == 4 and time.time() - cached.get("_ts", 0) < 300:
                 return {k: v for k, v in cached.items() if not k.startswith("_")}
         except Exception:
             pass
@@ -160,9 +105,6 @@ def detect_cross_dir_overlaps():
 
     prunable = sum(d["dir_count"] - 1 for d in duplicates_identical)
 
-    # Cross-directory light-signature similarity
-    agent_similar = _find_agent_cross_dir_similar(all_dirs)
-
     # Count unique skills across all dirs for stats
     unique_names = set()
     total_dirs = 0
@@ -182,7 +124,6 @@ def detect_cross_dir_overlaps():
         "duplicates_identical": duplicates_identical,
         "duplicates_same_name": duplicates_same_name,
         "agent_summary": agent_summary_final,
-        "agent_similar": agent_similar,
         "total_unique_names": len(unique_names),
         "total_dirs_scanned": total_dirs,
         "total_identical": len(duplicates_identical),
@@ -193,7 +134,7 @@ def detect_cross_dir_overlaps():
 
     try:
         cache_file.write_text(
-            json.dumps({"_schema": 3, "_ts": time.time(), **result}, ensure_ascii=False, indent=2),
+            json.dumps({"_schema": 4, "_ts": time.time(), **result}, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
     except Exception:

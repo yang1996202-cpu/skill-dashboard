@@ -1,4 +1,4 @@
-let scan=null,health=null,skills=[],diagState='idle';
+let scan=null,health=null,skills=[],diagState='idle',installedPlugins=[];
 const $=id=>document.getElementById(id);
 let diagPollTimer=null;
 let categoryOverrides={};
@@ -63,15 +63,9 @@ let cleanupExcludedActions=new Set();
 let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
-const SIGNATURE_SIMILARITY_DISPLAY_THRESHOLD=0.30;
-const TFIDF_SIMILARITY_DISPLAY_THRESHOLD=0.50;
 let _sourcesShowAll=false;
 let _sourceViewMode=localStorage.getItem('sd-source-view')||'daily'; // daily | deep
 let _expandedSourceAgent=null;
-async function loadGlobalOverlap(){
-  try{globalOverlap=await fetch('/api/global-overlap').then(r=>r.json())}catch{globalOverlap=null}
-}
-
 async function fetchTargets(force=false){
   const now=Date.now();
   if(!force&&_targetsCache&&(now-_targetsCacheTs)<TARGETS_CACHE_TTL){
@@ -87,14 +81,10 @@ async function fetchTargets(force=false){
   }
 }
 
-function isVisibleSimilarityGroup(g){
-  const threshold=g?.source==='tfidf'?TFIDF_SIMILARITY_DISPLAY_THRESHOLD:SIGNATURE_SIMILARITY_DISPLAY_THRESHOLD;
-  return (g?.score||0) >= threshold;
-}
 async function loadCachedScanResult(){
   const r=await fetch('/api/scan-result').then(r=>r.json()).catch(()=>null);
   if(r&&!r.error&&r.scanned_at){
-    if(r.scan_schema_version!==2){
+    if(r.scan_schema_version!==4){
       scanResult=null;
       health=null;
       globalOverlap=null;
@@ -107,16 +97,14 @@ async function loadCachedScanResult(){
     // Map scan result into health/globalOverlap for renderIssues
     health={
       upstream_sources:r.upstream_sources||[],
-      overlap_groups:r.overlap_groups||[],
       content_changes:r.content_changes,
-      structure_issues:[],
+      structure_issues:r.structure_issues||[],
       cleanup_candidates:[],
       generated_at:r.scanned_at,
     };
     globalOverlap={
       duplicates_same_name:r.duplicates_same_name||[],
       duplicates_identical:r.duplicates_identical||[],
-      agent_similar:r.agent_similar||{},
       total_identical:(r.duplicates_identical||[]).length,
     };
     renderIssues();
@@ -142,7 +130,7 @@ async function loadData(){
   fetch('/api/global-stats').then(r=>r.json()).catch(()=>null).then(gs=>{
     if(gs){globalStats=gs;renderStats();renderWorkbench();renderCategories()}
   });
-  // Load global overlap data (cross-directory duplicates + similarity)
+  // Load global overlap data (cross-directory duplicates)
   // Removed: now user-triggered via scan panel
   // Fallback: load targets as sources (directory list)
   if(!scan?.sources?.length){
@@ -165,6 +153,10 @@ async function loadData(){
   // Load cached scan results (if user previously ran a scan)
   loadCachedScanResult();
   loadTrash();
+  // Load installed plugins
+  fetch('/api/installed-plugins').then(r=>r.json()).catch(()=>null).then(d=>{
+    if(d){installedPlugins=d.plugins||[];renderStats();renderWorkbench();}
+  });
 }
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
@@ -211,16 +203,13 @@ function render(){
 
 function getTriageMetrics(){
   const sameName=(globalOverlap?.duplicates_same_name||[]).length;
-  const overlapGroups=(health?.overlap_groups||[]).filter(isVisibleSimilarityGroup).length;
-  const agentSimilar=Object.values(globalOverlap?.agent_similar||{}).reduce((s,g)=>s+g.filter(isVisibleSimilarityGroup).length,0);
-  const similar=overlapGroups+agentSimilar;
   const upstreams=health?.upstream_sources||[];
   const outdated=upstreams.filter(s=>s.status==='outdated').length;
   const changes=health?.content_changes?.changed?.length||0;
-  const actionable=sameName+similar+outdated+changes;
-  const observed=sameName+similar+upstreams.length+changes;
+  const actionable=sameName+outdated+changes;
+  const observed=sameName+upstreams.length+changes;
   return {
-    sameName,overlapGroups,agentSimilar,similar,upstreams,outdated,changes,
+    sameName,upstreams,outdated,changes,
     actionable,observed,
     scannedDirs:scanResult?.scanned_dirs||globalStats?.targets_scanned||targetGroups.length||0,
     durationMs:scanResult?.duration_ms||0,
@@ -236,13 +225,6 @@ function getCategoryActionCounts(){
   };
   (globalOverlap?.duplicates_same_name||[]).forEach(dup=>{
     const cats=new Set((dup.locations||[]).map(l=>_dirCategory(l.dir)));
-    cats.forEach(c=>{counts[c]=(counts[c]||0)+1});
-  });
-  const simGroups=[...(health?.overlap_groups||[]),...Object.values(globalOverlap?.agent_similar||{}).flat()].filter(isVisibleSimilarityGroup);
-  simGroups.forEach(g=>{
-    const meta=g.skills_meta||{};
-    const cats=new Set();
-    (g.skills||[]).forEach(s=>cats.add(_dirCategory((meta[s]||{}).dir||'')));
     cats.forEach(c=>{counts[c]=(counts[c]||0)+1});
   });
   (health?.upstream_sources||[]).filter(s=>s.status==='outdated').forEach(s=>bump(s.dir));
@@ -297,10 +279,10 @@ function renderWorkbench(){
       action:m.sameName?'issues':'skills'
     },
     {
-      title:m.similar?`复核相似功能`:'浏览全部来源',
-      desc:m.similar?`相似不等于重复，默认只展示需要人工复核的线索`:`${targetGroups.length||'?'} 个应用分组，按 skill 数排序`,
-      count:m.similar||targetGroups.length||'--',
-      action:m.similar?'issues':'sources'
+      title:'浏览全部来源',
+      desc:`${targetGroups.length||'?'} 个应用分组，按 skill 数排序`,
+      count:targetGroups.length||'--',
+      action:'sources'
     }
   ];
   el.innerHTML=`<div class="workbench">
@@ -342,10 +324,14 @@ function renderStats(){
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
   const m=getTriageMetrics();
   const actionable=(scanResult||health)?m.actionable:0;
+  const commands=scan?.commands||[];
+  const enabledPlugins=(installedPlugins||[]).filter(p=>p.enabled).length;
   $('stats-row').innerHTML=`
     <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全量 Skills</div></div>
     <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
-    <div class="stat s-issues" title="同名、相似、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;
+    <div class="stat" title="当前 Agent 的命令数量"><div class="val">${commands.length}</div><div class="lbl">Commands</div></div>
+    <div class="stat" title="已启用的 Claude 插件数"><div class="val">${enabledPlugins}</div><div class="lbl">已启用插件</div></div>
+    <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;
 }
 
 /* ── Categories ── */
@@ -392,9 +378,6 @@ function renderCategories(){
 function getSkillIssueTags(name){
   const tags=[];
   if(!health)return tags;
-  // Similar skills (overlap_groups)
-  const similarGroup=(health.overlap_groups||[]).filter(isVisibleSimilarityGroup).find(g=>g.skills.includes(name));
-  if(similarGroup)tags.push({icon:'🔍',title:`相似: ${Math.round((similarGroup.score||0)*100)}%`,color:'var(--amber)'});
   // Structure issues
   const issue=(health.structure_issues||[]).find(i=>i.name===name);
   if(issue){
@@ -482,19 +465,6 @@ function renderIssuePath(path){
   return `<div style="display:flex;align-items:center;gap:6px;min-width:0;margin-top:2px">
     <code style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:4px;padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px" title="${esc(p)}">${escapeHtml(p)}</code>
     <button class="btn btn-sm" onclick="event.stopPropagation();copyPath('${esc(p)}')" style="font-size:9px;padding:1px 5px">复制路径</button>
-  </div>`;
-}
-function renderSimilarityReason(g){
-  const terms=(g.shared_terms||[]).slice(0,8);
-  const pair=g.strongest_pair;
-  const pairText=pair?.skills?.length===2?`最强配对：${pair.skills.join(' ↔ ')} · ${Math.round((pair.score||0)*100)}%`:'';
-  const termText=terms.length?`共享关键词：${terms.join('、')}`:'旧扫描结果未记录共同词，重新扫描后会显示原因';
-  const sourceText=g.source==='tfidf'
-    ? '深度内容审计：TF-IDF 全文相似，只作为复核线索。'
-    : '轻量相似：基于名称、description、keywords 和标题的关键词重叠。';
-  return `<div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:6px 10px;background:var(--bg-card-alt);border-top:1px solid var(--border-subtle)">
-    ${escapeHtml(termText)}${pairText?`<br>${escapeHtml(pairText)}`:''}<br>
-    <span style="color:var(--amber)">规则说明：${escapeHtml(sourceText)}不等于可删除。</span>
   </div>`;
 }
 

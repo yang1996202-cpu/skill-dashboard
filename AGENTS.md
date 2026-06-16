@@ -27,11 +27,10 @@ serve.py           — 后端入口：HTTP handler + 路由编排（~2400 行）
 skilldash/paths.py          — 共享路径、端口、缓存文件定位
 skilldash/classification.py — skill 分类关键词和描述读取
 skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
-skilldash/overlap.py        — 跨目录同名、完全重复、轻量相似扫描
+skilldash/overlap.py        — 跨目录同名、完全重复扫描
 skilldash/cleanup.py        — 清理计划、执行预案、重复 skill 处理准则
 skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
-skilldash/decisions.py      — 本地运行态决策（多端部署/标记不相似）
-skilldash/similarity.py     — signature 相似度 + TF-IDF 深度审计能力
+skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
 index.html         — 前端 HTML 骨架（~150 行）
@@ -55,7 +54,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
           ↓ fetch API
        serve.py (HTTPServer, 端口 3457)
           ↓ 调用本地模块
-       skilldash/{discovery,cleanup,overlap,similarity,understanding,...}
+       skilldash/{discovery,cleanup,overlap,understanding,...}
           ↓ 读文件系统
        本地 skill 目录 (如 ~/.codex/skills/)
           ↓ GitHub REST API (无认证)
@@ -67,24 +66,25 @@ screenshots/       — 截图（当前只有 .gitkeep）
 2. **用户手动扫描**：`/api/scan-run`（选目录 + 选分析类型）
 3. **缓存读取**：`/api/scan-result`（上次扫描结果）
 
-分析功能（同名/相似/上游）不自动触发，由用户在"问题与整理"页面的"二哥扫描"面板手动选择。
+分析功能（同名/上游/内容变更）不自动触发，由用户在"问题与整理"页面的"二哥扫描"面板手动选择。
 
 ## 关键 API
 
 | 端点 | 方法 | 作用 |
 |---|---|---|
-| `/api/fast-scan` | GET | 列出当前目标库的 skills |
-| `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组） |
+| `/api/fast-scan` | GET | 列出当前目标库的 skills 和当前 Agent commands |
+| `/api/targets` | GET | 列出所有发现的 skill/commands 目录（按 Agent 分组） |
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
-| `/api/global-overlap` | GET | 跨目录同名 + 相似分析（遗留接口，前端不再自动调用） |
+| `/api/global-overlap` | GET | 跨目录同名 + 完全重复分析（遗留接口，前端不再自动调用） |
 | `/api/quick-check` | GET | 健康评分 + 结构问题（遗留接口，前端不再自动调用） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/scan` | GET | 返回最近一次完整扫描结果 |
 | `/api/health` | GET | 返回最近一次健康检查结果 |
 | `/api/history` | GET | 操作历史记录 |
+| `/api/installed-plugins` | GET | 读取 Claude 插件安装和启用状态 |
 | `/api/target` | POST | 切换当前目标库 |
 | `/api/export` | GET | 导出 skill 清单 JSON |
 | `/api/source/skills` | GET | 读取来源 skill 列表 |
@@ -101,11 +101,91 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
 | `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |
 | `/api/duplicate-decision` | POST | 记录完全重复 skill 的本地处理决策，如多端部署副本 |
-| `/api/similar-decision` | POST/DELETE | 记录或撤销“这组不是相似 skill”的本地运行决策 |
 | `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
 | `/api/openapi` | GET | 返回路由清单（调试用） |
 
 ## 设计决策
+
+### 项目级 skill 分类：按 Agent 应用分组
+
+**核心原则**：每个 Agent 应用（Claude、Kiro、Cursor 等）都有自己的全局目录和项目级目录。按照 Agent 的部署位置来区分 user (全局) vs project (项目级)。
+
+**分类规则**：
+
+1. **`user` 分类** — **Agent 全局技能**（在家目录下）
+   - 模式：`~/.agent/skills/`（agent 是 Agent 应用名称）
+   - 示例：
+     - `~/.claude/skills/` ✓（Claude 全局）
+     - `~/.kiro/skills/` ✓（Kiro 全局）
+     - `~/.cursor/skills/` ✓（Cursor 全局）
+   - 特征：路径正好是 `~/.agent/skills/` 三层结构
+   - 作用域：全局（跨所有项目）
+
+2. **`project` 分类** — **Agent 项目级技能** 或 **其他非全局位置**
+   - **Agent 项目级**（标准路径）：
+     - 模式：`~/projects/xxx/.agent/skills/`
+     - 示例：
+       - `~/projects/my-app/.claude/skills/` ✓
+       - `~/projects/backend/.kiro/skills/` ✓
+       - `~/code/foo/.cursor/skills/` ✓
+     - 特征：`.agent/skills/` 在项目目录内（不在家目录下）
+   
+   - **其他项目级**（非标准路径）：
+     - 示例：
+       - `~/AI-Skills/` ✓（自定义技能库，不在家目录 agent 下）
+       - `~/projects/my-skills-repo/skills/` ✓（技能集合仓库）
+       - `~/Downloads/skills-pack/` ✓（下载目录）
+     - 特征：不符合 `~/.agent/skills/` 模式的都算 project
+   
+   - 作用域：项目/特定场景（不是全局）
+
+**关键判断逻辑**：
+```python
+# 1. 检查是否在 ~/.agent/skills/ 格式 → user
+if _is_user_level_skill(dir_path):
+    return "user"
+
+# 2. 检查是否在项目内的 .agent/skills/ 格式 → project
+if _is_project_agent_skill(dir_path):
+    return "project"
+
+# 3. 其他所有非标准路径 → project（因为不是全局的）
+return "project"
+```
+
+**发现策略改进**：
+
+借鉴 [skill-discover](https://github.com/yang1996202-cpu/skill-discover) 的递归扫描策略，在项目目录下使用 `os.walk` 递归查找 `.agent/skills/` 目录：
+
+```python
+# ~/projects/ 下递归扫描（深度限制 5 层）
+for root, dirs, _files in os.walk(projects_dir):
+    depth = root.count(os.sep) - str(projects_dir).count(os.sep)
+    if depth >= 5:
+        del dirs[:]  # 不再深入
+        continue
+    
+    # 检查当前目录是否是 .agent 目录
+    if os.path.basename(root).startswith("."):
+        skills_path = Path(root) / "skills"
+        if skills_path.is_dir():
+            add_dir(skills_path)
+```
+
+这样可以发现任意深度的项目级 skill 目录，例如：
+- `~/projects/foo/bar/.claude/skills/` ✓
+- `~/projects/backend/src/.kiro/skills/` ✓
+
+**与 Anthropic 对齐**：
+- Anthropic 官方定义：User Skills (`~/.claude/skills/`) vs Project Skills (`<repo>/.claude/skills/`)
+- 本项目扩展支持：多 Agent 应用 + 非标准路径的发现和分类
+- 非标准路径统一归为 `project`，因为它们不是 Agent 的全局配置
+
+**实现函数**：
+- `_is_user_level_skill(dir_path)` — 判断是否为 `~/.agent/skills/` 格式
+- `_is_project_agent_skill(dir_path)` — 判断是否为项目内 `.agent/skills/` 格式
+- `_classify_skill_dir(dir_path)` — 综合分类逻辑
+- `_classify_skill_dir_detail(dir_path)` — 治理策略标注
 
 ### 目录发现：不预设"谁是 Agent"
 
@@ -129,9 +209,9 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### 扫描 API：用户选范围 + 选类型
 
-`POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/相似/上游/内容变更）在用户选择的目录上。
+`POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/上游/内容变更）在用户选择的目录上。
 
-辅助函数 `_find_same_name_duplicates(dirs)` 和 `_find_agent_cross_dir_similar(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
+辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
 
 ### 清理执行准则：hash 一致不是直接删除依据
 
@@ -143,9 +223,9 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
 
-默认相似度使用轻量 signature：`name + description + keywords + headings` 的关键词集合 Jaccard，阈值 0.30，强调可解释性和“为什么像”。TF-IDF 全文相似函数保留为深度审计能力，但不作为默认问题页口径。
+相似度/TF-IDF 不再作为当前主线能力。问题页优先解释来源、状态、同名/完全重复、上游和内容变更证据，避免把低置信文本相似误当成可删除依据。
 
-相似度只用于人工复核和合并判断，不参与自动清理。前端相似卡片不提供删除入口，只提供查看、并排对比、标记不相似。“标记不相似”写入 `.data/state/similar-decisions.json`，属于本机运行状态，不提交 Git。
+Broken symlink 和目录壳里的 broken `SKILL.md` 会作为可清理残留展示，可移入项目垃圾站。删除接口只放开 symlink 或带 `SKILL.md` 标记的目录壳，不允许任意普通目录被误删。
 
 ### 前端数据流
 
@@ -179,26 +259,25 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
 - 完全重复处理决策：`.data/state/duplicate-decisions.json`（本地运行态，不提交）
-- 相似度误报处理决策：`.data/state/similar-decisions.json`（本地运行态，不提交）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 
 ## 注意事项
 
 - **零依赖**：只用 Python 标准库，不引入任何 pip 包
-- **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-]+`
+- **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-()]+`，路由层会先 URL decode
 - **CSRF 防护**：POST/DELETE/PATCH 校验 Origin/Referer
 - **GitHub API 限流**：未认证 60 次/小时，有 5 分钟 TTL 缓存 + 熔断
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
-- **Symlink 安全**：垃圾站移动拒绝 skill 目录 symlink，避免误移动链接本身造成宿主目录状态混乱
+- **Symlink 安全**：垃圾站移动 symlink 时只移动链接入口本身，不追随链接目标；broken symlink 可清理
 - **前端 JS 调试**：模板字符串嵌套 HTML 属性时注意引号冲突，优先抽全局函数而非内联 onclick
 
 ## 下一步方向
 
 **"问题与整理"页的分类展示与扫描规则优化**：
 - 当前分类 tab（5 类：user/marketplace/cache/cross-copy/project）的展示逻辑和切换体验
-- 二哥扫描的规则调优（同名检测、相似度阈值、上游比对策略）
+- 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
 - 分类标签与扫描结果的联动展示
 - 问题页的删除操作与全部目录技能页的分类删除联动
 
