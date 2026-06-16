@@ -42,10 +42,11 @@
 | 🧠 **理解层** | 离线规则解析 SKILL.md，生成中文用途、场景、能力标签、风险提示和证据片段 |
 | 🧭 **清理计划** | dry-run 生成目录治理方案：保护区、复核区、观察区、隐藏区，先给证据不直接删除 |
 | 🧩 **推荐清理** | 将目录治理和完全重复 skill 转成可恢复的垃圾站候选；推荐候选可一键移入垃圾站 |
+| 🔍 **扫描检查项** | 「问题与整理」页可勾选同名重复、上游状态、内容变更，按需扫描，避免全量跑 |
 | 🔁 **多端部署识别** | 同一 skill 同内容出现在多个 Agent 根目录时默认保留，可标记为已知部署副本，并可在“本地决策”里撤销 |
 | 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch / Hermes / WorkBuddy / CodeBuddy 等 10+ 个技能库 |
 | 📚 **技能库来源浏览** | 扫描 150+ 个来源库，支持穿透查看、批量同步到目标库 |
-| ⌨️ **Commands 浏览** | 识别 Claude commands 目录，和 skills 分层展示 |
+| ⌨️ **Commands 浏览** | 识别 Claude commands 目录，和 skills 一起分层展示；只展示，不参与扫描检测 |
 | 🧩 **插件状态** | 展示 Claude 已启用插件、已安装未启用插件和市场目录差异 |
 | 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + 支持 frontmatter `category` 覆盖 |
 | 📖 **查看内容** | 点击 skill 名称查看 SKILL.md 全文 |
@@ -81,12 +82,18 @@ python3 serve.py
 ```
 页面加载 → fast-scan + targets + global-stats → 先看到当前技能库和目录地图
                 ↓
-          understanding cache → 中文用途 + 场景/能力/风险标签
+          understanding cache → 中文用途 + 场景/能力/风险标签（详情页按需加载）
                 ↓
           点「开始整理」→ cleanup-execution-plan → 推荐移入垃圾站 / 复核 / 多端部署
                 ↓
-          展开高级线索 → scan-run → 同名、上游和内容变更证据
+          展开高级线索 → scan-run（勾选同名/上游/内容变更） → 证据展示
 ```
+
+**视图分层**：
+- **日常视图**：sidebar 和「全部目录技能」页默认只显示 `user`（Agent 全局）和 `project`（项目级）目录 + 当前目录
+- **全量审计**：显示全部 6 类目录，包括 `marketplace`/`cache`/`cross-copy`/`commands`
+
+**并发**：后端使用 `ThreadingHTTPServer`，浏览器多个初始化请求并行处理，避免单线程队头阻塞导致穿透浏览超时。
 
 **设计原则**：
 - Layer 0（自主）：列出、分类、切换、查看、结构检查、健康评分、上游追踪、同名/完全重复线索、清理候选、安装、更新

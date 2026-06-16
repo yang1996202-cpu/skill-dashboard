@@ -51,7 +51,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 ```
 浏览器 → index.html + static/* (静态)
           ↓ fetch API
-       serve.py (HTTPServer, 端口 3457)
+       serve.py (ThreadingHTTPServer, 端口 3457)
           ↓ 调用本地模块
        skilldash/{discovery,cleanup,overlap,understanding,...}
           ↓ 读文件系统
@@ -85,7 +85,8 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/history` | GET | 操作历史记录 |
 | `/api/target` | POST | 切换当前目标库 |
 | `/api/export` | GET | 导出 skill 清单 JSON |
-| `/api/source/skills` | GET | 读取来源 skill 列表 |
+| `/api/source/skills` | GET | 读取来源 skill/command 列表；默认不生成 understanding，加 `?understanding=1` 才计算 |
+| `/api/installed-plugins` | GET | 返回本机 Claude 插件状态（已启用 / 已安装 / 市场列表）|
 | `/api/custom-sources` | GET/POST/PATCH/DELETE | 管理自定义来源 |
 | `/api/steal` | POST | 从 GitHub URL 安装 skill |
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
@@ -126,7 +127,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### 扫描 API：用户选范围 + 选类型
 
-`POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/上游/内容变更）在用户选择的目录上。
+`POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 只含 user/project + 当前目录，`deep` 含全部目录）。
 
 辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
 
@@ -157,7 +158,7 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 
 - `filterGroupsByView(groups, viewMode)`：按 daily/deep 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
 - `sortGroupsByCurrentAndSize(groups)`：current 组优先，再按 skill 数量降序
-- `sourceIsDaily(t)` 决定目录是否进入日常视图；当前目录始终可见
+- `sourceIsDaily(t)` 决定目录是否进入日常视图；**日常视图只保留 `user`/`project` 两类 + `is_current` 的当前目录**，`marketplace`/`cache`/`cross-copy`/`commands` 只在「全量审计」视图显示
 - `fetchTargets(force)` 为 `/api/targets` 提供前端 3 分钟 TTL 缓存
 - 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，sidebar 与 sources 页切换同步
 
@@ -166,7 +167,7 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 - **视图与 sidebar 同步**：日常/全量视图状态和 sidebar「目录技能切换」下拉共用 `_sourceViewMode`，切换一边另一边同步
 - **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（日常视图 / 全量审计）使用 `.segmented-control` 组件，与 sidebar 下拉风格一致
 - **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
-- **分类折叠**：每个 Agent 卡片内，按 5 分类（user/marketplace/cache/cross-copy/project）分组显示，每个分类标题可点击展开/收起
+- **分类折叠**：每个 Agent 卡片内，按 6 分类（`user`/`marketplace`/`cache`/`cross-copy`/`project`/`commands`）分组显示，每个分类标题可点击展开/收起
 - **分类一键删除**：分类子标题有 `🗑 删除全部` 按钮，调 `deleteCategoryDirs()`
 - **Agent 级操作**：卡片头部有 `🗑 删除全部` 按钮和 `⭐ 常用目录` 切换
 - **目录级操作**：每个目录行有 `切换为当前目录`、`设为常用目录`、`🗑` 按钮
@@ -194,6 +195,8 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 ## 注意事项
 
 - **零依赖**：只用 Python 标准库，不引入任何 pip 包
+- **HTTP 并发**：`serve.py` 使用 `ThreadingHTTPServer`，浏览器并发请求不再互相阻塞
+- **穿透浏览性能**：`/api/source/skills` 默认不计算 understanding，避免大目录穿透时超时；需要理解内容时由 skill 详情页单独加载
 - **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-()]+`，路由层会先 URL decode
 - **CSRF 防护**：POST/DELETE/PATCH 校验 Origin/Referer
 - **GitHub API 限流**：未认证 60 次/小时，有 5 分钟 TTL 缓存 + 熔断
@@ -205,8 +208,8 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 
 ## 下一步方向
 
-**"问题与整理"页的分类展示与扫描规则优化**：
-- 当前分类 tab（5 类：user/marketplace/cache/cross-copy/project）的展示逻辑和切换体验
+**"问题与整理"页的扫描规则与展示优化**：
+- 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态
 - 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
 - 分类标签与扫描结果的联动展示
 - 问题页的删除操作与全部目录技能页的分类删除联动
