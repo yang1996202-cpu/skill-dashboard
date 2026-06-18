@@ -212,6 +212,18 @@ def python_quick_check(target_path):
                 except Exception:
                     pass
 
+        # 3) Fallback: Vercel skills CLI lock file (npx skills add)
+        if not detected:
+            vercel = read_vercel_skill_lock(skill_dir)
+            if vercel:
+                upstream_sources.append({
+                    "name": s["name"],
+                    "repo": vercel.get("source", ""),
+                    "status": "unknown",
+                    "source": "vercel-lock",
+                })
+                detected = True
+
     # ── Cleanup candidates (independent rules) ──
     cleanup_candidates = []
     for s in skills:
@@ -373,6 +385,42 @@ def read_source_metadata(skill_dir):
     return result
 
 
+def read_vercel_skill_lock(skill_dir):
+    """Read Vercel `skills` CLI lock file and return the entry for this skill.
+
+    Vercel skills CLI (`npx skills add`) stores source metadata in
+    ~/.agents/.skill-lock.json. Each entry tracks the GitHub source, ref,
+    skill path, and the Git tree SHA of the installed skill folder.
+    """
+    try:
+        lock_path = Path.home() / ".agents" / ".skill-lock.json"
+        if not lock_path.exists():
+            return None
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        skills = lock.get("skills", {})
+        skill_name = Path(skill_dir).resolve().name
+        entry = skills.get(skill_name)
+        if not entry:
+            return None
+        if entry.get("sourceType") != "github" or not entry.get("source"):
+            return None
+        return entry
+    except Exception:
+        return None
+
+
+def _normalize_skill_path_for_tree(skill_path):
+    """Convert a SKILL.md path to its containing folder path for Git tree lookup."""
+    if not skill_path:
+        return ""
+    p = skill_path.replace("\\", "/")
+    if p.endswith("/SKILL.md"):
+        p = p[:-9]
+    elif p.endswith("SKILL.md"):
+        p = p[:-8]
+    return p.strip("/")
+
+
 # ── Snapshot ──
 def create_snapshot(skill_dir):
     """Create a timestamped backup of a skill directory."""
@@ -520,8 +568,24 @@ def install_skill(source_url, target_path, preferred_name=None):
 # ── Check upstream status (pure Python, no gh CLI) ──
 def check_upstream_status(skill_dir):
     """Check if a skill is behind its upstream GitHub source.
-    Returns: {"status": "current"|"outdated"|"unknown", "installed_commit": str, "latest_commit": str, "repo": str, "ahead_by": int, "error": str}
+
+    Returns: {"status": "current"|"outdated"|"unknown", "installed_commit": str,
+              "latest_commit": str, "repo": str, "ahead_by": int, "error": str,
+              "source": "steal-meta"|"git-remote"|"vercel-lock"|"unknown"}
     """
+    # Detect symlink so the UI can explain that the real source lives elsewhere.
+    is_symlink = skill_dir.is_symlink()
+    link_target = ""
+    canonical_dir = str(skill_dir)
+    if is_symlink:
+        try:
+            link_target = str(skill_dir.readlink())
+            resolved = skill_dir.resolve()
+            if resolved.exists() and (resolved / "SKILL.md").exists():
+                canonical_dir = str(resolved)
+        except Exception:
+            pass
+
     meta = read_source_metadata(skill_dir)
     if not meta:
         # Try .git remote
@@ -545,15 +609,41 @@ def check_upstream_status(skill_dir):
                         local_commit = lr.stdout.strip() if lr.returncode == 0 else ""
                         # Query GitHub API for latest
                         latest = _github_latest_commit(f"{owner}/{repo}", ref, subdir)
+                        result = {"source": "git-remote", "repo": f"{owner}/{repo}", "is_symlink": is_symlink, "canonical_dir": canonical_dir}
+                        if is_symlink and link_target:
+                            result["link_target"] = link_target
                         if latest:
                             if local_commit and latest == local_commit:
-                                return {"status": "current", "installed_commit": local_commit, "latest_commit": latest, "repo": f"{owner}/{repo}", "ahead_by": 0}
+                                result.update({"status": "current", "installed_commit": local_commit, "latest_commit": latest, "ahead_by": 0})
                             else:
-                                return {"status": "outdated", "installed_commit": local_commit, "latest_commit": latest, "repo": f"{owner}/{repo}", "ahead_by": None}
-                        return {"status": "unknown", "installed_commit": local_commit, "latest_commit": "", "repo": f"{owner}/{repo}", "error": "无法查询 GitHub API"}
+                                result.update({"status": "outdated", "installed_commit": local_commit, "latest_commit": latest, "ahead_by": None})
+                        else:
+                            result.update({"status": "unknown", "installed_commit": local_commit, "latest_commit": "", "error": "无法查询 GitHub API"})
+                        return result
             except Exception:
                 pass
-        return {"status": "unknown", "error": "没有来源记录"}
+        # Try Vercel skills CLI lock file (npx skills add)
+        vercel = read_vercel_skill_lock(skill_dir)
+        if vercel:
+            repo = vercel.get("source", "")
+            ref = vercel.get("ref", "main")
+            skill_path = vercel.get("skillPath", "")
+            installed_hash = vercel.get("skillFolderHash", "")
+            normalized_path = _normalize_skill_path_for_tree(skill_path)
+            latest_hash = _github_tree_sha_for_path(repo, normalized_path, ref)
+            result = {"source": "vercel-lock", "repo": repo, "is_symlink": is_symlink, "canonical_dir": canonical_dir}
+            if is_symlink and link_target:
+                result["link_target"] = link_target
+            if latest_hash:
+                if latest_hash == installed_hash:
+                    result.update({"status": "current", "installed_commit": installed_hash, "latest_commit": latest_hash, "ahead_by": 0})
+                else:
+                    result.update({"status": "outdated", "installed_commit": installed_hash, "latest_commit": latest_hash, "ahead_by": None})
+            else:
+                result.update({"status": "unknown", "installed_commit": installed_hash, "latest_commit": "", "error": "无法查询 GitHub API"})
+            return result
+
+        return {"status": "unknown", "error": "没有来源记录", "source": "unknown", "is_symlink": is_symlink, "canonical_dir": canonical_dir}
 
     repo = meta.get("SKILL_SOURCE_REPO", "")
     ref = meta.get("SKILL_SOURCE_REF", "main")
@@ -561,19 +651,26 @@ def check_upstream_status(skill_dir):
     installed_commit = meta.get("SKILL_SOURCE_INSTALLED_COMMIT", "")
     url = meta.get("SKILL_SOURCE_URL", "")
 
+    result = {"source": "steal-meta", "repo": repo, "is_symlink": is_symlink, "canonical_dir": canonical_dir}
+    if is_symlink and link_target:
+        result["link_target"] = link_target
+
     if not repo:
-        return {"status": "unknown", "error": "来源记录不完整"}
+        result.update({"status": "unknown", "error": "来源记录不完整"})
+        return result
 
     latest = _github_latest_commit(repo, ref, subdir)
     if not latest:
-        return {"status": "unknown", "installed_commit": installed_commit, "latest_commit": "", "repo": repo, "error": "GitHub API 查询失败"}
+        result.update({"status": "unknown", "installed_commit": installed_commit, "latest_commit": "", "error": "GitHub API 查询失败"})
+        return result
 
     if installed_commit and latest == installed_commit:
-        return {"status": "current", "installed_commit": installed_commit, "latest_commit": latest, "repo": repo, "ahead_by": 0}
+        result.update({"status": "current", "installed_commit": installed_commit, "latest_commit": latest, "ahead_by": 0})
     else:
         # Try to get ahead_by via compare API
         ahead_by = _github_compare_ahead_by(repo, installed_commit, latest)
-        return {"status": "outdated", "installed_commit": installed_commit, "latest_commit": latest, "repo": repo, "ahead_by": ahead_by}
+        result.update({"status": "outdated", "installed_commit": installed_commit, "latest_commit": latest, "ahead_by": ahead_by})
+    return result
 
 
 # ── GitHub API helpers with rate-limit protection ──
@@ -581,7 +678,42 @@ _github_cache = {}  # (url,) -> (timestamp, result)
 _github_cache_ttl = 300  # 5 minutes
 _targets_cache = None  # cached /api/targets response
 _targets_cache_ts = 0  # timestamp of last targets cache
-_github_rate_limited = False  # global flag: stop querying after hitting rate limit
+_github_rate_limit_reset = 0  # timestamp when rate limit resets; 0 means not limited
+
+
+def _github_rate_limited_now():
+    """Return True if we are currently inside a known GitHub rate-limit window."""
+    global _github_rate_limit_reset
+    if _github_rate_limit_reset == 0:
+        return False
+    if time.time() >= _github_rate_limit_reset:
+        _github_rate_limit_reset = 0
+        return False
+    return True
+
+
+def _load_github_token():
+    """Load GitHub token from env var or project .env file.
+
+    Never log or return the raw token. The token is only used to sign
+    outbound GitHub API requests.
+    """
+    token = os.environ.get("GITHUB_TOKEN", "")
+    if token:
+        return token
+    env_file = Path(__file__).parent / ".env"
+    if env_file.exists():
+        try:
+            for line in env_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if line.startswith("GITHUB_TOKEN="):
+                    return line.split("=", 1)[1].strip().strip('"\'')
+        except Exception:
+            pass
+    return ""
+
+
+GITHUB_TOKEN = _load_github_token()
 
 
 def _invalidate_runtime_caches():
@@ -602,7 +734,7 @@ def _github_api_get(url):
     """Fetch GitHub API with TTL cache and rate-limit detection.
     Returns (data, rate_limited_bool).
     """
-    global _github_rate_limited
+    global _github_rate_limit_reset
 
     # Check cache
     now = time.time()
@@ -610,32 +742,39 @@ def _github_api_get(url):
     if cached and (now - cached[0]) < _github_cache_ttl:
         return cached[1], False
 
-    # If we already hit rate limit this session, skip
-    if _github_rate_limited:
+    # If we are inside a known rate-limit window, skip immediately
+    if _github_rate_limited_now():
         return None, True
 
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "skill-dashboard"})
+        headers = {"User-Agent": "skill-dashboard"}
+        if GITHUB_TOKEN:
+            headers["Authorization"] = f"token {GITHUB_TOKEN}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=10) as resp:
             raw = resp.read().decode("utf-8")
             # Check remaining rate limit from response headers
             remaining = resp.headers.get("X-RateLimit-Remaining", "")
+            reset_ts = resp.headers.get("X-RateLimit-Reset", "")
             if remaining == "0":
-                _github_rate_limited = True
+                try:
+                    _github_rate_limit_reset = int(reset_ts) if reset_ts else int(now + 3600)
+                except Exception:
+                    _github_rate_limit_reset = int(now + 3600)
             data = json.loads(raw)
             _github_cache[url] = (now, data)
             return data, False
     except urllib.error.HTTPError as e:
-        if e.code == 403 or e.code == 429:
-            _github_rate_limited = True
-        return None, True
+        limited = e.code == 403 or e.code == 429
+        if limited:
+            reset_ts = e.headers.get("X-RateLimit-Reset", "")
+            try:
+                _github_rate_limit_reset = int(reset_ts) if reset_ts else int(now + 3600)
+            except Exception:
+                _github_rate_limit_reset = int(now + 3600)
+        return None, limited
     except Exception:
         return None, False
-
-
-def _github_latest_commit(repo, ref="main", subdir=""):
-    """Query GitHub API for latest commit on a ref/path. Cached + rate-limit protected."""
-    if subdir:
         url = f"https://api.github.com/repos/{repo}/commits?path={urllib.parse.quote(subdir)}&sha={urllib.parse.quote(ref)}&per_page=1"
     else:
         url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
@@ -656,19 +795,66 @@ def _github_compare_ahead_by(repo, base, head):
     return data.get("ahead_by")
 
 
+def _github_tree_sha_for_path(repo, path, ref="main"):
+    """Fetch the Git tree SHA for a directory path inside a repo.
+
+    Returns the tree SHA of the folder at `path`, or the root tree SHA if
+    `path` is empty. Used to compare against Vercel skills lock hashes.
+    """
+    commit_url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
+    data, limited = _github_api_get(commit_url)
+    if limited or data is None:
+        return ""
+    tree_sha = data.get("commit", {}).get("tree", {}).get("sha", "")
+    if not tree_sha:
+        return ""
+
+    if not path:
+        return tree_sha
+
+    parts = path.strip("/").split("/")
+    current_sha = tree_sha
+    for part in parts:
+        url = f"https://api.github.com/repos/{repo}/git/trees/{current_sha}"
+        data, limited = _github_api_get(url)
+        if limited or data is None:
+            return ""
+        found = None
+        for item in data.get("tree", []):
+            if item.get("path") == part and item.get("type") == "tree":
+                found = item
+                break
+        if not found:
+            return ""
+        current_sha = found.get("sha", "")
+    return current_sha
+
+
 # ── Update skill from upstream ──
 def update_skill(skill_name, target_path):
     """Update a skill by re-installing from its tracked upstream source.
+    Resolves symlinks to the canonical copy and understands Vercel skills lock.
     Returns: {"ok": bool, "name": str, "output": str, "error": str}
     """
     skill_dir = Path(target_path) / skill_name
+
+    # If the entry is a symlink, update the canonical copy it points to.
+    if skill_dir.is_symlink():
+        try:
+            resolved = skill_dir.resolve()
+            if resolved.exists() and (resolved / "SKILL.md").exists():
+                skill_dir = resolved
+                target_path = str(resolved.parent)
+        except Exception:
+            pass
+
     meta = read_source_metadata(skill_dir)
     if meta:
         url = meta.get("SKILL_SOURCE_URL", "")
         if url:
             return install_skill(url, target_path, preferred_name=skill_name)
 
-    # Fallback: try .git remote
+    # Fallback 1: try .git remote
     git_dir = skill_dir / ".git"
     if git_dir.exists():
         try:
@@ -683,6 +869,17 @@ def update_skill(skill_name, target_path):
                     return install_skill(url, target_path, preferred_name=skill_name)
         except Exception:
             pass
+
+    # Fallback 2: Vercel skills CLI lock file (npx skills add)
+    vercel = read_vercel_skill_lock(skill_dir)
+    if vercel:
+        source = vercel.get("source", "")
+        if source:
+            if "/" in source and not source.startswith(("http://", "https://")):
+                url = f"https://github.com/{source}"
+            else:
+                url = source
+            return install_skill(url, target_path, preferred_name=skill_name)
 
     return {"ok": False, "error": "没有找到上游来源记录，无法更新"}
 
@@ -786,6 +983,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_understanding()
         elif path == "/api/source/skills":
             self._list_source_skills()
+        elif path == "/api/search-skills":
+            self._search_skills()
         elif path == "/api/custom-sources":
             self._get_custom_sources()
         elif path == "/api/global-stats":
@@ -1478,6 +1677,73 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "count": len(result),
         })
 
+    def _search_skills(self):
+        """Lightweight cross-directory skill name search.
+
+        Only matches skill directory names; does not read SKILL.md content.
+        Query: /api/search-skills?q=xxx&limit=50
+        """
+        query = parse_qs(urlparse(self.path).query)
+        q = (query.get("q", [""])[0] or "").strip().lower()
+        try:
+            limit = min(200, int(query.get("limit", ["50"])[0]))
+        except ValueError:
+            limit = 50
+        if len(q) < 2:
+            self._json_response({"error": "query must be at least 2 characters"}, status=400)
+            return
+
+        home = Path.home()
+        skill_dirs = _discover_skill_dirs()
+        current_target = self._current_target() or ""
+        current_agent = _agent_from_path(str(current_target)) if current_target else ""
+
+        results = []
+        total_matches = 0
+        for skills_dir in skill_dirs:
+            try:
+                for entry in sorted(skills_dir.iterdir()):
+                    if not _is_skill_entry(entry, include_broken=True):
+                        continue
+                    if q not in entry.name.lower():
+                        continue
+                    total_matches += 1
+                    if len(results) >= limit:
+                        continue
+                    rel = str(skills_dir).replace(str(home), "~")
+                    results.append({
+                        "name": entry.name,
+                        "dir": str(skills_dir),
+                        "rel": rel,
+                        "agent": _agent_from_path(str(skills_dir)),
+                        "category": _classify_skill_dir_detail(skills_dir).get("category", "unknown"),
+                        "scope": "project" if "/projects/" in rel else "global",
+                        "kind": _skill_entry_kind(entry),
+                    })
+            except (PermissionError, OSError):
+                continue
+            if len(results) >= limit:
+                break
+
+        grouped = {}
+        for r in results:
+            grouped.setdefault(r["agent"], []).append(r)
+
+        groups = [
+            {"agent": agent, "skills": skills}
+            for agent, skills in sorted(
+                grouped.items(),
+                key=lambda item: (0 if item[0] == current_agent else 1, -len(item[1]))
+            )
+        ]
+
+        self._json_response({
+            "q": q,
+            "total_matches": total_matches,
+            "returned": len(results),
+            "groups": groups,
+        })
+
     def _get_custom_sources(self):
         """Return user-defined custom source paths."""
         self._json_response(self._load_custom_sources())
@@ -1853,6 +2119,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "scope": requested_scope,
             "scan_schema_version": 4,
             "checks": checks,
+            "github_token_configured": bool(GITHUB_TOKEN),
             "scanned_policy_counts": dict(Counter(
                 _classify_skill_dir_detail(d).get("policy", "review") for d in valid_dirs
             )),
@@ -1885,6 +2152,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                                 "installed_commit": status.get("installed_commit", ""),
                                 "latest_commit": status.get("latest_commit", ""),
                                 "dir": str(tdir),
+                                "source": status.get("source", "unknown"),
+                                "is_symlink": status.get("is_symlink", False),
+                                "link_target": status.get("link_target", ""),
+                                "canonical_dir": status.get("canonical_dir", str(tdir)),
                             })
                     except Exception:
                         pass
@@ -2416,7 +2687,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         )
 
     def _copy_skill(self):
-        """Copy a skill from a local directory to the current target library."""
+        """Copy or link a skill from a local directory to the current target library.
+
+        Default mode is 'symlink' to keep a single source of truth. Pass mode='copy'
+        for an independent duplicate.
+        """
         body = self._read_json()
         if not body:
             self._json_response({"ok": False, "error": "无效请求"}, 400)
@@ -2425,6 +2700,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         target = body.get("target", "") or self._current_target()
         skill_name = body.get("name", "")
         skill_name = self._validate_skill_name(skill_name)
+        mode = body.get("mode", "symlink")
+        if mode not in ("symlink", "copy"):
+            self._json_response({"ok": False, "error": "mode 必须是 symlink 或 copy"}, 400)
+            return
         if not src_path or not skill_name:
             self._json_response({"ok": False, "error": "缺少 src 或 name"}, 400)
             return
@@ -2440,20 +2719,56 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response({"ok": False, "error": "target must be under home directory"}, 400)
             return
         dest = target_dir / skill_name
-        # Snapshot if exists
-        if dest.exists():
+
+        # Prevent linking/copying a skill onto itself.
+        if dest.resolve() == src_dir:
+            self._json_response({"ok": False, "error": "不能复制/链接到自身"}, 400)
+            return
+
+        # Snapshot and remove existing entry (symlink, dir, or stray file).
+        if dest.exists() or dest.is_symlink():
             create_snapshot(dest)
-            shutil.rmtree(dest)
-        shutil.copytree(src_dir, dest)
-        record_content_hash(dest)
-        self._json_response({"ok": True, "name": skill_name, "output": f"Copied to {dest}"})
+            if dest.is_symlink():
+                dest.unlink()
+            elif dest.is_dir():
+                shutil.rmtree(dest)
+            else:
+                dest.unlink()
+
+        output = ""
+        try:
+            if mode == "symlink":
+                # Relative link so the relationship survives when parent dirs move together.
+                rel = os.path.relpath(str(src_dir), str(dest.parent))
+                os.symlink(rel, dest)
+                output = f"Linked to {src_dir}"
+            else:
+                shutil.copytree(src_dir, dest)
+                record_content_hash(dest)
+                output = f"Copied to {dest}"
+        except OSError as e:
+            # Symlink may fail across devices/filesystems; fall back to a real copy.
+            if mode == "symlink":
+                try:
+                    shutil.copytree(src_dir, dest)
+                    record_content_hash(dest)
+                    mode = "copy"
+                    output = f"Symlink failed ({e}), copied to {dest}"
+                except Exception as e2:
+                    self._json_response({"ok": False, "error": f"创建失败: {e2}"}, 500)
+                    return
+            else:
+                self._json_response({"ok": False, "error": f"复制失败: {e}"}, 500)
+                return
+
+        self._json_response({"ok": True, "name": skill_name, "mode": mode, "output": output})
         self._log_history(
             "copy",
             paths=[str(src_dir), str(dest)],
             count=1,
             source="copy_skill",
             status="ok",
-            detail={"name": skill_name, "src": str(src_dir), "target": str(target_dir)},
+            detail={"name": skill_name, "src": str(src_dir), "target": str(target_dir), "mode": mode},
         )
 
     def _steal_skill(self):
@@ -2486,6 +2801,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _update_upstream(self, name):
         """Update a skill from its upstream source — pure Python."""
         target = self._current_target()
+        query = parse_qs(urlparse(self.path).query)
+        if query.get("target", [""])[0]:
+            target = query["target"][0]
         result = update_skill(name, target)
         self._json_response(result)
         status = "ok" if result.get("ok") or result.get("success") else "failed"

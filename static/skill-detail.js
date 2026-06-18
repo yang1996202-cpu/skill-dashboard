@@ -107,6 +107,8 @@ async function deleteSelectedIssues(){
   if(typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
     await refreshIssuesAfterDelete(changedDirs);
   }else{
+    invalidateTargetsCache();
+    clearGlobalSearchCache();
     await loadData();
   }
 }

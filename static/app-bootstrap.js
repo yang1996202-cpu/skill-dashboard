@@ -34,10 +34,6 @@ document.addEventListener('click',e=>{
 });
 
 let targetGroups=[];
-function setTargetDropdownView(mode){
-  setSourceViewMode(mode);
-  updateTargetSelector(false,'dropdown');
-}
 async function updateTargetSelector(force=false,scope='full'){
   let data;
   try{data=await fetchTargets(force)}catch{return}
@@ -50,16 +46,10 @@ async function updateTargetSelector(force=false,scope='full'){
     $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
-  // Filter/sort groups through shared abstraction
-  const displayGroups=sortGroupsByCurrentAndSize(filterGroupsByView(targetGroups,_sourceViewMode));
-  const viewToggle=`<div style="padding:8px;border-bottom:1px solid var(--border-subtle);background:var(--bg-card-alt)">
-    <div class="segmented-control" style="width:100%;display:flex">
-      <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('daily')" style="flex:1">日常视图</button>
-      <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="event.stopPropagation();setTargetDropdownView('deep')" style="flex:1">全量审计</button>
-    </div>
-  </div>`;
+  // Sidebar dropdown always shows all directories; view filtering lives on the Sources page.
+  const displayGroups=sortGroupsByCurrentAndSize(filterGroupsByView(targetGroups,'all'));
   // Show all groups with directories sorted by skill count
-  $('target-dropdown').innerHTML=viewToggle+displayGroups.map(g=>{
+  $('target-dropdown').innerHTML=displayGroups.map(g=>{
     const isCurGroup=g.dirs.some(t=>t.is_current);
     const visibleDirs=[...g.dirs].sort((a,b)=>{
       const aCur=a.is_current?1:0;
@@ -261,6 +251,8 @@ async function doSteal(){
       result.style.background='var(--green-bg)';result.style.color='var(--green)';
       result.textContent='✅ 安装成功';
       toast('Skill 已安装');
+      invalidateTargetsCache();
+      clearGlobalSearchCache();
       await loadData();
     }else{
       result.style.background='var(--red-bg)';result.style.color='var(--red)';

@@ -55,6 +55,7 @@ let globalStats=null;
 let globalOverlap=null;
 let _targetsCache=null;
 let _targetsCacheTs=0;
+function invalidateTargetsCache(){_targetsCache=null;_targetsCacheTs=0;}
 const TARGETS_CACHE_TTL=3*60*1000; // 3 minutes, matching backend TTL
 let scanResult=null; // cached scan results from /api/scan-run
 let cleanupPlan=null; // dry-run governance plan from /api/cleanup-plan
@@ -64,7 +65,19 @@ let _compareData={};
 let _issueSelected=new Set(); // tracks "name|dir" keys for issue cards
 let _issueShowAll=false;
 let _sourcesShowAll=false;
-let _sourceViewMode=localStorage.getItem('sd-source-view')||'daily'; // daily | deep
+let _globalSearchQuery='';
+let _globalSearchResults=null;
+let _globalSearchTimer=null;
+let _globalSearchCache={};
+const GLOBAL_SEARCH_CACHE_TTL=2*60*1000; // 2 minutes
+function clearGlobalSearchCache(){_globalSearchCache={};}
+let _sourceViewMode=(()=>{
+  const raw=localStorage.getItem('sd-source-view');
+  if(raw==='mine'||raw==='source-market'||raw==='all') return raw;
+  // migrate legacy values
+  if(raw==='deep') return 'all';
+  return 'mine';
+})(); // mine | source-market | all
 let _expandedSourceAgent=null;
 async function fetchTargets(force=false){
   const now=Date.now();
@@ -268,7 +281,7 @@ function renderWorkbench(){
   const queue=[
     {
       title:m.outdated?`更新过时来源`:'先扫日常目录',
-      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析用户、项目和导入副本目录；缓存和市场包留给全量审计',
+      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析用户、项目和导入副本目录；缓存和市场包留给来源市场/全部视图',
       count:m.outdated||'未扫描',
       action:'issues'
     },
@@ -539,6 +552,8 @@ async function batchDelete(){
   }
   selectedSkills.clear();
   toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  invalidateTargetsCache();
+  clearGlobalSearchCache();
   await loadData();
 }
 
@@ -605,18 +620,24 @@ async function doImport(){
   result.textContent=`完成: ${ok} 成功${fail?`, ${fail} 失败`:''}\n`+logs.join('\n');
   btn.disabled=false;btn.textContent='导入';
   toast(`导入完成: ${ok} 成功${fail?`, ${fail} 失败`:''}`);
+  invalidateTargetsCache();
+  clearGlobalSearchCache();
   await loadData();
 }
 
 function toggleGroup(el){el.classList.toggle('open');el.nextElementSibling.classList.toggle('open')}
 
 /* ── Upstream update helper (used by issues view) ── */
-async function updateUpstream(name,ev){
-  const btn=ev.target;btn.disabled=true;btn.textContent='更新中...';
-  try{const r=await fetch(`/api/skill/${name}/update`,{method:'PATCH'});const d=await r.json();
-    if(d.ok){toast(`${name} 已更新`);await loadData()}else toast(d.error||'更新失败','error')}
+async function updateUpstream(name,ev,dir){
+  const btn=ev.target;btn.disabled=true;
+  const source=btn.dataset.source||'';
+  btn.textContent='更新中...';
+  try{
+    const url=dir?`/api/skill/${name}/update?target=${encodeURIComponent(dir)}`:`/api/skill/${name}/update`;
+    const r=await fetch(url,{method:'PATCH'});const d=await r.json();
+    if(d.ok){toast(`${name} 已更新`);invalidateTargetsCache();await loadData()}else toast(d.error||'更新失败','error')}
   catch(e){toast('更新失败: '+e.message,'error')}
-  finally{btn.disabled=false;btn.textContent='更新'}
+  finally{btn.disabled=false;btn.textContent=source==='vercel-lock'?'NPX 更新':source==='git-remote'?'Git 更新':'更新'}
 }
 
 /* ── Switch to a directory and show skill detail ── */

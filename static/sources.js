@@ -155,6 +155,11 @@ function renderSources(){
       <span style="flex:1"></span>
       <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
     </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <div class="search-wrap" style="flex:1;min-width:200px">
+        <input class="search" id="global-skill-search" value="${escapeHtml(_globalSearchQuery)}" placeholder="跨所有目录搜索 skill 名称..." oninput="onGlobalSearchInput(this.value)" autocomplete="off" style="max-width:100%">
+      </div>
+    </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
       <span style="font-size:11px;color:var(--text-muted)">当前: ${curTarget?curTarget.name:'-'}</span>
       <span style="flex:1"></span>
@@ -163,11 +168,17 @@ function renderSources(){
         <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
       </div>
       <div class="segmented-control">
-        <button class="btn btn-sm ${_sourceViewMode==='daily'?'btn-primary':''}" onclick="setSourceViewMode('daily')" title="只显示日常整理目录">日常视图</button>
-        <button class="btn btn-sm ${_sourceViewMode==='deep'?'btn-primary':''}" onclick="setSourceViewMode('deep')" title="显示 marketplace、缓存、内置包等全部目录">全量审计</button>
+        <button class="btn btn-sm ${_sourceViewMode==='mine'?'btn-primary':''}" onclick="setSourceViewMode('mine')" title="用户自建、项目级和当前目录">我的</button>
+        <button class="btn btn-sm ${_sourceViewMode==='source-market'?'btn-primary':''}" onclick="setSourceViewMode('source-market')" title="marketplace、缓存、跨 Agent 副本、插件命令">来源市场</button>
+        <button class="btn btn-sm ${_sourceViewMode==='all'?'btn-primary':''}" onclick="setSourceViewMode('all')" title="显示全部目录">全部</button>
       </div>
     </div>
   </div>`;
+  if(_globalSearchQuery.length>=2){
+    h+=`<div id="global-search-results">${renderGlobalSearchResultsHtml()}</div>`;
+    $('sources-list').innerHTML=h;
+    return;
+  }
   const visibleGroups=getVisibleSourceGroups();
   if(visibleGroups.length){
     // Apply sort: default uses saved drag order; skills/dirs override it
@@ -281,6 +292,131 @@ function renderSources(){
   $('sources-list').innerHTML=h;
   initSourceDrag();
   }catch(e){$('sources-list').innerHTML='<div class="empty">渲染出错: '+e.message+'</div>'}
+}
+
+/* ── Global skill search ── */
+function onGlobalSearchInput(value){
+  _globalSearchQuery=value;
+  if(value.length<2){
+    _globalSearchResults=null;
+    renderSources();
+    return;
+  }
+  clearTimeout(_globalSearchTimer);
+  _globalSearchTimer=setTimeout(()=>doGlobalSearch(value.trim()),250);
+}
+async function doGlobalSearch(q){
+  if(q.length<2)return;
+  _globalSearchQuery=q;
+  const cached=_globalSearchCache[q];
+  if(cached&&(Date.now()-cached.ts)<GLOBAL_SEARCH_CACHE_TTL){
+    _globalSearchResults=cached.data;
+    renderSources();
+    return;
+  }
+  _globalSearchResults=null;
+  renderSources();
+  try{
+    const r=await fetch('/api/search-skills?q='+encodeURIComponent(q)+'&limit=50');
+    const d=await r.json();
+    _globalSearchResults=d;
+    _globalSearchCache[q]={data:d,ts:Date.now()};
+    renderSources();
+  }catch(e){
+    _globalSearchResults={error:'搜索失败',groups:[]};
+    renderSources();
+  }
+}
+function renderGlobalSearchResultsHtml(){
+  if(!_globalSearchResults)return '<div style="padding:20px;text-align:center;color:var(--text-muted)">搜索中...</div>';
+  if(_globalSearchResults.error){
+    return '<div style="padding:20px;text-align:center;color:var(--red)">'+escapeHtml(_globalSearchResults.error)+'</div>';
+  }
+  const groups=_globalSearchResults.groups||[];
+  if(!groups.length){
+    return '<div style="padding:20px;text-align:center;color:var(--text-muted)">未找到匹配的 skill</div>';
+  }
+  let h=`<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+    <span style="font-size:12px;color:var(--text-muted)">找到 ${_globalSearchResults.total_matches||0} 个匹配（显示 ${_globalSearchResults.returned||0} 个）</span>
+    <span style="flex:1"></span>
+    <button class="btn btn-sm" onclick="_globalSearchQuery='';_globalSearchResults=null;renderSources()">清除搜索</button>
+  </div>`;
+  groups.forEach(g=>{
+    h+=`<div class="src-card" style="border:1px solid var(--border);border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
+      <div style="padding:10px 14px;font-size:12px;font-weight:600;background:var(--bg-card-alt);border-bottom:1px solid var(--border-subtle)">
+        ${esc(g.agent)} · ${g.skills.length} 个匹配
+      </div>
+      <div>`;
+    g.skills.forEach(s=>{
+      const dirPath=s.dir;
+      const skillName=s.name;
+      h+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick="expandDirAndShowSkill('${esc(dirPath)}','${esc(skillName)}')" title="${esc(s.rel+'/'+s.name)}">
+        <span style="font-size:12px;font-weight:500;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name)}</span>
+        <span style="font-size:10px;color:var(--text-muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.rel)}</span>
+        <span style="font-size:9px;color:var(--text-dim);text-transform:uppercase">${esc(s.category||'')}</span>
+      </div>`;
+    });
+    h+=`</div></div>`;
+  });
+  return h;
+}
+async function expandDirAndShowSkill(dirPath,skillName){
+  // Find the agent group containing this directory
+  const group=targetGroups.find(g=>g.dirs.some(d=>d.path===dirPath));
+  if(!group){toast('目录未找到','error');return}
+  // Make sure the directory is visible under current view mode
+  const target=group.dirs.find(d=>d.path===dirPath);
+  const visibleNow=!target||_sourceViewMode==='all'||
+    (_sourceViewMode==='mine'&&sourceIsMine(target))||
+    (_sourceViewMode==='source-market'&&sourceIsSourceMarket(target));
+  if(target&&!visibleNow){
+    setSourceViewMode('all');
+  }
+  // Expand the agent card
+  _expandedSourceAgent=group.agent;
+  renderSources();
+  // After DOM update, find the directory row and expand it
+  await new Promise(r=>setTimeout(r,50));
+  const cards=document.querySelectorAll('.src-card');
+  let card=null;
+  cards.forEach(c=>{if(c.dataset.agent===group.agent)card=c});
+  if(!card){toast('目录卡片未找到','error');return}
+  const dirRows=card.querySelectorAll('.target-opt');
+  let targetRow=null,containerId=null;
+  dirRows.forEach(row=>{
+    const onclick=row.getAttribute('onclick')||'';
+    if(onclick.includes(dirPath)){
+      targetRow=row;
+      const container=row.parentElement.querySelector('div[id^="sd-"],div[id^="fb-"]');
+      if(container)containerId=container.id;
+    }
+  });
+  if(!targetRow||!containerId){toast('目录行未找到','error');return}
+  // Load skills if not already loaded
+  if(!sourceSkillsCache[dirPath]){
+    browseSourceDir(containerId,dirPath,targetRow);
+  }else{
+    const container=$(containerId);
+    if(container&&container.style.display!=='block'){
+      browseSourceDir(containerId,dirPath,targetRow);
+    }
+    renderBrowseDir(dirPath,sourceSkillsCache[dirPath],container);
+  }
+  // Wait for render and highlight the skill
+  await new Promise(r=>setTimeout(r,100));
+  const container=$(containerId);
+  if(!container)return;
+  const checks=container.querySelectorAll('.src-skill-check');
+  checks.forEach(ch=>{
+    if(ch.dataset.name===skillName){
+      const row=ch.closest('div[style*="display:flex"]');
+      if(row){
+        row.style.background='var(--accent-bg)';
+        row.scrollIntoView({behavior:'smooth',block:'center'});
+        setTimeout(()=>{row.style.background=''},2000);
+      }
+    }
+  });
 }
 
 // --- Source card toggle + drag-and-drop ---
@@ -427,6 +563,8 @@ async function browseSourceDir(safeId,path,head){
 }
 
 let srcSelectedSkills=new Set();
+let copyMode='symlink';
+function setCopyMode(mode){copyMode=mode;}
 function renderBrowseDir(path,itemList,container){
   const installed=new Set(skills.map(s=>s.name));
   const curTarget=targets.find(t=>t.is_current);
@@ -440,10 +578,21 @@ function renderBrowseDir(path,itemList,container){
     <label style="font-size:10px;color:var(--text-dim);display:flex;align-items:center;gap:3px;cursor:pointer">
       <input type="checkbox" id="src-selall-${bId}" onchange="toggleAllSrcSkills(this.checked)" style="cursor:pointer"> 全选
     </label>
+    <select id="src-copy-mode-${bId}" onchange="setCopyMode(this.value)" title="同步方式：链接保持单一真相源，复制生成独立副本" style="font-size:10px;padding:1px 4px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text)">
+      <option value="symlink" ${copyMode==='symlink'?'selected':''}>🔗 链接</option>
+      <option value="copy" ${copyMode==='copy'?'selected':''}>📄 复制</option>
+    </select>
     ${!isCurrentTarget&&!isCommands?`<button class="btn btn-sm btn-primary" id="src-batch-sync-${bId}" onclick="batchSyncSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量同步到当前目录</button>`:''}
     ${!isCommands?`<button class="btn btn-sm btn-danger" id="src-batch-del-${bId}" onclick="batchDeleteSrcSkills()" disabled style="font-size:9px;padding:2px 6px">批量删除</button>`:''}
     <span style="font-size:10px;color:var(--text-muted)" id="src-sel-count-${bId}"></span>
   </div>`;
+  // Local search within this directory
+  h+=`<div style="margin:4px 0 8px">
+    <div class="search-wrap" style="flex:1">
+      <input class="search" id="local-search-${bId}" placeholder="在此目录内搜索 skill..." oninput="filterBrowseDir('${esc(path)}',this.value)" autocomplete="off" style="max-width:100%;font-size:12px;padding:5px 10px 5px 28px">
+    </div>
+  </div>`;
+  h+=`<div id="browse-list-${bId}">`;
   itemList.forEach(s=>{
     const isInstalled=installed.has(s.name);
     const selKey=path+'::'+s.name;
@@ -453,14 +602,29 @@ function renderBrowseDir(path,itemList,container){
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}">${s.name}</span>
       ${kindLabel?`<span style="font-size:9px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);border-radius:999px;padding:1px 5px">${kindLabel}</span>`:''}
-      ${!isCurrentTarget&&!isInstalled&&!isCommands?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 6px">复制到当前目录</button>`:''}
+      ${!isCurrentTarget&&!isInstalled&&!isCommands?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" title="以 ${copyMode==='symlink'?'链接':'复制'} 方式同步到当前目录" style="font-size:9px;padding:2px 6px">同步到当前目录</button>`:''}
       ${isInstalled&&!isCommands?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
       ${!isCommands?`<button class="btn btn-sm btn-danger" onclick="deleteSrcSkill('${esc(path)}','${esc(s.name)}')" style="font-size:9px;padding:2px 5px" title="删除此 skill">🗑</button>`:''}
     </div>`;
   });
+  h+=`</div>`;
   container.innerHTML=h;
   updateSrcBatchUI();
 }
+function filterBrowseDir(path, query){
+  const bId=esc(path).replace(/[^a-z0-9]/gi,'');
+  const list=$(`browse-list-${bId}`);
+  if(!list)return;
+  const q=query.toLowerCase().trim();
+  const rows=list.children;
+  for(const row of rows){
+    const checkbox=row.querySelector('.src-skill-check');
+    if(!checkbox)continue;
+    const name=(checkbox.dataset.name||'').toLowerCase();
+    row.style.display=(!q||name.includes(q))?'flex':'none';
+  }
+}
+
 function toggleSrcSkill(el){
   const path=el.dataset.path,name=el.dataset.name;
   const key=path+'::'+name;
@@ -494,7 +658,7 @@ async function deleteSrcSkill(path,name){
   try{
     const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});
     const d=await r.json();
-    if(d.ok){toast(`${name} 已移入垃圾站`);delete sourceSkillsCache[path];refreshAfterDelete([path]);loadTrash()}
+    if(d.ok){toast(`${name} 已移入垃圾站`);delete sourceSkillsCache[path];clearGlobalSearchCache();refreshAfterDelete([path]);loadTrash()}
     else{toast(d.error||'删除失败','error')}
   }catch(e){toast('删除失败','error')}
 }
@@ -511,6 +675,7 @@ async function batchDeleteSrcSkills(){
   toast(`${ok} 个已移入垃圾站${fail?`，${fail} 个失败`:''}`);
   const _paths=new Set(sel.map(s=>s.path));
   _paths.forEach(p=>delete sourceSkillsCache[p]);
+  clearGlobalSearchCache();
   refreshAfterDelete([..._paths]);loadTrash();
 }
 async function batchSyncSrcSkills(){
@@ -518,16 +683,19 @@ async function batchSyncSrcSkills(){
   if(!sel.length)return;
   const curTarget=targets.find(t=>t.is_current);
   if(!curTarget)return toast('未选择目标目录','error');
-  if(!confirm(`确认将 ${sel.length} 个 skill 复制到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
+  const modeLabel=copyMode==='symlink'?'链接':'复制';
+  if(!confirm(`确认以「${modeLabel}」方式将 ${sel.length} 个 skill 同步到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
   let ok=0,fail=0;
   for(const{name,path}of sel){
     try{
-      const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:path+'/'+name,target:curTarget.path,name})});
+      const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:path+'/'+name,target:curTarget.path,name,mode:copyMode})});
       const d=await r.json();d.ok?ok++:fail++;
     }catch{fail++}
   }
-  toast(`已复制到当前目录 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  toast(`已${modeLabel}到当前目录 ${ok} 个${fail?`，${fail} 个失败`:''}`);
   srcSelectedSkills.clear();
+  invalidateTargetsCache();
+  clearGlobalSearchCache();
   await loadData();
 }
 
@@ -536,9 +704,9 @@ async function stealFromSource(srcPath,skillName){
   const curTarget=targets.find(t=>t.is_current);
   if(!curTarget)return toast('未选择目标库','error');
   try{
-    const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:srcDir,target:curTarget.path,name:skillName})});
+    const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:srcDir,target:curTarget.path,name:skillName,mode:copyMode})});
     const d=await r.json();
-    if(d.ok){toast(`${skillName} 已同步到目标库`);await loadData()}
+    if(d.ok){toast(`${skillName} 已${d.mode==='symlink'?'链接':'复制'}到目标库`);invalidateTargetsCache();clearGlobalSearchCache();await loadData()}
     else{toast(d.error||'同步失败','error')}
   }catch(e){toast('同步失败','error')}
 }
@@ -680,6 +848,8 @@ async function syncSelected(){
   if(btn){btn.disabled=false;btn.textContent='同步到目标库'}
   toast(`同步完成: ${ok} 成功${fail?`, ${fail} 失败`:''}`);
   sourceSyncSelections.clear();
+  invalidateTargetsCache();
+  clearGlobalSearchCache();
   await loadData();
   $('modal').classList.add('hidden');
 }
@@ -741,12 +911,14 @@ async function addCustomSource(){
     result.style.background='var(--green-bg)';result.style.color='var(--green)';
     result.innerHTML=`全部添加成功 ✅（${ok} 个）`;
     toast(`已添加 ${ok} 个来源`);
+    invalidateTargetsCache();
+    clearGlobalSearchCache();
     await loadData();
     setTimeout(()=>$('modal').classList.add('hidden'),1200);
   }else{
     result.style.background='var(--bg-card-alt)';result.style.color='var(--text)';
     result.innerHTML=`<div>成功 ${ok} 个，失败 ${fail} 个</div><div style="margin-top:6px;font-size:11px;color:var(--text-muted)">${details.join('<br>')}</div>`;
-    if(ok>0)await loadData();
+    if(ok>0){invalidateTargetsCache();clearGlobalSearchCache();await loadData();}
   }
   btn.disabled=false;btn.textContent='批量添加';
 }
@@ -755,7 +927,7 @@ async function removeCustomSource(path){
   try{
     const r=await fetch('/api/custom-sources?path='+encodeURIComponent(path),{method:'DELETE'});
     const d=await r.json();
-    if(d.ok){toast('来源已移除');await loadData()}
+    if(d.ok){toast('来源已移除');invalidateTargetsCache();clearGlobalSearchCache();await loadData()}
     else toast(d.error||'移除失败','error');
   }catch(e){toast('移除失败','error')}
 }
