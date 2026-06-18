@@ -106,6 +106,26 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .workbench-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .notice-line{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt);padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--text-dim)}
 
+/* ── Issues workspace ── */
+.issue-tabs{display:inline-flex;gap:2px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:8px;padding:2px;margin-bottom:12px;flex-wrap:wrap}
+.issue-tab{border:none;background:transparent;color:var(--text-dim);border-radius:6px;padding:5px 10px;font-size:11px;font-weight:550;display:inline-flex;align-items:center;gap:5px;cursor:pointer;font-family:var(--font)}
+.issue-tab:hover{background:var(--bg-hover);color:var(--text)}
+.issue-tab.active{background:var(--accent);color:#fff}
+.issue-tab b{font-size:10px;font-weight:650;opacity:.85;font-variant-numeric:tabular-nums}
+.issue-hero{border-left:3px solid var(--accent);background:linear-gradient(135deg,var(--accent-bg),var(--bg-card))}
+.issue-hero-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}
+.issue-metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}
+.issue-section{margin:16px 0}
+.issue-section-head{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin-bottom:8px;padding:0 4px}
+.issue-section-head h3{font-size:13px;font-weight:650;letter-spacing:-.01em}
+.issue-section-head p{font-size:11px;color:var(--text-muted);margin-top:2px}
+.issue-section-head span{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.issue-card-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:10px;align-items:start}
+.issue-agent-card{margin-bottom:0}
+.issue-list-card{padding:14px 16px;margin-bottom:0}
+.issue-row{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)}
+.issue-row:last-child{border-bottom:none}
+
 /* ── Cards — Linear clean ── */
 .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:20px;margin-bottom:12px;transition:border-color .15s ease}
 .card:hover{border-color:color-mix(in srgb,var(--accent) 20%,var(--border))}
@@ -278,6 +298,9 @@ tbody tr:hover{background:var(--bg-hover)}
   .main{margin-left:0}.menu-btn{display:block}
   .stats-row{grid-template-columns:repeat(3,1fr)}
   .content{padding:16px}
+  .issue-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .issue-card-grid{grid-template-columns:1fr}
+  .issue-hero-head{flex-direction:column}
 }
 
 /* ══ Footer — Linear clean ══ */

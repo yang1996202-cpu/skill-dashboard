@@ -37,10 +37,10 @@ from skilldash.discovery import (
     _classify_skill_dir_detail,
     _discover_command_dirs,
     _discover_skill_dirs,
-    _load_claude_plugin_state,
     _scan_commands,
     _scan_global_categories,
 )
+from skilldash.host_inspectors import discover_host_profiles, host_profile_summaries_by_agent, load_claude_plugin_state
 from skilldash.overlap import (
     _find_same_name_duplicates,
     detect_cross_dir_overlaps,
@@ -959,6 +959,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_history()
         elif path == "/api/targets":
             self._list_targets()
+        elif path == "/api/host-profiles":
+            self._json_response({"profiles": discover_host_profiles()})
         elif path == "/api/cleanup-plan":
             self._cleanup_plan()
         elif path == "/api/cleanup-execution-plan":
@@ -1353,6 +1355,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
                 {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
+                {"method": "GET", "path": "/api/host-profiles", "desc": "Non-secret host source/MCP profiles for agent-specific scanners"},
                 {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
                 {"method": "GET", "path": "/api/cleanup-execution-plan?scope=&strategy=", "desc": "Executable-shaped cleanup preview without deletion"},
                 {"method": "POST", "path": "/api/cleanup-execute", "desc": "Move selected cleanup candidates to trash"},
@@ -1376,7 +1379,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def _installed_plugins(self):
         """Return Claude plugins installed on this machine."""
-        state = _load_claude_plugin_state()
+        state = load_claude_plugin_state()
         plugins = []
         for plugin_id, records in state.get("installed", {}).items():
             for rec in records:
@@ -1631,9 +1634,28 @@ class DashboardHandler(BaseHTTPRequestHandler):
             for f in sorted(source_dir.iterdir()):
                 if not f.is_file() or f.suffix != ".md":
                     continue
+                description = ""
+                try:
+                    text = f.read_text("utf-8", errors="ignore")[:2000]
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end > 0:
+                            for line in text[3:end].splitlines():
+                                line = line.strip()
+                                if line.startswith("description:"):
+                                    description = line.split(":", 1)[1].strip().strip("'\"")
+                                    break
+                    if not description:
+                        for line in text.splitlines():
+                            line = line.strip().lstrip("#").strip()
+                            if line and not line.startswith("---"):
+                                description = line[:160]
+                                break
+                except Exception:
+                    pass
                 result.append({
                     "name": f.stem,
-                    "description": "",
+                    "description": description,
                     "kind": "command",
                     "understanding": None,
                 })
@@ -2404,11 +2426,17 @@ class DashboardHandler(BaseHTTPRequestHandler):
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 
         # Group by agent name
+        profile_summaries = host_profile_summaries_by_agent(home)
         grouped = {}
         for t in targets:
             agent = t["name"]
             if agent not in grouped:
-                grouped[agent] = {"agent": agent, "dirs": [], "total_skills": 0}
+                grouped[agent] = {
+                    "agent": agent,
+                    "dirs": [],
+                    "total_skills": 0,
+                    "profile_summary": profile_summaries.get(agent),
+                }
             grouped[agent]["dirs"].append(t)
             grouped[agent]["total_skills"] += t["count"]
 

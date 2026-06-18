@@ -36,7 +36,7 @@ index.html         — 前端 HTML 骨架（~150 行）
 static/skill-dashboard.css — 前端样式
 static/app-core.js         — 前端状态、数据加载、仪表盘、当前目录技能
 static/issues-cleanup.js   — 问题与整理、清理计划、垃圾站
-static/sources.js          — 全部目录技能、来源浏览、批量同步/删除
+static/sources.js          — 能力来源、来源浏览、批量同步/删除
 static/skill-detail.js     — skill 详情、对比、分类编辑
 static/app-bootstrap.js    — 刷新、目标切换、诊断、安装入口、启动加载
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
@@ -125,9 +125,35 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 `_agent_from_path()` 从路径推断 Agent 名称。保留已知映射（`.codex` → `Codex`），但未知 `.xxx` 直接用目录名。**不在其他地方重复这个映射**——`_list_targets()` 等调用 `_agent_from_path()` 而不是自己维护 if/elif 列表。
 
+### Host Inspectors：文件库存 ≠ 运行时暴露
+
+通用扫描器只回答“哪里有 `SKILL.md`”。这不足以解释 Codex/Claude/WorkBuddy/CodeBuddy 这类宿主，因为插件缓存、marketplace 目录、App 内置包和 connector 包里也可能带 skills，但不一定进入当前上下文。
+
+宿主专属解释放在 `skilldash/host_inspectors.py`。它输出统一 runtime metadata，再由 `discovery.py` 合并到 target governance：
+
+- `enabled`：宿主配置明确启用的插件包，例如 Codex `~/.codex/config.toml` 里的 `[plugins."..."] enabled=true`
+- `connector`：Codex app/connector 包或工具缓存显示曾暴露运行时工具
+- `user-root`：宿主用户技能根，例如 `~/.workbuddy/skills`
+- `builtin`：宿主 App 自带技能，例如 WorkBuddy.app 的 `resources/builtin-skills`
+- `catalog`：宿主 marketplace/connector-marketplace 货架目录，只解释来源，不等于上下文加载
+- `cache`：只有本地插件缓存存在，没有启用证据
+- `stale`：同名插件在别处启用，此目录只是非当前副本
+
+原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
+
+### Host Profile：通用扫描与 Agent 范儿的结合层
+
+扫描管线分三层：
+
+1. **Generic discovery**：`discovery.py` 高召回找 `SKILL.md`、commands 目录和已知 app builtin skill roots；它不判断“是否加载进上下文”。
+2. **Host profile**：`discover_host_profiles()` 给每个宿主生成非敏感轮廓，包括 source roots、profile family、MCP 配置数量、runtime/catalog MCP server 数。MCP 只保留 server 名、transport、disabled 标记和计数；不返回 URL、headers、env、command args。
+3. **Host inspector**：`plugin_context_for_dir()` 把目录解释成统一 runtime metadata。Claude/Codex 保留独立逻辑；WorkBuddy 和 CodeBuddy 走同一个 `buddy-family` inspector，因为二者共享 `skills`、`skills-marketplace`、`plugins/marketplaces`、`connectors`、`connectors-marketplace`、`mcp.json` 目录范式。
+
+`/api/targets` 会把 compact `profile_summary` 挂到每个 Agent group 上；`/api/host-profiles` 返回完整非敏感 profile。新增 Agent 时，先看 generic profile 是否已发现 source roots/MCP，再决定是否补专属 inspector。
+
 ### 扫描 API：用户选范围 + 选类型
 
-`POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 只含 user/project + 当前目录，`deep` 含全部目录）。
+`POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 在 UI 上叫“重点扫描”，使用 `sourceIsDaily()` 的重点整理目标；`deep` 在 UI 上叫“全量扫描”，含全部目录）。
 
 辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
 
@@ -145,7 +171,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 - `loadData()` 只跑轻量 API（fast-scan、targets、global-stats）
 - `/api/targets` 通过 `fetchTargets(force)` 读取，前端带 3 分钟 TTL 内存缓存，避免重复请求
-- `render()` 改为视图感知：只有在「全部目录技能」页激活时才渲染 sources 列表，其他视图只更新 sidebar/badge/stats
+- `render()` 改为视图感知：只有在「能力来源」页激活时才渲染 sources 列表，其他视图只更新 sidebar/badge/stats
 - `updateTargetSelector(force, scope)` 按 `dropdown/sidebar/full` 控制渲染范围，避免切换目录或视图时级联重渲染
 - 目录切换后只做乐观 `is_current` 更新 + 本地缓存同步，不再强制刷新 `/api/targets`
 - 扫描结果通过 `runScan()` 调 `/api/scan-run`，映射到 `health` 和 `globalOverlap` 变量
@@ -156,20 +182,20 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 目录视图抽象定义在 `static/issues-cleanup.js`，但职责已拆分：
 
-- `filterGroupsByView(groups, viewMode)`：按 `mine`/`source-market`/`all` 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
+- `filterGroupsByView(groups, viewMode)`：按 `active`/`inventory`/`review`/`all` 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
 - `sortGroupsByCurrentAndSize(groups)`：current 组优先，再按 skill 数量降序
-- `sourceIsDaily(t)` / `sourceIsMine(t)`：决定目录是否进入「我的」视图；**「我的」视图只保留 `user`/`project` 两类 + `is_current` 的当前目录**
-- `sourceIsSourceMarket(t)`：决定目录是否进入「来源市场」视图；包含 `marketplace`/`cache`/`cross-copy`/`commands`
+- `sourceIsDaily(t)`：仍用于「问题与整理」的重点扫描范围，保留 `user`/`project` 两类 + `is_current` 的当前目录，避免来源页筛选影响扫描。
+- `sourceIsActive(t)` / `sourceIsInventory(t)` / `sourceIsReview(t)`：决定目录进入「当前可用」「来源库存」「待复核」哪个视图；依据 `sourceCapabilityBucket(t)` 而不是原始路径分类。
 - `fetchTargets(force)` 为 `/api/targets` 提供前端 3 分钟 TTL 缓存
-- 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，可取 `mine`/`source-market`/`all`；旧值 `daily`/`deep` 会在启动时迁移为 `mine`/`all`
-- **sidebar「目录技能切换」下拉始终显示全部目录**，视图过滤只在「全部目录技能」页生效
+- 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，可取 `active`/`inventory`/`review`/`all`；旧值 `mine`/`source-market`/`deep` 会在启动时迁移为 `active`/`inventory`/`all`
+- **sidebar「目录技能切换」下拉始终显示全部目录**，视图过滤只在「能力来源」页生效
 
-### 全部目录技能页 UX
+### 能力来源页 UX
 
-- **视图切换在页面顶部**：分段控件「我的 / 来源市场 / 全部」放在「全部目录技能」页头部，不再放在 sidebar
-- **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（我的 / 来源市场 / 全部）使用 `.segmented-control` 组件
+- **视图切换在页面顶部**：分段控件「当前可用 / 来源库存 / 待复核 / 全部」放在「能力来源」页头部，不再放在 sidebar
+- **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（当前可用 / 来源库存 / 待复核 / 全部）使用 `.segmented-control` 组件
 - **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
-- **分类折叠**：每个 Agent 卡片内，按 6 分类（`user`/`marketplace`/`cache`/`cross-copy`/`project`/`commands`）分组显示，每个分类标题可点击展开/收起
+- **运行态折叠**：每个 Agent 卡片内，按能力桶（用户自建、系统内置、已启用插件、连接器包、命令、已安装未启用、市场目录、仅缓存、导入/副本、项目级、未知）分组显示，每个标题可点击展开/收起
 - **分类一键删除**：分类子标题有 `🗑 删除全部` 按钮，调 `deleteCategoryDirs()`
 - **Agent 级操作**：卡片头部有 `🗑 删除全部` 按钮和 `⭐ 常用目录` 切换
 - **目录级操作**：每个目录行有 `切换为当前目录`、`设为常用目录`、`🗑` 按钮
@@ -186,7 +212,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 `_list_targets()` 带 3 分钟 TTL 内存缓存（`_targets_cache` / `_targets_cache_ts`）。冷启动 ~6s，缓存命中 ~0.1s。缓存期间 `is_current` 标志实时刷新（对比 state 里存的当前目标）。
 
-前端 `fetchTargets(force)` 同样有 3 分钟内存缓存。复制、安装、删除、修复、更新、添加/移除来源等变更目录内容的操作成功后，必须调用 `invalidateTargetsCache()` 使缓存失效，再 `loadData()`，否则「全部目录技能」页会显示旧目录统计。
+前端 `fetchTargets(force)` 同样有 3 分钟内存缓存。复制、安装、删除、修复、更新、添加/移除来源等变更目录内容的操作成功后，必须调用 `invalidateTargetsCache()` 使缓存失效，再 `loadData()`，否则「能力来源」页会显示旧目录统计。
 
 前端 `loadData()` 的异步 targets 回调：如果 sources DOM 已有内容（用户已展开过），跳过 `renderSources()` 只更新 badge 数字，避免覆盖用户交互状态。
 
@@ -216,7 +242,11 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态
 - 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
 - 分类标签与扫描结果的联动展示
-- 问题页的删除操作与全部目录技能页的分类删除联动
+- 问题页的删除操作与能力来源页的分类删除联动
+
+**Buddy family 内置 Commands**：
+- 不要把 `~/.codebuddy/plugins/marketplaces/**/commands` 或 `~/.workbuddy/plugins/marketplaces/**/commands` 当成截图里的内置 Commands；那是市场/插件货架，数量大且不等于当前 UI 命令。
+- 截图里的 CodeBuddy `/init`、`/cr`、`/tests`、`/explain`、`/fix` 更像 IDE 运行时注册的内置行为；本机没有发现 `~/.codebuddy/commands` 或解包 resources 下的 `commands/*.md` 路径。后续若要展示它们，应做专门的 runtime command inspector，而不是扩 `_discover_command_dirs()`。
 
 **竞品调研与差异化**：
 - skillslm、cc-switch 等同类工具的方法论对比

@@ -38,7 +38,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'全部目录技能',trash:'垃圾站',history:'操作日志'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'能力来源',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
   if(v==='sources'){
@@ -73,12 +73,140 @@ const GLOBAL_SEARCH_CACHE_TTL=2*60*1000; // 2 minutes
 function clearGlobalSearchCache(){_globalSearchCache={};}
 let _sourceViewMode=(()=>{
   const raw=localStorage.getItem('sd-source-view');
-  if(raw==='mine'||raw==='source-market'||raw==='all') return raw;
+  if(['active','inventory','review','all'].includes(raw)) return raw;
+  if(raw==='mine') return 'active';
+  if(raw==='source-market') return 'inventory';
   // migrate legacy values
   if(raw==='deep') return 'all';
-  return 'mine';
-})(); // mine | source-market | all
+  return 'active';
+})(); // active | inventory | review | all
 let _expandedSourceAgent=null;
+
+const CAPABILITY_META={
+  'active-user':{emoji:'⭐',label:'用户自建',desc:'用户全局技能根，通常会进入该 Agent 的基础能力面。'},
+  'active-system':{emoji:'🧩',label:'系统内置',desc:'宿主内置技能，不是用户项目目录。'},
+  'active-plugin':{emoji:'🔌',label:'已启用插件',desc:'宿主配置明确启用的插件包。'},
+  'active-connector':{emoji:'🔗',label:'连接器包',desc:'由 app/connector 运行时按需暴露的能力包。'},
+  'installed-disabled':{emoji:'⏸',label:'已安装未启用',desc:'安装记录存在，但当前宿主未启用。'},
+  'source-cache':{emoji:'🗄',label:'仅缓存',desc:'本地缓存、旧包或备份，不等于当前上下文能力。'},
+  'source-catalog':{emoji:'📚',label:'市场目录',desc:'marketplace/catalog 货架目录，只作为来源材料。'},
+  'review-copy':{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 复制或导入目录，需要复核。'},
+  'project-local':{emoji:'📁',label:'项目级',desc:'项目内技能目录，是否加载取决于宿主和当前项目。'},
+  commands:{emoji:'⌨️',label:'命令',desc:'命令目录，和 skills 分开统计。'},
+  unknown:{emoji:'❓',label:'未知',desc:'只确认文件存在，未识别运行态。'},
+};
+
+function sourceCapabilityBucket(t){
+  if(!t)return 'unknown';
+  if(t.type==='commands')return 'commands';
+  const state=t.runtime_state||'';
+  if(state==='user-root')return 'active-user';
+  if(state==='builtin')return 'active-system';
+  if(state==='enabled'||state==='loaded')return 'active-plugin';
+  if(state==='connector')return 'active-connector';
+  if(state==='installed')return 'installed-disabled';
+  if(['cache','orphaned','stale'].includes(state))return 'source-cache';
+  if(state==='catalog')return 'source-catalog';
+  if(t.category==='user')return 'active-user';
+  if(t.layer==='vendor-bundled')return 'active-system';
+  if(t.category==='cache')return 'source-cache';
+  if(t.category==='marketplace')return 'source-catalog';
+  if(t.category==='cross-copy')return 'review-copy';
+  if(t.category==='project')return 'project-local';
+  return 'unknown';
+}
+
+function capabilityMeta(key){return CAPABILITY_META[key]||CAPABILITY_META.unknown}
+
+function summarizeCapabilityDirs(dirs){
+  const s={
+    dirs:(dirs||[]).length,
+    inventorySkills:0,
+    commandCount:0,
+    activeSkills:0,
+    activeDirs:0,
+    userSkills:0,
+    systemSkills:0,
+    pluginSkills:0,
+    pluginDirs:0,
+    connectorSkills:0,
+    connectorDirs:0,
+    duplicateRuntimeSkills:0,
+    duplicateRuntimeDirs:0,
+    installedDirs:0,
+    cacheSkills:0,
+    cacheDirs:0,
+    catalogSkills:0,
+    catalogDirs:0,
+    reviewSkills:0,
+    reviewDirs:0,
+  };
+  (dirs||[]).forEach(t=>{
+    const count=t.count||0;
+    const bucket=sourceCapabilityBucket(t);
+    if(bucket==='commands'){s.commandCount+=count;return}
+    const duplicateRuntime=!!t.loaded_elsewhere&&(bucket==='active-connector'||bucket==='active-plugin');
+    s.inventorySkills+=count;
+    if(duplicateRuntime){
+      s.duplicateRuntimeSkills+=count;s.duplicateRuntimeDirs+=1;
+    }else if(['active-user','active-system','active-plugin','active-connector'].includes(bucket)){
+      s.activeSkills+=count;s.activeDirs+=1;
+    }
+    if(bucket==='active-user')s.userSkills+=count;
+    else if(bucket==='active-system')s.systemSkills+=count;
+    else if(bucket==='active-plugin'){s.pluginSkills+=count;s.pluginDirs+=1}
+    else if(bucket==='active-connector'){s.connectorSkills+=duplicateRuntime?0:count;s.connectorDirs+=1}
+    else if(bucket==='installed-disabled')s.installedDirs+=1;
+    else if(bucket==='source-cache'){s.cacheSkills+=count;s.cacheDirs+=1}
+    else if(bucket==='source-catalog'){s.catalogSkills+=count;s.catalogDirs+=1}
+    else if(bucket==='review-copy'||bucket==='project-local'||bucket==='unknown'){s.reviewSkills+=count;s.reviewDirs+=1}
+  });
+  s.sourceOnlySkills=s.cacheSkills+s.catalogSkills;
+  s.sourceOnlyDirs=s.cacheDirs+s.catalogDirs;
+  return s;
+}
+
+function currentAgentGroup(){
+  const current=targets.find(t=>t.is_current);
+  if(current){
+    const group=targetGroups.find(g=>g.dirs.some(d=>d.path===current.path));
+    if(group)return group;
+  }
+  const currentName=current?.name||scan?.target?.label;
+  return targetGroups.find(g=>g.agent===currentName)||null;
+}
+
+function currentCapabilitySummary(){
+  const group=currentAgentGroup();
+  const dirs=group?.dirs||targets;
+  return {
+    ...summarizeCapabilityDirs(dirs),
+    agent:group?.agent||targets.find(t=>t.is_current)?.name||scan?.target?.label||'当前 Agent',
+    profile:group?.profile_summary||null,
+  };
+}
+
+function compactCapabilityParts(s){
+  const parts=[];
+  if(s.userSkills)parts.push(`用户 ${s.userSkills}`);
+  if(s.systemSkills)parts.push(`系统 ${s.systemSkills}`);
+  if(s.pluginDirs)parts.push(`插件 ${s.pluginDirs}`);
+  if(s.connectorDirs)parts.push(`连接器 ${s.connectorDirs}`);
+  if(s.commandCount)parts.push(`commands ${s.commandCount}`);
+  return parts.join(' · ')||'暂无运行态解释';
+}
+
+function formatHostProfileSummary(profile){
+  if(!profile)return '';
+  const parts=[];
+  if(profile.family)parts.push(profile.family);
+  if(profile.source_root_count)parts.push(`来源根 ${profile.source_root_count}`);
+  if(profile.mcp_runtime_server_count)parts.push(`运行 MCP ${profile.mcp_runtime_server_count}`);
+  if(profile.mcp_catalog_server_count)parts.push(`市场 MCP ${profile.mcp_catalog_server_count}`);
+  else if(profile.mcp_server_count)parts.push(`MCP ${profile.mcp_server_count}`);
+  return parts.join(' · ');
+}
+
 async function fetchTargets(force=false){
   const now=Date.now();
   if(!force&&_targetsCache&&(now-_targetsCacheTs)<TARGETS_CACHE_TTL){
@@ -266,6 +394,7 @@ function renderWorkbench(){
   const el=$('workbench-card');
   if(!el)return;
   const m=getTriageMetrics();
+  const cap=currentCapabilitySummary();
   const policyCounts={
     manage:targets.filter(t=>sourcePolicy(t)==='manage').length,
     review:targets.filter(t=>sourcePolicy(t)==='review').length,
@@ -273,6 +402,7 @@ function renderWorkbench(){
   };
   const current=targets.find(t=>t.is_current)||scan?.target;
   const currentName=current?.name||scan?.target?.label||'当前目录';
+  const profileHint=formatHostProfileSummary(cap.profile);
   const scanMeta=scanResult
     ? `${m.scannedDirs} 个目录 · ${(m.durationMs/1000).toFixed(1)}s · ${new Date(m.scannedAt).toLocaleString('zh-CN')}`
     : health
@@ -280,33 +410,33 @@ function renderWorkbench(){
     : `轻量模式 · ${globalStats?.targets_scanned||targetGroups.length||'?'} 个目录已发现`;
   const queue=[
     {
-      title:m.outdated?`更新过时来源`:'先扫日常目录',
-      desc:m.outdated?`${m.upstreams.length} 个有来源，${m.outdated} 个落后上游`:'先分析用户、项目和导入副本目录；缓存和市场包留给来源市场/全部视图',
-      count:m.outdated||'未扫描',
-      action:'issues'
-    },
-    {
-      title:m.sameName?`合并同名重复`:'检查当前目录重复',
-      desc:m.sameName?`先看用户自建和跨 Agent 副本，不急着碰 marketplace`:`${currentName} 当前 ${skills.length} 个 skills`,
-      count:m.sameName||skills.length,
-      action:m.sameName?'issues':'skills'
-    },
-    {
-      title:'浏览全部来源',
-      desc:`${targetGroups.length||'?'} 个应用分组，按 skill 数排序`,
-      count:targetGroups.length||'--',
+      title:'确认当前可用能力',
+      desc:compactCapabilityParts(cap),
+      count:cap.activeSkills||'--',
       action:'sources'
+    },
+    {
+      title:'隔离仅库存来源',
+      desc:`缓存 ${cap.cacheSkills||0} skills · 市场目录 ${cap.catalogSkills||0} skills`,
+      count:cap.sourceOnlySkills||0,
+      action:'sources'
+    },
+    {
+      title:m.actionable?'处理整理线索':'建立整理基线',
+      desc:m.actionable?`同名、上游、内容变更等 ${m.actionable} 条待复核`:'从重点目录开始，不把 marketplace/cache 当删除对象',
+      count:m.actionable||'未扫描',
+      action:'issues'
     }
   ];
   el.innerHTML=`<div class="workbench">
     <div class="card focus-panel">
       <div class="focus-head">
         <div>
-          <div class="focus-kicker">Triage</div>
-          <div class="focus-title">${m.actionable?`先复核 ${m.actionable} 条整理线索`:'先建立整理基线'}</div>
-          <div class="focus-sub">${scanMeta}</div>
+          <div class="focus-kicker">Capability Map</div>
+          <div class="focus-title">${cap.agent} 能力面</div>
+          <div class="focus-sub">${cap.inventorySkills||skills.length} skills 库存 · ${cap.activeDirs||0} 个当前可用来源 · ${scanMeta}${profileHint?` · ${profileHint}`:''}</div>
         </div>
-        <div class="focus-score"><div class="num">${m.actionable||'--'}</div><div class="lbl">待复核</div></div>
+        <div class="focus-score"><div class="num">${cap.activeSkills||'--'}</div><div class="lbl">当前能力</div></div>
       </div>
       <div class="queue-list">${queue.map((q,i)=>`<div class="queue-row">
         <div class="queue-rank">${i+1}</div>
@@ -314,17 +444,17 @@ function renderWorkbench(){
         <div class="queue-count">${q.count}</div>
       </div>`).join('')}</div>
       <div class="workbench-actions">
-        <button class="btn btn-primary" onclick="goView('issues')">${scanResult?'查看重点':'去日常扫描'}</button>
-        <button class="btn" onclick="goView('sources')">目录地图</button>
+        <button class="btn btn-primary" onclick="goView('sources')">能力地图</button>
+        <button class="btn" onclick="goView('issues')">${scanResult?'查看重点':'去重点扫描'}</button>
         <button class="btn" onclick="goView('skills')">当前目录</button>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>整理范围</h3><span class="sub">${currentName}</span></div>
+      <div class="card-head"><h3>运行态摘要</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>🛡️ 用户/项目目录</span><b>${policyCounts.manage||0}</b></div><div class="scope-desc">用户自建和项目级 skill 库，可作为日常整理对象。</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>🔎 导入/副本目录</span><b>${policyCounts.review||0}</b></div><div class="scope-desc">跨 Agent 副本和导入 skill，先对比再删除。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>👁️ 生态/缓存目录</span><b>${policyCounts.observe||0}</b></div><div class="scope-desc">marketplace、缓存和内置包默认不进删除队列。</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>✅ 当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>📚 仅作来源</span><b>${cap.sourceOnlySkills||0}</b></div><div class="scope-desc">市场目录、缓存和旧包只解释来源，不等同上下文加载。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>🧹 整理队列</span><b>${m.actionable||0}</b></div><div class="scope-desc">${policyCounts.manage||0} 个可管理目录 · ${policyCounts.review||0} 个待复核目录 · ${policyCounts.observe||0} 个观察目录。</div></div>
       </div>
     </div>
   </div>`;
@@ -333,17 +463,16 @@ function renderWorkbench(){
 /* ── Stats ── */
 function renderStats(){
   const h=health;
-  const gUnique=globalStats?.unique_skills||0;
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
   const m=getTriageMetrics();
   const actionable=(scanResult||health)?m.actionable:0;
-  const commands=scan?.commands||[];
-  const enabledPlugins=(installedPlugins||[]).filter(p=>p.enabled).length;
+  const cap=currentCapabilitySummary();
   $('stats-row').innerHTML=`
-    <div class="stat s-unique" title="跨所有技能库去重后的唯一 skill 数"><div class="val">${gUnique||skills.length}</div><div class="lbl">全量 Skills</div></div>
-    <div class="stat s-libraries" title="已扫描的技能库目录数（实际目录，非合并数）"><div class="val">${gTargets}</div><div class="lbl">技能库</div></div>
-    <div class="stat" title="当前 Agent 的命令数量"><div class="val">${commands.length}</div><div class="lbl">Commands</div></div>
-    <div class="stat" title="已启用的 Claude 插件数"><div class="val">${enabledPlugins}</div><div class="lbl">已启用插件</div></div>
+    <div class="stat s-unique" title="当前 Agent 可解释为运行态能力的 skill 数"><div class="val">${cap.activeSkills||skills.length}</div><div class="lbl">当前能力</div></div>
+    <div class="stat" title="当前 Agent 已启用插件目录数"><div class="val">${cap.pluginDirs||0}</div><div class="lbl">启用插件</div></div>
+    <div class="stat" title="当前 Agent 连接器能力包数量"><div class="val">${cap.connectorDirs||0}</div><div class="lbl">连接器</div></div>
+    <div class="stat" title="市场目录、缓存、旧包等只作为来源库存的 skill 数"><div class="val">${cap.sourceOnlySkills||0}</div><div class="lbl">仅库存</div></div>
+    <div class="stat s-libraries" title="已发现的 Agent/应用分组数"><div class="val">${gTargets}</div><div class="lbl">应用</div></div>
     <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;
 }
 
@@ -366,7 +495,7 @@ function renderCategories(){
     const gd=globalStats.category_distribution||{};
     const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
     const total=globalStats.unique_skills||0;
-    let html=`<div class="card"><div class="card-head"><h3>📊 全量分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
+    let html=`<div class="card"><div class="card-head"><h3>📊 库存分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
     <div class="cat-grid">${cats.map(([c,n])=>{
       const pct=(n/total*100).toFixed(1);
       const barW=(n/mx*100).toFixed(0);
