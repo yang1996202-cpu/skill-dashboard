@@ -13,6 +13,14 @@ from .paths import CACHE_DIR, STATE_DIR
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "skill-dashboard" / "config.json"
 
+# Discovery is I/O heavy; cache results for a short TTL to avoid rescanning the
+# whole home directory on every API call. Callers like /api/targets already cache
+# at the HTTP layer, but lower-level functions (cleanup plan, execution plan,
+# overlap scan) need a shared in-memory cache to avoid duplicate work.
+_DISCOVER_SKILL_DIRS_CACHE = None
+_DISCOVER_SKILL_DIRS_CACHE_TS = 0
+_DISCOVER_SKILL_DIRS_TTL = 60  # seconds
+
 
 def _read_skill_dashboard_config():
     """Load user config from default path or legacy home-level JSON."""
@@ -580,11 +588,17 @@ def _discover_skill_dirs():
     4. .skill-dashboard.json config files (home-level + project-level)
     5. custom-sources.json (user-defined paths)
     """
+    global _DISCOVER_SKILL_DIRS_CACHE, _DISCOVER_SKILL_DIRS_CACHE_TS
+    now = time.time()
+    if _DISCOVER_SKILL_DIRS_CACHE is not None and (now - _DISCOVER_SKILL_DIRS_CACHE_TS) < _DISCOVER_SKILL_DIRS_TTL:
+        return list(_DISCOVER_SKILL_DIRS_CACHE)
+
     home = Path.home()
     candidates = []
     seen_paths = set()
     validated_paths = set()  # dirs already confirmed by _has_skill_md
     _resolved_inodes = set()  # (st_dev, st_ino) for samefile dedup (macOS case-insensitive FS)
+    _has_skill_md_cache = {}
 
     def add_dir(d, _validated=False):
         d = d.resolve()
@@ -612,10 +626,34 @@ def _discover_skill_dirs():
     # Shallow skip: only dirs that are DEFINITELY not agents (system caches, build tools)
     _SHALLOW_SKIP = {".Trash", ".cache", ".git"}
 
-    def _has_skill_md(d):
-        """Check if directory contains at least one */SKILL.md entry."""
+    def _has_skill_md(d, cache=None):
+        """Check if directory contains at least one */SKILL.md entry.
+
+        Uses os.scandir to avoid pathlib overhead and an optional cache dict
+        keyed by resolved path string to avoid rescanning the same directory.
+        """
+        key = None
+        if cache is not None:
+            try:
+                key = str(Path(d).resolve())
+            except Exception:
+                key = None
+            if key in cache:
+                return cache[key]
         try:
-            return any((c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists() for c in d.iterdir())
+            with os.scandir(d) as it:
+                for entry in it:
+                    if entry.is_dir(follow_symlinks=False) or entry.is_symlink():
+                        try:
+                            if os.path.exists(os.path.join(entry.path, "SKILL.md")):
+                                if key is not None:
+                                    cache[key] = True
+                                return True
+                        except OSError:
+                            continue
+            if key is not None:
+                cache[key] = False
+            return False
         except Exception:
             return False
 
@@ -632,10 +670,10 @@ def _discover_skill_dirs():
             for entry in root.iterdir():
                 if not entry.is_dir() or entry.name in _SKIP_DEEP:
                     continue
-                is_container = (
-                    (entry / "SKILL.md").exists() and _has_skill_md(entry)
-                )
-                if _has_skill_md(entry):
+                has_sub = _has_skill_md(entry, _has_skill_md_cache)
+                has_own = os.path.exists(os.path.join(str(entry), "SKILL.md"))
+                is_container = has_own and has_sub
+                if has_sub:
                     # Container inside skills/ -> skip (parent already shows it)
                     if is_container and root.name == "skills":
                         continue
@@ -669,11 +707,8 @@ def _discover_skill_dirs():
                             # gstack/ with 53 sub-skills).  Skip it — the package
                             # is already visible as a skill within the parent
                             # target, and its sub-skills shouldn't be flattened.
-                            if ((sub / "SKILL.md").exists()
-                                    and any(
-                                        (c.is_dir() and (c / "SKILL.md").exists())
-                                        for c in sub.iterdir()
-                                    )):
+                            has_own = os.path.exists(os.path.join(str(sub), "SKILL.md"))
+                            if has_own and _has_skill_md(sub, _has_skill_md_cache):
                                 continue
                             add_dir(sub)
                     except (PermissionError, OSError):
@@ -697,7 +732,7 @@ def _discover_skill_dirs():
                 add_dir(skills_dir)
             # Also check if the dir itself is a skills collection (e.g., ~/AI-Skills/)
             if name not in ("Downloads", "Documents", "Desktop", "Movies", "Music", "Pictures", "Public"):
-                if _has_skill_md(entry):
+                if _has_skill_md(entry, _has_skill_md_cache):
                     add_dir(entry, _validated=True)
     except (PermissionError, OSError):
         pass
@@ -709,7 +744,7 @@ def _discover_skill_dirs():
             for d in downloads.iterdir():
                 if not d.is_dir():
                     continue
-                if _has_skill_md(d):
+                if _has_skill_md(d, _has_skill_md_cache):
                     add_dir(d, _validated=True)
                 _scan_agent_deep(d, max_depth=2, _depth=1)
                 
@@ -812,13 +847,14 @@ def _discover_skill_dirs():
 
     # Filter: must contain SKILL.md entries, exclude Trash
     # Skip re-check for dirs already validated by _has_skill_md during scan
-    return [d for d in candidates
-            if d.is_dir()
-            and ".Trash" not in str(d)
-            and (str(d) in validated_paths or any(
-                (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
-                for c in d.iterdir()
-            ))]
+    result = [d for d in candidates
+              if ".Trash" not in str(d)
+              and d.is_dir()
+              and (str(d) in validated_paths
+                   or _has_skill_md(d, _has_skill_md_cache))]
+    _DISCOVER_SKILL_DIRS_CACHE = tuple(result)
+    _DISCOVER_SKILL_DIRS_CACHE_TS = now
+    return result
 
 def _discover_command_dirs():
     """Discover all command directories on the system.

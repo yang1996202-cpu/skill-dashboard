@@ -136,14 +136,35 @@ python3 serve.py
 
 ## 上游追踪说明
 
-上游追踪通过两种方式检测：
+上游追踪通过三种方式检测来源：
 
 1. **`.git` 目录**：读取 `git remote get-url origin`
 2. **`.skill-source.env`**：读取来源记录文件（Dashboard 安装时自动写入）
+3. **Vercel skills lock**：读取 `~/.agents/.skill-lock.json`（`npx skills add` 安装时写入）
 
-更新检测使用 GitHub REST API（`repos/{owner}/{repo}/commits`），无需 `gh` CLI，无需 token。
+更新检测使用 GitHub REST API（`repos/{owner}/{repo}/commits`），无需 `gh` CLI。
 
-如果某个 skill 既没有 `.git` 也没有 `.skill-source.env`，则检测不到上游。这不是 bug，是本地没有来源记录。
+### GitHub Token（可选但强烈建议）
+
+未配置 token 时，GitHub 对同一 IP 限制 **60 次/小时**。全量扫描一次可能就用完额度，导致上游检测失败。
+
+配置 token 后额度提升到 **5000 次/小时**，全量扫描稳定可用。
+
+配置方式二选一：
+
+```bash
+# 方式 1：环境变量
+export GITHUB_TOKEN=ghp_xxx
+python3 serve.py
+
+# 方式 2：项目根目录 .env 文件（推荐，已加入 .gitignore 不会提交）
+echo 'GITHUB_TOKEN=ghp_xxx' > .env
+python3 serve.py
+```
+
+Token 生成路径：GitHub → Settings → Developer settings → Personal access tokens → Tokens (classic)。读取公开仓库不需要勾选任何 scope。
+
+如果某个 skill 既没有 `.git`、也没有 `.skill-source.env`、也没有 Vercel lock，则检测不到上游。这不是 bug，是本地没有来源记录。
 
 ---
 

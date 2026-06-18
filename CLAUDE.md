@@ -154,18 +154,20 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ### 目录视图抽象层
 
-sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同一套目录视图抽象（定义在 `static/issues-cleanup.js`）：
+目录视图抽象定义在 `static/issues-cleanup.js`，但职责已拆分：
 
-- `filterGroupsByView(groups, viewMode)`：按 daily/deep 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
+- `filterGroupsByView(groups, viewMode)`：按 `mine`/`source-market`/`all` 过滤 Agent 分组，重新计算 `total_skills`，过滤空分组
 - `sortGroupsByCurrentAndSize(groups)`：current 组优先，再按 skill 数量降序
-- `sourceIsDaily(t)` 决定目录是否进入日常视图；**日常视图只保留 `user`/`project` 两类 + `is_current` 的当前目录**，`marketplace`/`cache`/`cross-copy`/`commands` 只在「全量审计」视图显示
+- `sourceIsDaily(t)` / `sourceIsMine(t)`：决定目录是否进入「我的」视图；**「我的」视图只保留 `user`/`project` 两类 + `is_current` 的当前目录**
+- `sourceIsSourceMarket(t)`：决定目录是否进入「来源市场」视图；包含 `marketplace`/`cache`/`cross-copy`/`commands`
 - `fetchTargets(force)` 为 `/api/targets` 提供前端 3 分钟 TTL 缓存
-- 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，sidebar 与 sources 页切换同步
+- 单一 `_sourceViewMode` 状态通过 `sd-source-view` 持久化，可取 `mine`/`source-market`/`all`；旧值 `daily`/`deep` 会在启动时迁移为 `mine`/`all`
+- **sidebar「目录技能切换」下拉始终显示全部目录**，视图过滤只在「全部目录技能」页生效
 
 ### 全部目录技能页 UX
 
-- **视图与 sidebar 同步**：日常/全量视图状态和 sidebar「目录技能切换」下拉共用 `_sourceViewMode`，切换一边另一边同步
-- **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（日常视图 / 全量审计）使用 `.segmented-control` 组件，与 sidebar 下拉风格一致
+- **视图切换在页面顶部**：分段控件「我的 / 来源市场 / 全部」放在「全部目录技能」页头部，不再放在 sidebar
+- **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（我的 / 来源市场 / 全部）使用 `.segmented-control` 组件
 - **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
 - **分类折叠**：每个 Agent 卡片内，按 6 分类（`user`/`marketplace`/`cache`/`cross-copy`/`project`/`commands`）分组显示，每个分类标题可点击展开/收起
 - **分类一键删除**：分类子标题有 `🗑 删除全部` 按钮，调 `deleteCategoryDirs()`
@@ -184,6 +186,8 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 
 `_list_targets()` 带 3 分钟 TTL 内存缓存（`_targets_cache` / `_targets_cache_ts`）。冷启动 ~6s，缓存命中 ~0.1s。缓存期间 `is_current` 标志实时刷新（对比 state 里存的当前目标）。
 
+前端 `fetchTargets(force)` 同样有 3 分钟内存缓存。复制、安装、删除、修复、更新、添加/移除来源等变更目录内容的操作成功后，必须调用 `invalidateTargetsCache()` 使缓存失效，再 `loadData()`，否则「全部目录技能」页会显示旧目录统计。
+
 前端 `loadData()` 的异步 targets 回调：如果 sources DOM 已有内容（用户已展开过），跳过 `renderSources()` 只更新 badge 数字，避免覆盖用户交互状态。
 
 ## 数据目录
@@ -199,7 +203,7 @@ sidebar 的「目录技能切换」下拉与「全部目录技能」页共用同
 - **穿透浏览性能**：`/api/source/skills` 默认不计算 understanding，避免大目录穿透时超时；需要理解内容时由 skill 详情页单独加载
 - **Skill name 校验**：`_validate_skill_name()` 白名单 `[a-zA-Z0-9._@+\-()]+`，路由层会先 URL decode
 - **CSRF 防护**：POST/DELETE/PATCH 校验 Origin/Referer
-- **GitHub API 限流**：未认证 60 次/小时，有 5 分钟 TTL 缓存 + 熔断
+- **GitHub API 限流**：未认证 60 次/小时；可通过 `GITHUB_TOKEN` 环境变量或项目根目录 `.env` 文件配置 token，额度提升至 5000 次/小时。`.env` 已加入 `.gitignore`，不随仓库提交
 - **诊断子进程**：`_diag_worker.py` 通过 `sys.argv[1]` 接收目标路径（不拼接代码字符串）
 - **前端数据保护**：`scan.totals.skills` 只取 fast-scan 值，不被过期缓存覆盖
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`

@@ -1,5 +1,19 @@
 // Category tab state
-let _issueCategoryTab='user'; // 'all' | 'user' | 'marketplace' | 'cache' | 'cross-copy' | 'project'
+let _issueCategoryTab='all'; // 'all' | 'user' | 'marketplace' | 'cache' | 'cross-copy' | 'project'
+
+// Scan scope persisted across sessions
+let _scanScope=(()=>{
+  try{
+    const saved=localStorage.getItem('sd-scan-scope');
+    if(saved) return saved;
+  }catch{}
+  return 'deep';
+})();
+function setScanScope(scope){
+  _scanScope=scope==='daily'?'daily':'deep';
+  localStorage.setItem('sd-scan-scope',_scanScope);
+  renderScanConfig();
+}
 
 // Scan check types persisted across sessions
 let _scanChecks=(()=>{
@@ -7,7 +21,7 @@ let _scanChecks=(()=>{
     const saved=localStorage.getItem('sd-scan-checks');
     if(saved) return JSON.parse(saved);
   }catch{}
-  return ['same-name'];
+  return ['same-name','upstream','content-changes'];
 })();
 function toggleScanCheck(key,checked){
   const set=new Set(_scanChecks);
@@ -38,7 +52,7 @@ const POLICY_META={
   manage:{emoji:'⭐',label:'用户/项目',desc:'用户自建或项目级技能库，可作为日常整理对象'},
   review:{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 副本或导入目录，先看内容再处理'},
   observe:{emoji:'📦',label:'生态目录',desc:'marketplace 或内置包，默认不做删除动作'},
-  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在全量审计里看'},
+  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在来源市场或全部视图里看'},
 };
 const LAYER_FALLBACK={
   user:'用户技能库',
@@ -67,6 +81,11 @@ function sourceIsDaily(t){
   const c=t?.category||'unknown';
   return c==='user'||c==='project';
 }
+function sourceIsMine(t){ return sourceIsDaily(t); }
+function sourceIsSourceMarket(t){
+  const c=t?.category||'unknown';
+  return c==='marketplace'||c==='cache'||c==='cross-copy'||c==='commands';
+}
 function sourceCanDelete(t){
   return sourcePolicy(t)==='manage'&&t?.is_deletable!==false;
 }
@@ -78,9 +97,13 @@ function sourcePolicyBadge(t){
 
 // Shared directory list abstraction
 function filterGroupsByView(groups,viewMode){
-  const isDeep=viewMode==='deep';
+  const predicate={
+    'mine':sourceIsMine,
+    'source-market':sourceIsSourceMarket,
+    'all':()=>true,
+  }[viewMode]||sourceIsMine;
   const filtered=groups.map(g=>{
-    const dirs=isDeep?g.dirs:g.dirs.filter(sourceIsDaily);
+    const dirs=g.dirs.filter(predicate);
     return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+(d.count||0),0)};
   }).filter(g=>g.dirs.length);
   return filtered;
@@ -100,7 +123,7 @@ function getVisibleSourceGroups(){
   return filterGroupsByView(targetGroups,_sourceViewMode);
 }
 function setSourceViewMode(mode){
-  _sourceViewMode=mode==='deep'?'deep':'daily';
+  _sourceViewMode=['mine','source-market','all'].includes(mode)?mode:'mine';
   localStorage.setItem('sd-source-view',_sourceViewMode);
   _sourcesShowAll=false;
   if($('view-sources')?.classList.contains('active')){
@@ -119,25 +142,19 @@ function renderScanConfig(){
     const sn=scanResult.duplicates_same_name?.length||0;
     const up=scanResult.upstream_sources?.length||0;
     const cc=scanResult.content_changes?.total_changed||0;
-    const scopeLabel=scanResult.scope==='daily'?'日常扫描':scanResult.scope==='deep'?'全量审计':'自定义扫描';
-    const pc=scanResult.scanned_policy_counts||{};
-    const policyText=(pc.manage||pc.review||pc.observe||pc.hidden)
-      ? ` · 用户/项目 ${pc.manage||0} / 导入/副本 ${pc.review||0} / 生态/缓存 ${(pc.observe||0)+(pc.hidden||0)}`
-      : '';
-    const checkLabel={
-      'same-name':'同名重复',
-      'upstream':'上游状态',
-      'content-changes':'内容变更'
-    };
-    const checksText=(scanResult.checks||_scanChecks).map(c=>checkLabel[c]||c).join(' · ');
+    const scopeLabel=scanResult.scope==='daily'?'我的目录':'全部目录';
+    const tokenOk=scanResult.github_token_configured;
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
-      <span>上次线索扫描：${scopeLabel}</span>
-      <span>${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s${policyText}</span>
-      <span>检查项：${checksText||'默认'}</span>
-      <span>同名 ${sn}</span><span>上游 ${up}</span><span>变更 ${cc}</span>
+      <span>扫描：${scopeLabel} · ${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
+      <span>同名 ${sn} · 上游 ${up} · 变更 ${cc}</span>
+      ${tokenOk?`<span style="color:var(--green);margin-left:8px" title="已配置 GITHUB_TOKEN，额度 5000 次/小时">🔐 Token 已配置</span>`:`<span style="color:var(--amber);margin-left:8px" title="未配置 GITHUB_TOKEN，GitHub API 未认证额度 60 次/小时">⚠ 未配置 Token</span>`}
       ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">${scanResult.lint.warnings.length} 个数据异常</span>`:''}
     </div>`;
   }
+  const scopeBtn=(scope,label)=>{
+    const active=_scanScope===scope;
+    return `<button class="btn btn-sm ${active?'btn-primary':''}" onclick="setScanScope('${scope}')" style="${active?'':'background:var(--bg-card-alt);color:var(--text-muted)'}">${label}</button>`;
+  };
   const checkBox=(key,label,title)=>{
     const checked=_scanChecks.includes(key);
     return `<label title="${esc(title)}" style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-muted);cursor:pointer;user-select:none">
@@ -148,72 +165,76 @@ function renderScanConfig(){
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
       <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始整理</button>
-      <span style="font-size:11px;color:var(--text-muted)">同名、上游、内容变更只是初筛线索；人看路径和原文后再勾选处理。</span>
+      <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始，自动扫描并生成处理建议。</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center">
-        <div style="display:flex;gap:8px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)">
-          ${checkBox('same-name','同名重复','扫描跨目录同名 skill，包括内容完全相同的副本')}
-          ${checkBox('upstream','上游状态','检查已安装 skill 是否有上游新版本')}
-          ${checkBox('content-changes','内容变更','检测当前目录 skill 内容是否有本地改动')}
+        <div style="display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)">
+          ${scopeBtn('deep','全部目录')}
+          ${scopeBtn('daily','我的目录')}
         </div>
-        <button class="btn btn-sm" id="evidence-daily-btn" onclick="runEvidenceBundle('daily')">日常线索</button>
-        <button class="btn btn-sm" id="evidence-deep-btn" onclick="runEvidenceBundle('deep')" title="包含 marketplace、缓存和内置包，只做 dry-run">全量线索</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${checkBox('same-name','同名','跨目录同名 skill')}
+          ${checkBox('upstream','上游','检查是否有上游新版本')}
+          ${checkBox('content-changes','变更','检测本地内容改动')}
+        </div>
       </div>
     </div>
     ${statusHtml}
   </div>`;
 }
 
-async function startCleanupFlow(){
-  const btn=$('cleanup-start-btn');
-  if(btn){btn.disabled=true;btn.textContent='整理中...'}
+function renderCleanupLoading(step=1){
+  const steps=[
+    {n:1,label:'扫描目录与检查项'},
+    {n:2,label:'生成处理建议'}
+  ];
+  return `<div class="card cleanup-loading" style="border-left:3px solid var(--accent)">
+    <div class="cleanup-spinner"></div>
+    <div class="cleanup-loading-title">正在整理 · 步骤 ${step}/2</div>
+    <div class="cleanup-loading-steps">
+      ${steps.map(s=>`<div class="cleanup-step ${s.n===step?'active':s.n<step?'done':''}"><span class="cleanup-step-num">${s.n}</span><span>${s.label}</span></div>`).join('')}
+    </div>
+    <div class="cleanup-loading-note">目录较多时可能需要 10–30 秒，请勿重复点击。</div>
+  </div>`;
+}
+
+function setCleanupLoading(active,step=1){
+  const startBtn=$('cleanup-start-btn');
+  if(startBtn){startBtn.disabled=active;startBtn.textContent=active?'整理中...':'开始整理'}
+  document.querySelectorAll('#scan-config input[type=checkbox]').forEach(cb=>cb.disabled=active);
+  document.querySelectorAll('#scan-config button').forEach(b=>{if(b.id!=='cleanup-start-btn')b.disabled=active;});
   const list=$('issues-list');
-  if(list){
-    list.innerHTML='<div class="empty" style="padding:30px 0">正在生成目录依据和可执行推荐...</div>';
-  }
+  if(active&&list)list.innerHTML=renderCleanupLoading(step);
+}
+
+async function startCleanupFlow(){
+  setCleanupLoading(true,1);
   try{
-    // 快速路径：只跑目录治理计划和执行预案，不跑同名/相似/上游的慢扫描
-    // 同名、相似、上游证据通过「日常线索」「全量线索」按钮单独触发
-    await runCleanupPlan('daily');
-    await runExecutionPlan('declutter');
-    toast('推荐清理已生成：需要删除的项请先看路径/对比，再勾选处理');
+    const scope=_scanScope||'deep';
+    const checks=[..._scanChecks];
+    if(checks.length){
+      await runScan(scope,{silent:true,deferRender:true,checks});
+    }
+    setCleanupLoading(true,2);
+    await runCleanupPlan(scope,{deferRender:true});
+    await runExecutionPlan('declutter',{silent:true});
+    toast('整理完成：已生成可处理建议');
   }catch(e){
+    if(cleanupPlan)renderIssues();
     toast('整理失败: '+e.message,'error');
   }finally{
-    if(btn){btn.disabled=false;btn.textContent='开始整理'}
+    setCleanupLoading(false);
   }
 }
 
 async function runEvidenceBundle(scope='daily',opts={}){
-  const dailyBtn=$('evidence-daily-btn');
-  const deepBtn=$('evidence-deep-btn');
-  const startBtn=$('cleanup-start-btn');
-  const label=scope==='deep'?'全量线索':'日常线索';
-  if(dailyBtn)dailyBtn.disabled=true;
-  if(deepBtn)deepBtn.disabled=true;
-  if(startBtn)startBtn.disabled=true;
-  if(scope==='deep'&&deepBtn)deepBtn.textContent='汇总中...';
-  if(scope!=='deep'&&dailyBtn)dailyBtn.textContent='汇总中...';
-  try{
-    const checks=opts.checks||_scanChecks;
-    await runCleanupPlan(scope,{silent:true,deferRender:true});
-    await runScan(scope,{silent:true,deferRender:true,checks});
-    await runExecutionPlan('declutter',{silent:true});
-    if(!opts.silent)toast(`${label}已汇总：目录依据、同名重复和推荐清理已合并展示`);
-  }catch(e){
-    toast(`${label}汇总失败: ${e.message}`,'error');
-  }finally{
-    if(dailyBtn){dailyBtn.disabled=false;dailyBtn.textContent='日常线索'}
-    if(deepBtn){deepBtn.disabled=false;deepBtn.textContent='全量线索'}
-    if(startBtn){startBtn.disabled=false;startBtn.textContent='开始整理'}
-  }
+  // Kept for compatibility; now a thin wrapper around the unified cleanup flow.
+  _scanScope=scope;
+  localStorage.setItem('sd-scan-scope',_scanScope);
+  renderScanConfig();
+  await startCleanupFlow();
 }
 
-async function runScan(scope='daily',opts={}){
-  const btn=$('scan-run-btn');
-  const deepBtn=$('scan-run-deep-btn');
-  if(btn)btn.disabled=true;
-  if(deepBtn)deepBtn.disabled=true;
-  if(btn)btn.textContent=scope==='deep'?'⏳ 全量审计中...':'⏳ 日常扫描中...';
+async function runScan(scope='deep',opts={}){
   try{
     const scanTargets=scope==='deep'?targets:getVisibleSourceTargets();
     const directories=targets.length?scanTargets.map(t=>t.path):[];
@@ -239,17 +260,13 @@ async function runScan(scope='daily',opts={}){
       total_identical:(r.duplicates_identical||[]).length,
     };
     if(!opts.preserveIssueView){
-      _issueCategoryTab='user';
+      _issueCategoryTab='all';
       _issueShowAll=false;
     }
     if(!opts.deferRender)renderIssues();
     updateDiagBadges();
-    if(!opts.silent)toast(`${scope==='deep'?'全量审计':'日常扫描'}完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
+    if(!opts.silent)toast(`扫描完成: ${r.scanned_dirs} 目录 · ${r.duration_ms}ms`);
   }catch(e){toast('扫描失败: '+e.message,'error')}
-  finally{
-    if(btn){btn.disabled=false;btn.textContent='同名重复线索'}
-    if(deepBtn)deepBtn.disabled=false;
-  }
 }
 
 async function runCleanupPlan(scope='daily',opts={}){
@@ -617,7 +634,7 @@ function renderIssues(){
 
   // No scan yet
   if(!scanResult&&(!health||(!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML=executionHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」生成推荐清理；需要看同名重复和上游证据时再展开高级证据。</div>';
+    $('issues-list').innerHTML=executionHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」扫描目录并生成处理建议。</div>';
     return;
   }
 
@@ -721,14 +738,36 @@ function renderIssues(){
     h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔗 上游追踪</div>`;
     h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head"><h3>上游追踪</h3><span class="sub">${outdated.length} 个过时</span></div>`;
     if(outdated.length){
+      const SOURCE_LABEL={
+        'steal-meta':['Steal安装','通过 Skill Dashboard 从 GitHub 安装'],
+        'git-remote':['Git仓库','目录本身是一个 Git 仓库，可 git pull'],
+        'vercel-lock':['NPX/Vercel','通过 npx skills add 安装，记录在 ~/.agents/.skill-lock.json'],
+        'unknown':['未知','无法识别上游来源']
+      };
+      // Group symlink copies that point to the same canonical copy so we don't show N identical update buttons.
+      const upstreamGroups={};
       outdated.forEach(s=>{
+        const key=s.canonical_dir||s.dir;
+        if(!upstreamGroups[key]){
+          upstreamGroups[key]={...s, copies:[]};
+        }
+        upstreamGroups[key].copies.push({dir:s.dir,is_symlink:s.is_symlink,link_target:s.link_target});
+      });
+      Object.values(upstreamGroups).forEach(s=>{
         const cat=_dirCategory(s.dir);
         const cm=CAT_META[cat]||CAT_META.unknown;
+        const [sourceLabel,sourceTitle]=SOURCE_LABEL[s.source||'unknown']||SOURCE_LABEL['unknown'];
+        const canonical=s.canonical_dir||s.dir;
+        const updateDir=canonical;
+        const updateLabel=s.source==='vercel-lock'?'NPX 更新':s.source==='git-remote'?'Git 更新':'更新';
+        const copyCount=s.copies.length;
+        const copyHint=copyCount>1?`&#10;共 ${copyCount} 个副本: ${s.copies.map(c=>c.dir.replace(/^\/Users\/[^/]+/,'~')).join(', ')}`:'';
         h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
           <span style="font-size:12px" title="${cm.label}">${cm.emoji}</span>
-          <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:500">${s.name}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(s.dir)}</div>
+          <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span>${copyCount>1?`<span style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:999px" title="${esc(copyHint)}">+${copyCount-1} 副本</span>`:''}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div><div style="font-size:10px;color:var(--text-muted);font-family:monospace" title="当前版本 → 上游最新版本">${s.installed_commit?.slice(0,8)||'?'} → ${s.latest_commit?.slice(0,8)||'?'}</div>${renderIssuePath(canonical)}</div>
           <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
-          <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this})">更新</button></div>`;
+          <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
+          <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(updateDir)}')">${updateLabel}</button></div>`;
       });
     }else{
       h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${visibleUpstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
@@ -840,7 +879,7 @@ function renderIssues(){
 async function fixSkill(name,action,btn){
   btn.disabled=true;btn.textContent='修复中...';
   try{const r=await fetch(`/api/skill/${name}/fix`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action})});
-    const d=await r.json();if(d.ok){toast(`${name} 已修复`);await loadData()}else toast(d.error||'修复失败','error')}
+    const d=await r.json();if(d.ok){toast(`${name} 已修复`);invalidateTargetsCache();await loadData()}else toast(d.error||'修复失败','error')}
   catch(e){toast('修复失败','error')}finally{btn.disabled=false;btn.textContent='修复'}
 }
 
@@ -849,14 +888,14 @@ async function promptAddDesc(name,btn){
   if(!desc)return;
   btn.disabled=true;btn.textContent='保存中...';
   try{const r=await fetch(`/api/skill/${name}/fix`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'add_description',description:desc})});
-    const d=await r.json();if(d.ok){toast(`${name} 描述已添加`);await loadData()}else toast(d.error||'添加失败','error')}
+    const d=await r.json();if(d.ok){toast(`${name} 描述已添加`);invalidateTargetsCache();await loadData()}else toast(d.error||'添加失败','error')}
   catch(e){toast('添加失败','error')}finally{btn.disabled=false;btn.textContent='补描述'}
 }
 
 async function rehashSkill(name,btn){
   btn.disabled=true;btn.textContent='记录中...';
   try{const r=await fetch(`/api/skill/${name}/rehash`,{method:'POST'});const d=await r.json();
-    if(d.ok){toast(`${name} 哈希已更新`);await loadData()}else toast(d.error||'更新失败','error')}
+    if(d.ok){toast(`${name} 哈希已更新`);invalidateTargetsCache();await loadData()}else toast(d.error||'更新失败','error')}
   catch(e){toast('更新失败','error')}finally{btn.disabled=false;btn.textContent='重新记录'}
 }
 
@@ -870,6 +909,8 @@ async function deleteSkill(name,btn,target){
       if(target&&typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
         await refreshIssuesAfterDelete([target]);
       }else{
+        invalidateTargetsCache();
+        clearGlobalSearchCache();
         await loadData();
       }
     }else toast(d.error||'删除失败','error')}
@@ -892,6 +933,8 @@ async function batchDeleteNames(names,label,targets){
   if(changedDirs.length&&typeof refreshIssuesAfterDelete==='function'&&document.querySelector('#view-issues')?.style.display!=='none'){
     await refreshIssuesAfterDelete(changedDirs);
   }else{
+    invalidateTargetsCache();
+    clearGlobalSearchCache();
     await loadData();
   }
 }
@@ -904,6 +947,7 @@ async function batchRehash(names,label){
     catch{fail++;}
   }
   toast(`${label||'重新记录'}: ${ok} 个成功${fail>0?`，${fail} 个失败`:''}`);
+  invalidateTargetsCache();
   await loadData();
 }
 
@@ -916,7 +960,10 @@ async function cleanupAll(){
     try{const r=await fetch(`/api/skill/${name}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}
     catch{fail++}
   }
-  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);await loadData();
+  toast(`已删除 ${ok} 个${fail?`，${fail} 个失败`:''}`);
+  invalidateTargetsCache();
+  clearGlobalSearchCache();
+  await loadData();
 }
 
 /* ── Trash (垃圾站) ── */
@@ -958,7 +1005,7 @@ async function restoreTrash(id){
   try{
     const r=await fetch(`/api/trash/${encodeURIComponent(id)}/restore`,{method:'POST',headers:{'Content-Type':'application/json'}});
     const d=await r.json();
-    if(d.ok){toast(`已恢复: ${d.restored_to}`);await loadTrash();await loadData()}
+    if(d.ok){toast(`已恢复: ${d.restored_to}`);await loadTrash();invalidateTargetsCache();clearGlobalSearchCache();await loadData()}
     else{toast(d.error||'恢复失败','error')}
   }catch{toast('恢复失败','error')}
 }
