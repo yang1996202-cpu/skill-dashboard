@@ -1,10 +1,22 @@
 # 📊 Skill Dashboard
 
-可视化管理本地技能库（Skills）的轻量 WebUI。**零前端依赖，纯 Python 标准库。**
+把散落在 10+ 个 Agent 目录里的 AI skill 扫进一张图，看清谁重复、谁过时、谁该删。**零依赖本地 WebUI，纯 Python 标准库，clone 即跑。**
 
 ![Python](https://img.shields.io/badge/python-3.8+-blue)
 ![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
 ![License](https://img.shields.io/badge/license-MIT-green)
+
+---
+
+## 和同类工具不同
+
+| | Skill Dashboard | [Skills-Manager](https://github.com/jiweiyeah/Skills-Manager) | [cc-switch](https://github.com/farion1231/cc-switch) | [Skills CLI](https://medium.com/@anivlis/skills-cli-manage-your-ai-agent-capabilities-with-a-single-tool-51e12e6bc1d3) |
+|---|---|---|---|---|
+| 形态 | 零依赖本地 WebUI（浏览器打开） | 桌面应用（Tauri） | 桌面应用（Tauri） | 命令行 |
+| 主定位 | 全宿主 skill 治理：重复 / 上游 / 清理 dry-run | skill 组织、同步、分享 | API 供应商 / MCP / 提示词切换 | skill 浏览、多仓库 |
+| 依赖 | 无（Python 标准库） | 需装桌面应用 | 需装桌面应用 | 需运行时 |
+
+一句话：不装桌面应用、不连云、不动你的文件。`python3 serve.py` 起一个本地 WebUI，扫描全宿主目录，dry-run 给清理建议（移垃圾站可恢复），追踪 GitHub 上游版本，数据全程留在本机。
 
 ---
 
@@ -13,21 +25,15 @@
 > 运行 `python3 serve.py` 后，浏览器自动打开 `http://localhost:3457`。
 
 ### 仪表盘
-
 ![仪表盘](./screenshots/dashboard.png)
 
-> 上图替换方式：运行项目后按 `Cmd+Shift+4` 截图保存到 `screenshots/dashboard.png`
-
 ### 技能库来源浏览
-
 ![技能库](./screenshots/sources.png)
 
 ### 上游追踪
-
 ![上游追踪](./screenshots/upstream.png)
 
 ### 问题与整理
-
 ![问题与整理](./screenshots/issues.png)
 
 ---
@@ -45,9 +51,9 @@
 | 🔍 **扫描检查项** | 「问题与整理」页可勾选同名重复、上游状态、内容变更，按需扫描，避免全量跑 |
 | 🔁 **多端部署识别** | 同一 skill 同内容出现在多个 Agent 根目录时默认保留，可标记为已知部署副本，并可在“本地决策”里撤销 |
 | 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch / Hermes / WorkBuddy / CodeBuddy 等 10+ 个技能库 |
-| 📚 **技能库来源浏览** | 扫描 150+ 个来源库，支持穿透查看、批量同步到目标库 |
-| ⌨️ **Commands 浏览** | 识别 Claude commands 目录，和 skills 一起分层展示；只展示，不参与扫描检测 |
-| 🧩 **插件状态** | 展示 Claude 已启用插件、已安装未启用插件和市场目录差异 |
+| 📚 **技能库来源浏览** | 扫描多宿主来源库，支持穿透查看、批量同步到目标库 |
+| ⌨️ **Commands 浏览** | 识别 Claude/通用 commands 目录，和 skills 一起分层展示；只展示，不参与扫描检测 |
+| 🧩 **宿主轮廓/插件状态** | 通用扫描先找 SKILL.md/MCP 证据，再由 Claude/Codex/Buddy family inspector 解释已启用插件、连接器包、市场货架和仅缓存目录差异 |
 | 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + 支持 frontmatter `category` 覆盖 |
 | 📖 **查看内容** | 点击 skill 名称查看 SKILL.md 全文 |
 | 🏥 **健康评分** | Python 自主计算，不依赖 bash |
@@ -90,8 +96,10 @@ python3 serve.py
 ```
 
 **视图分层**：
-- **日常视图**：sidebar 和「全部目录技能」页默认只显示 `user`（Agent 全局）和 `project`（项目级）目录 + 当前目录
-- **全量审计**：显示全部 6 类目录，包括 `marketplace`/`cache`/`cross-copy`/`commands`
+- **当前可用**：用户根目录、宿主内置、已启用插件、连接器和 commands，解释“当前能力面”
+- **来源库存**：marketplace/catalog、插件缓存、旧包和未启用安装包，只解释来源，不等同上下文加载
+- **待复核**：项目级、导入副本、未知运行态目录，进入人工整理队列
+- **全部**：保留完整扫描面，方便审计各 Agent 的专属目录形态
 
 **并发**：后端使用 `ThreadingHTTPServer`，浏览器多个初始化请求并行处理，避免单线程队头阻塞导致穿透浏览超时。
 
@@ -118,6 +126,7 @@ python3 serve.py
 
 - `serve.py`：HTTP 路由和请求/响应编排
 - `skilldash/discovery.py`：目录发现、Agent 推断、目录治理分层
+- `skilldash/host_inspectors.py`：宿主专属解释器，将 Codex/Claude/WorkBuddy/CodeBuddy 的私有目录和非敏感 MCP 摘要转成统一 runtime metadata
 - `skilldash/cleanup.py`：清理计划和可执行 dry-run 预案
 - `skilldash/overlap.py`：跨目录同名和完全重复扫描
 - `skilldash/decisions.py` / `skilldash/content_hash.py`：本地运行态决策和内容 hash 追踪
@@ -128,7 +137,7 @@ python3 serve.py
 - `static/skill-dashboard.css`：样式
 - `static/app-core.js`：状态、数据加载、仪表盘、当前目录技能
 - `static/issues-cleanup.js`：问题与整理、清理计划、垃圾站
-- `static/sources.js`：全部目录技能、来源浏览、批量同步/删除
+- `static/sources.js`：能力来源、来源浏览、批量同步/删除
 - `static/skill-detail.js`：详情、对比、分类编辑
 - `static/app-bootstrap.js`：刷新、目标切换、诊断、安装入口、启动加载
 

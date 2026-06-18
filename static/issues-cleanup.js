@@ -1,5 +1,5 @@
-// Category tab state
-let _issueCategoryTab='all'; // 'all' | 'user' | 'marketplace' | 'cache' | 'cross-copy' | 'project'
+// Issue view state
+let _issueCategoryTab='all'; // 'all' | 'active' | 'inventory' | 'review'
 
 // Scan scope persisted across sessions
 let _scanScope=(()=>{
@@ -32,9 +32,23 @@ function toggleScanCheck(key,checked){
 }
 
 // Map a directory path to its category using cached targets
-function _dirCategory(dirPath){
+function _dirTarget(dirPath){
   if(!dirPath) return 'unknown';
-  const t=targets.find(t=>t.path===dirPath);
+  const norm=String(dirPath).replace(/\/+$/,'');
+  const exact=targets.find(t=>String(t.path).replace(/\/+$/,'')===norm);
+  if(exact)return exact;
+  let best=null;
+  targets.forEach(t=>{
+    const p=String(t.path||'').replace(/\/+$/,'');
+    if(!p)return;
+    if(norm.startsWith(p+'/')||p.startsWith(norm+'/')){
+      if(!best||p.length>String(best.path||'').length)best=t;
+    }
+  });
+  return best;
+}
+function _dirCategory(dirPath){
+  const t=_dirTarget(dirPath);
   return t?.category||'unknown';
 }
 
@@ -52,7 +66,7 @@ const POLICY_META={
   manage:{emoji:'⭐',label:'用户/项目',desc:'用户自建或项目级技能库，可作为日常整理对象'},
   review:{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 副本或导入目录，先看内容再处理'},
   observe:{emoji:'📦',label:'生态目录',desc:'marketplace 或内置包，默认不做删除动作'},
-  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在来源市场或全部视图里看'},
+  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在来源库存或全部视图里看'},
 };
 const LAYER_FALLBACK={
   user:'用户技能库',
@@ -81,10 +95,42 @@ function sourceIsDaily(t){
   const c=t?.category||'unknown';
   return c==='user'||c==='project';
 }
-function sourceIsMine(t){ return sourceIsDaily(t); }
-function sourceIsSourceMarket(t){
-  const c=t?.category||'unknown';
-  return c==='marketplace'||c==='cache'||c==='cross-copy'||c==='commands';
+function sourceIsActive(t){
+  return ['active-user','active-system','active-plugin','active-connector','commands'].includes(sourceCapabilityBucket(t));
+}
+function sourceIsInventory(t){
+  return ['source-cache','source-catalog','installed-disabled'].includes(sourceCapabilityBucket(t));
+}
+function sourceIsReview(t){
+  return ['review-copy','project-local','unknown'].includes(sourceCapabilityBucket(t));
+}
+const ISSUE_VIEW_META={
+  all:{emoji:'📋',label:'全部',desc:'所有扫描线索'},
+  active:{emoji:'✅',label:'当前可用',desc:'用户根目录、内置、已启用插件、连接器和命令相关线索'},
+  inventory:{emoji:'📚',label:'来源库存',desc:'市场目录、缓存、旧包和未启用包相关线索'},
+  review:{emoji:'🔎',label:'待复核',desc:'项目级、导入副本和未知运行态线索'},
+};
+function issueViewMatchesDir(view,dirPath){
+  if(view==='all')return true;
+  const t=_dirTarget(dirPath);
+  if(!t)return view==='review';
+  if(view==='active')return sourceIsActive(t);
+  if(view==='inventory')return sourceIsInventory(t);
+  if(view==='review')return sourceIsReview(t);
+  return true;
+}
+function issueDupMatchesView(dup,view){
+  if(view==='all')return true;
+  return (dup.locations||[]).some(loc=>issueViewMatchesDir(view,loc.dir));
+}
+function issueChangeMatchesView(view){
+  return view==='all'||view==='active';
+}
+function issueDirBadge(dirPath){
+  const t=_dirTarget(dirPath);
+  const key=sourceCapabilityBucket(t);
+  const meta=capabilityMeta(key);
+  return `<span style="font-size:10px" title="${esc(meta.label)}">${meta.emoji}</span>`;
 }
 function sourceCanDelete(t){
   return sourcePolicy(t)==='manage'&&t?.is_deletable!==false;
@@ -98,10 +144,11 @@ function sourcePolicyBadge(t){
 // Shared directory list abstraction
 function filterGroupsByView(groups,viewMode){
   const predicate={
-    'mine':sourceIsMine,
-    'source-market':sourceIsSourceMarket,
+    active:sourceIsActive,
+    inventory:sourceIsInventory,
+    review:sourceIsReview,
     'all':()=>true,
-  }[viewMode]||sourceIsMine;
+  }[viewMode]||sourceIsActive;
   const filtered=groups.map(g=>{
     const dirs=g.dirs.filter(predicate);
     return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+(d.count||0),0)};
@@ -122,8 +169,17 @@ function getVisibleSourceTargets(){
 function getVisibleSourceGroups(){
   return filterGroupsByView(targetGroups,_sourceViewMode);
 }
+function getDailyScanTargets(){
+  return targetGroups.flatMap(g=>g.dirs.filter(sourceIsDaily));
+}
+function sourceMatchesView(t,viewMode){
+  if(viewMode==='all')return true;
+  if(viewMode==='inventory')return sourceIsInventory(t);
+  if(viewMode==='review')return sourceIsReview(t);
+  return sourceIsActive(t);
+}
 function setSourceViewMode(mode){
-  _sourceViewMode=['mine','source-market','all'].includes(mode)?mode:'mine';
+  _sourceViewMode=['active','inventory','review','all'].includes(mode)?mode:'active';
   localStorage.setItem('sd-source-view',_sourceViewMode);
   _sourcesShowAll=false;
   if($('view-sources')?.classList.contains('active')){
@@ -142,7 +198,7 @@ function renderScanConfig(){
     const sn=scanResult.duplicates_same_name?.length||0;
     const up=scanResult.upstream_sources?.length||0;
     const cc=scanResult.content_changes?.total_changed||0;
-    const scopeLabel=scanResult.scope==='daily'?'我的目录':'全部目录';
+    const scopeLabel=scanResult.scope==='daily'?'重点扫描':'全量扫描';
     const tokenOk=scanResult.github_token_configured;
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
       <span>扫描：${scopeLabel} · ${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
@@ -168,8 +224,8 @@ function renderScanConfig(){
       <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始，自动扫描并生成处理建议。</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center">
         <div style="display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)">
-          ${scopeBtn('deep','全部目录')}
-          ${scopeBtn('daily','我的目录')}
+          ${scopeBtn('daily','重点扫描')}
+          ${scopeBtn('deep','全量扫描')}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           ${checkBox('same-name','同名','跨目录同名 skill')}
@@ -236,7 +292,7 @@ async function runEvidenceBundle(scope='daily',opts={}){
 
 async function runScan(scope='deep',opts={}){
   try{
-    const scanTargets=scope==='deep'?targets:getVisibleSourceTargets();
+    const scanTargets=scope==='deep'?targets:getDailyScanTargets();
     const directories=targets.length?scanTargets.map(t=>t.path):[];
     const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name'];
     const r=await fetch('/api/scan-run',{
@@ -282,7 +338,7 @@ async function runCleanupPlan(scope='daily',opts={}){
     executionPlan=null;
     cleanupExcludedActions.clear();
     if(!opts.deferRender)renderIssues();
-    if(!opts.silent)toast(`${scope==='deep'?'全量目录审计':'日常治理计划'}完成: ${r.summary?.directories||0} 目录`);
+    if(!opts.silent)toast(`${scope==='deep'?'全量目录审计':'重点治理计划'}完成: ${r.summary?.directories||0} 目录`);
   }catch(e){toast('清理计划失败: '+e.message,'error')}
   finally{
     if(btn){btn.disabled=false;btn.textContent='目录依据'}
@@ -315,7 +371,7 @@ function renderCleanupPlan(){
   if(!cleanupPlan)return '';
   const s=cleanupPlan.summary||{};
   const compact=!!executionPlan;
-  const scopeLabel=cleanupPlan.scope==='deep'?'全量清理审计':'日常清理计划';
+  const scopeLabel=cleanupPlan.scope==='deep'?'全量清理审计':'重点清理计划';
   const groupTone={protect:'var(--green)',review:'var(--amber)',observe:'var(--accent)',hide:'var(--text-muted)'};
   const groupIcon={protect:'🛡️',review:'🔎',observe:'👁️',hide:'🚫'};
   const riskLabel={low:'低风险',medium:'中风险',high:'高风险'};
@@ -638,66 +694,40 @@ function renderIssues(){
     return;
   }
 
-  // ── Build per-category counts ──
-  const catKeys=['user','marketplace','cache','cross-copy','project','unknown'];
-  const catCounts={}; catKeys.forEach(k=>catCounts[k]=0);
-  catCounts['all']=0;
+  if(!ISSUE_VIEW_META[_issueCategoryTab])_issueCategoryTab='all';
 
-  // Count same-name issues per category (count GROUPS, not locations)
-  sameName.forEach(dup=>{
-    if(dup.locations.length<2) return;
-    const cats=new Set();
-    dup.locations.forEach(loc=>{cats.add(_dirCategory(loc.dir))});
-    cats.forEach(c=>{catCounts[c]=(catCounts[c]||0)+1});
-    catCounts['all']++;
+  // ── Build per-view counts ──
+  const viewKeys=['all','active','inventory','review'];
+  const viewCounts={}; viewKeys.forEach(k=>viewCounts[k]=0);
+  viewKeys.forEach(view=>{
+    const sn=sameName.filter(dup=>dup.locations.length>=2&&issueDupMatchesView(dup,view)).length;
+    const up=upstreams.filter(s=>s.status==='outdated'&&issueViewMatchesDir(view,s.dir)).length;
+    const ch=issueChangeMatchesView(view)?(changes?.changed||[]).length:0;
+    viewCounts[view]=sn+up+ch;
   });
 
-  // Count actionable upstream issues only
-  upstreams.filter(s=>s.status==='outdated').forEach(s=>{
-    const c=_dirCategory(s.dir);
-    catCounts[c]=(catCounts[c]||0)+1;
-    catCounts['all']++;
-  });
-
-  // Count content changes
-  const changedSkills=changes?.changed||[];
-  changedSkills.forEach(c=>{
-    // content changes come from scan, dir may not be in item; count generically
-    catCounts['all']++;
-  });
-
-  // ── Render category tabs ──
-  const tabOrder=['all','user','marketplace','cache','cross-copy','project'];
-  let tabHtml='<div style="display:flex;gap:2px;margin-bottom:12px;flex-wrap:wrap;border-bottom:2px solid var(--border);padding-bottom:0">';
-  tabOrder.forEach(key=>{
+  // ── Render runtime view tabs ──
+  let tabHtml='<div class="issue-tabs">';
+  viewKeys.forEach(key=>{
     const isActive=_issueCategoryTab===key;
-    const meta=key==='all'?{emoji:'📋',label:'全部'}:CAT_META[key]||{emoji:'❓',label:key};
-    const count=catCounts[key]||0;
-    const bg=isActive?'var(--accent)':'transparent';
-    const fg=isActive?'#fff':'var(--text-muted)';
-    tabHtml+=`<button onclick="_issueCategoryTab='${key}';_issueShowAll=false;renderIssues()" style="display:flex;align-items:center;gap:4px;padding:6px 12px;font-size:12px;font-weight:${isActive?600:400};color:${fg};background:${bg};border:none;border-radius:6px 6px 0 0;cursor:pointer;transition:all .15s;${isActive?'border-bottom:2px solid var(--accent);margin-bottom:-2px':''}">${meta.emoji} ${meta.label}${count?` <span style="font-size:10px;opacity:.8">${count}</span>`:''}</button>`;
+    const meta=ISSUE_VIEW_META[key];
+    const count=viewCounts[key]||0;
+    tabHtml+=`<button class="issue-tab ${isActive?'active':''}" title="${esc(meta.desc)}" onclick="_issueCategoryTab='${key}';_issueShowAll=false;renderIssues()"><span>${meta.emoji}</span><span>${meta.label}</span>${count?`<b>${count}</b>`:''}</button>`;
   });
   tabHtml+='</div>';
 
   // ── Filter data by selected tab ──
   const tab=_issueCategoryTab;
-  const matchCat=tab==='all'?()=>true:(dir)=>_dirCategory(dir)===tab;
-
   // Filter same-name duplicates: scoped to selected category
   // On "all" tab: show everything (cross-agent + within-agent)
   // On specific tab: only groups whose locations ALL belong to this category
-  const filteredSameName=tab==='all'?sameName:sameName.filter(dup=>
-    dup.locations.length>=2 && dup.locations.every(l=>matchCat(l.dir))
-  );
+  const filteredSameName=sameName.filter(dup=>dup.locations.length>=2&&issueDupMatchesView(dup,tab));
 
   // Filter upstreams
-  const filteredUpstreams=tab==='all'?upstreams:upstreams.filter(s=>matchCat(s.dir));
+  const filteredUpstreams=upstreams.filter(s=>issueViewMatchesDir(tab,s.dir));
 
   // Filter content changes
-  const filteredChanges=tab==='all'?changes:(changes?{...changes,changed:(changes.changed||[]).filter(c=>{
-    // content changes may not have dir; for filtered view, just show all or skip
-    return true; // content changes are per-current-dir, keep as-is for now
-  })}:null);
+  const filteredChanges=issueChangeMatchesView(tab)?changes:null;
 
   const visibleUpstreams=_issueShowAll?filteredUpstreams:filteredUpstreams.filter(s=>s.status==='outdated').slice(0,8);
   const visibleSameName=_issueShowAll?filteredSameName:filteredSameName.slice(0,24);
@@ -709,23 +739,36 @@ function renderIssues(){
   // ── Build HTML ──
   let h=executionHtml+planHtml+tabHtml;
 
-  const hasFilteredData=originalActionable>0;
+  const hasFilteredData=originalActionable>0||filteredUpstreams.some(s=>s.repo);
   if(!hasFilteredData){
-    const meta=tab==='all'?{emoji:'📋',label:'全部'}:CAT_META[tab]||{emoji:'❓',label:tab};
-    h+=`<div class="empty">✅ ${meta.emoji} ${meta.label} 分类下未发现问题</div>`;
+    const meta=ISSUE_VIEW_META[tab]||ISSUE_VIEW_META.all;
+    h+=`<div class="empty">✅ ${meta.emoji} ${meta.label} 视图下未发现问题</div>`;
     $('issues-list').innerHTML=h;return;
   }
 
   // Summary
   const totalFiltered=originalActionable;
-  h+=`<div class="card" style="border-left:3px solid var(--accent)">
-    <div style="display:flex;align-items:center;gap:12px;padding:4px 0">
-      <div style="font-size:28px;font-weight:700;color:var(--accent)">${totalFiltered}</div>
-      <div style="flex:1">
-        <div style="font-size:13px;font-weight:600">人工判断线索</div>
-        <div style="font-size:11px;color:var(--text-muted)">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${_issueShowAll?'全量展示':'重点预览'} · 初筛不等于可删</div>
+  const sameNameCount=filteredSameName.length;
+  const outdatedCount=filteredUpstreams.filter(s=>s.status==='outdated').length;
+  const changeCount=filteredChanges?.changed?.length||0;
+  const tabMeta=ISSUE_VIEW_META[tab]||ISSUE_VIEW_META.all;
+  h+=`<div class="card issue-hero">
+    <div class="issue-hero-head">
+      <div>
+        <div class="focus-kicker">Cleanup Queue</div>
+        <div class="focus-title">${tabMeta.label} · 人工判断线索</div>
+        <div class="focus-sub">${scanResult?scanResult.scanned_dirs+' 个目录':''} · ${_issueShowAll?'全量展示':'重点预览'} · 初筛不等于可删</div>
       </div>
-      ${hiddenActionable?`<button class="btn btn-sm" onclick="_issueShowAll=true;renderIssues()">显示全量 ${totalFiltered}</button>`:`${_issueShowAll?'<button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">回到重点</button>':''}`}
+      <div class="focus-score"><div class="num">${totalFiltered}</div><div class="lbl">线索</div></div>
+    </div>
+    <div class="issue-metrics">
+      <div class="scope-card primary"><div class="scope-name"><span>同名</span><b>${sameNameCount}</b></div><div class="scope-desc">按 skill 名聚合</div></div>
+      <div class="scope-card warn"><div class="scope-name"><span>上游</span><b>${outdatedCount}</b></div><div class="scope-desc">有新版本或来源差异</div></div>
+      <div class="scope-card"><div class="scope-name"><span>变更</span><b>${changeCount}</b></div><div class="scope-desc">本地内容 hash 变化</div></div>
+      <div class="scope-card muted"><div class="scope-name"><span>当前渲染</span><b>${visibleActionable}</b></div><div class="scope-desc">${hiddenActionable?`另有 ${hiddenActionable} 条收起`:'已显示完整列表'}</div></div>
+    </div>
+    <div class="workbench-actions">
+      ${hiddenActionable?`<button class="btn btn-sm btn-primary" onclick="_issueShowAll=true;renderIssues()">显示全量 ${totalFiltered}</button>`:`${_issueShowAll?'<button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">回到重点</button>':''}`}
     </div>
   </div>`;
   if(hiddenActionable&&!_issueShowAll){
@@ -733,10 +776,16 @@ function renderIssues(){
   }
 
   // ── Upstream section ──
-  if(visibleUpstreams.length){
-    const outdated=visibleUpstreams.filter(s=>s.status==='outdated');
-    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔗 上游追踪</div>`;
-    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head"><h3>上游追踪</h3><span class="sub">${outdated.length} 个过时</span></div>`;
+  // 本地独立检测（.git remote / .skill-source.env / lock）不依赖 GitHub API，
+  // 未配 token 时为 status=unknown 但带 repo。这里一并展示，让没配 token 的用户
+  // 也能看到"哪些 skill 有可追踪来源"；只有 status=outdated 才标"过时"。
+  const upstreamDetected=filteredUpstreams.filter(s=>s.repo);
+  if(upstreamDetected.length){
+    const outdated=upstreamDetected.filter(s=>s.status==='outdated');
+    const pendingCompare=upstreamDetected.filter(s=>s.status!=='outdated');
+    const headTag=outdated.length?`${outdated.length} 个过时`:`${pendingCompare.length} 个待比对`;
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔗 上游追踪</h3><p>只提示可复核更新，不自动改文件。未配置 token 时仅展示检测到的来源。</p></div><span>${headTag}</span></div>`;
+    h+=`<div class="card issue-list-card">`;
     if(outdated.length){
       const SOURCE_LABEL={
         'steal-meta':['Steal安装','通过 Skill Dashboard 从 GitHub 安装'],
@@ -762,23 +811,29 @@ function renderIssues(){
         const updateLabel=s.source==='vercel-lock'?'NPX 更新':s.source==='git-remote'?'Git 更新':'更新';
         const copyCount=s.copies.length;
         const copyHint=copyCount>1?`&#10;共 ${copyCount} 个副本: ${s.copies.map(c=>c.dir.replace(/^\/Users\/[^/]+/,'~')).join(', ')}`:'';
-        h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
-          <span style="font-size:12px" title="${cm.label}">${cm.emoji}</span>
+        h+=`<div class="issue-row">
+          ${issueDirBadge(canonical)}
           <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span>${copyCount>1?`<span style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:999px" title="${esc(copyHint)}">+${copyCount-1} 副本</span>`:''}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div><div style="font-size:10px;color:var(--text-muted);font-family:monospace" title="当前版本 → 上游最新版本">${s.installed_commit?.slice(0,8)||'?'} → ${s.latest_commit?.slice(0,8)||'?'}</div>${renderIssuePath(canonical)}</div>
           <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
           <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
           <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(updateDir)}')">${updateLabel}</button></div>`;
       });
+    }else if(pendingCompare.length){
+      h+=`<div style="font-size:12px;color:var(--text-muted);padding:6px 0">检测到 ${pendingCompare.length} 个 GitHub 来源，未配置 token 暂无法比对版本。</div>`;
+      pendingCompare.slice(0,12).forEach(s=>{
+        const canonical=s.canonical_dir||s.dir;
+        h+=`<div class="issue-row">${issueDirBadge(canonical)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span></div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(canonical)}</div><span style="font-size:11px;color:var(--text-muted)">版本待比对</span></div>`;
+      });
     }else{
-      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${visibleUpstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
+      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${upstreamDetected.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
     }
-    h+=`</div></div>`;
+    h+=`</div></section>`;
   }
 
   // ── Same-name section ──
   if(visibleSameName.length){
-    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">📛 同名分析</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;padding-bottom:4px">`;
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>📛 同名分析</h3><p>同名只是线索，先看是否多端部署、市场副本或真重复。</p></div><span>${visibleSameName.length} 组</span></div>
+      <div class="issue-card-grid">`;
 
     // Within-agent same-name: groups with 2+ locations for the SAME agent
     const snByAgent={};
@@ -801,7 +856,7 @@ function renderIssues(){
       .filter(([,dups])=>dups.length>0)
       .sort((a,b)=>b[1].length-a[1].length);
     snAgentList.forEach(([agent,dups])=>{
-      h+=`<div class="card" style="min-width:320px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
+      h+=`<div class="card issue-agent-card"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>📛 ${agent} 内同名</h3><span class="sub">${dups.length} 组</span><span style="flex:1"></span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div>
         <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">${agent} 下同名 skill 分析</div>`;
       dups.forEach(dup=>{
         const agentLocs=dup.locations.filter(l=>(l.agent||'其他')===agent);
@@ -820,10 +875,8 @@ function renderIssues(){
             ${agentLocs.map(loc=>{
               const sn=loc.name||dup.name;
               const sKey=sn+'|'+loc.dir;
-              const sCat=_dirCategory(loc.dir);
-              const sCm=CAT_META[sCat]||CAT_META.unknown;
               return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
-                <span style="font-size:10px" title="${sCm.label}">${sCm.emoji}</span>
+                ${issueDirBadge(loc.dir)}
                 <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
                 <div style="min-width:0">
                   <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
@@ -839,38 +892,36 @@ function renderIssues(){
       h+=`</div>`;
     });
 
-    h+=`</div></div>`;
+    h+=`</div></section>`;
   }
 
   // ── Broken symlinks section ──
   const brokenLinks = issues.filter(i => i.kind === 'broken_symlink' || i.kind === 'broken_skill_link');
   if (brokenLinks.length) {
-    h += `<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔴 损坏链接</div>
-      <div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>损坏的 skill 入口</h3><span class="sub">${brokenLinks.length} 个</span></div>
-      <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">这些 symlink 或 SKILL.md 链接指向的目标已不存在，可移入垃圾站。</div>`;
+    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 或 SKILL.md 链接指向的目标已不存在。</p></div><span>${brokenLinks.length} 个</span></div>
+      <div class="card issue-list-card">`;
     brokenLinks.forEach(issue => {
       const kindLabel=issue.kind==='broken_skill_link'?'目录壳':'断链';
-      h += `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+      h += `<div class="issue-row">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${issue.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">${kindLabel} · ${issue.dir ? issue.dir.replace(/^\/Users\/[^/]+/, '~') : ''}</div></div>
         <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this)">删除</button></div>`;
     });
-    h += `</div></div>`;
+    h += `</div></section>`;
   }
 
   // ── Content changes section ──
   if(visibleChanges?.changed?.length){
     const changeNames=visibleChanges.changed.map(c=>c.name);
-    h+=`<div style="margin-bottom:16px"><div style="font-size:12px;font-weight:600;color:var(--text-muted);margin-bottom:8px;padding-left:4px">🔄 内容变更</div>`;
-    h+=`<div class="card" style="min-width:280px;flex:1"><div class="card-head" style="display:flex;align-items:center;gap:8px"><h3>内容变更</h3><span class="sub">${visibleChanges.changed.length} 个已变更</span><span style="flex:1"></span><button class="btn btn-sm btn-primary" onclick="batchRehash([${changeNames.map(n=>`'${esc(n)}'`).join(',')}],'内容变更')" style="font-size:10px;padding:2px 8px">全部重新记录</button></div>
-      <div style="font-size:11px;color:var(--text-muted);padding-bottom:8px">SKILL.md 内容与安装时记录的哈希不同</div>`;
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔄 内容变更</h3><p>SKILL.md 内容与安装时记录的哈希不同。</p></div><span>${visibleChanges.changed.length} 个</span></div>`;
+    h+=`<div class="card issue-list-card"><div style="display:flex;justify-content:flex-end;margin-bottom:8px"><button class="btn btn-sm btn-primary" onclick="batchRehash([${changeNames.map(n=>`'${esc(n)}'`).join(',')}],'内容变更')" style="font-size:10px;padding:2px 8px">全部重新记录</button></div>`;
     visibleChanges.changed.forEach(c=>{
-      h+=`<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 50%,transparent)">
+      h+=`<div class="issue-row">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${c.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">上次记录: ${c.last_recorded||'未知'}</div></div>
         <button class="btn btn-sm" onclick="rehashSkill('${esc(c.name)}',this)">重新记录</button></div>`;
     });
-    h+=`</div></div>`;
+    h+=`</div></section>`;
   }
 
   $('issues-list').innerHTML=h;

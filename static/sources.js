@@ -12,6 +12,10 @@ function sourceRuntimeBadge(t){
   const state=t?.runtime_state;
   if(!state)return '';
   const meta={
+    'user-root':{label:'用户自建 Skill',cls:'loaded',desc:'宿主用户技能根目录，通常进入当前能力面。'},
+    builtin:{label:'系统内置',cls:'loaded',desc:'宿主 App 自带能力包。'},
+    enabled:{label:'已启用插件',cls:'loaded',desc:'当前 Codex config.toml 启用了这个插件包。'},
+    connector:{label:'连接器包',cls:'catalog',desc:'由宿主 app/connector 运行时提供，可能按需暴露技能或工具。'},
     loaded:{label:'已加载',cls:'loaded',desc:'当前宿主 enabledPlugins 已启用，且匹配 installed_plugins 安装路径。'},
     installed:{label:'已安装未启用',cls:'installed',desc:'installed_plugins 里有记录，但当前没有启用。'},
     catalog:{label:t?.loaded_elsewhere?'市场目录 · 同名已启用':'市场目录',cls:'catalog',desc:'marketplace 货架目录，不等于当前上下文已加载。'},
@@ -20,7 +24,7 @@ function sourceRuntimeBadge(t){
     cache:{label:'插件包缓存',cls:'cache',desc:'位于插件缓存区，未匹配到当前安装记录。'},
   }[state];
   if(!meta)return '';
-  return `<span class="source-status ${meta.cls}" title="${esc(t.runtime_reason||meta.desc)}">${meta.label}</span>`;
+  return `<span class="source-status ${meta.cls}" title="${esc(t.runtime_reason||meta.desc)}">${escapeHtml(t.runtime_label||meta.label)}</span>`;
 }
 
 function sourceMiniChip(label,title){
@@ -48,6 +52,8 @@ function sourceSubLabel(t){
   if(rel.includes('/connectors/'))return '连接器';
   if(rel.includes('/hermes-agent/'))return 'hermes-agent';
   if(rel.includes('/skills-marketplace/'))return '商店';
+  if(rel.includes('/builtin-skills'))return '内置';
+  if(rel.includes('/builtin-plugins/'))return '内置插件';
   if(rel.includes('/extensions/'))return '扩展';
   if(rel.includes('/skill-backups/'))return '旧备份';
   if(rel.includes('/workspaces/'))return 'workspace';
@@ -66,19 +72,28 @@ function formatSourceCounts(dirs){
   return parts.join(' · ')||'0 项';
 }
 
-function sourceCategoryHint(catDirs,cat){
-  const loaded=catDirs.filter(t=>t.runtime_state==='loaded').length;
-  const installed=catDirs.filter(t=>t.runtime_state==='installed').length;
-  const catalog=catDirs.filter(t=>t.runtime_state==='catalog').length;
-  const stale=catDirs.filter(t=>['orphaned','stale','cache'].includes(t.runtime_state)).length;
+function sourceGroupProfileHint(g){
+  const p=g?.profile_summary;
+  if(!p)return '';
   const parts=[];
-  if(loaded)parts.push(`已加载 ${loaded}`);
-  if(installed)parts.push(`已安装未启用 ${installed}`);
-  if(catalog)parts.push(`市场目录 ${catalog}`);
-  if(stale)parts.push(`缓存/旧包 ${stale}`);
-  if(parts.length)return parts.join(' · ');
-  if(cat==='marketplace')return '只解释来源，默认不删除';
-  if(cat==='cache')return '缓存、备份和样例默认收起';
+  if(p.family)parts.push(p.family);
+  if(p.source_root_count)parts.push(`来源根 ${p.source_root_count}`);
+  if(p.mcp_runtime_server_count)parts.push(`运行 MCP ${p.mcp_runtime_server_count}`);
+  if(p.mcp_catalog_server_count)parts.push(`市场 MCP ${p.mcp_catalog_server_count}`);
+  else if(p.mcp_server_count)parts.push(`MCP ${p.mcp_server_count}`);
+  return parts.join(' · ');
+}
+
+function sourceCategoryHint(catDirs,cat){
+  const s=summarizeCapabilityDirs(catDirs);
+  if(cat==='active-user')return `${s.userSkills} skills`;
+  if(cat==='active-system')return `${s.systemSkills} skills`;
+  if(cat==='active-plugin')return `${s.pluginDirs} 插件 · ${s.pluginSkills} skills`;
+  if(cat==='active-connector')return `${s.connectorDirs} 连接器 · ${s.connectorSkills} skills${s.duplicateRuntimeSkills?` · ${s.duplicateRuntimeSkills} 同名已启用`:''}`;
+  if(cat==='source-cache')return `${s.cacheSkills} skills · 不等于上下文`;
+  if(cat==='source-catalog')return `${s.catalogSkills} skills · 只作来源`;
+  if(cat==='installed-disabled')return '已安装但未启用';
+  if(cat==='commands')return `${s.commandCount} commands`;
   return '';
 }
 
@@ -150,7 +165,7 @@ function renderSources(){
   const visibleTargets=getVisibleSourceTargets();
   let h=`<div style="margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <h3 style="font-size:15px;font-weight:600">📚 全部目录技能</h3>
+      <h3 style="font-size:15px;font-weight:600">📚 能力来源地图</h3>
       <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录</span>
       <span style="flex:1"></span>
       <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
@@ -168,8 +183,9 @@ function renderSources(){
         <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
       </div>
       <div class="segmented-control">
-        <button class="btn btn-sm ${_sourceViewMode==='mine'?'btn-primary':''}" onclick="setSourceViewMode('mine')" title="用户自建、项目级和当前目录">我的</button>
-        <button class="btn btn-sm ${_sourceViewMode==='source-market'?'btn-primary':''}" onclick="setSourceViewMode('source-market')" title="marketplace、缓存、跨 Agent 副本、插件命令">来源市场</button>
+        <button class="btn btn-sm ${_sourceViewMode==='active'?'btn-primary':''}" onclick="setSourceViewMode('active')" title="用户自建、系统内置、已启用插件、连接器和命令">当前可用</button>
+        <button class="btn btn-sm ${_sourceViewMode==='inventory'?'btn-primary':''}" onclick="setSourceViewMode('inventory')" title="marketplace、缓存、旧包和已安装未启用包">来源库存</button>
+        <button class="btn btn-sm ${_sourceViewMode==='review'?'btn-primary':''}" onclick="setSourceViewMode('review')" title="项目级、导入/副本和未知运行态目录">待复核</button>
         <button class="btn btn-sm ${_sourceViewMode==='all'?'btn-primary':''}" onclick="setSourceViewMode('all')" title="显示全部目录">全部</button>
       </div>
     </div>
@@ -212,6 +228,12 @@ function renderSources(){
     groupsToRender.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
       const isExpanded=_expandedSourceAgent===g.agent;
+      const gCap=summarizeCapabilityDirs(g.dirs);
+      const gBits=[];
+      if(gCap.activeSkills)gBits.push(`当前能力 ${gCap.activeSkills}`);
+      if(gCap.sourceOnlySkills)gBits.push(`仅库存 ${gCap.sourceOnlySkills}`);
+      const profileHint=sourceGroupProfileHint(g);
+      const gSub=`${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}${gBits.length?` · ${gBits.join(' · ')}`:''}${profileHint?` · ${profileHint}`:''}`;
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
@@ -221,7 +243,7 @@ function renderSources(){
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
             </div>
-            <div style="font-size:10px;color:var(--text-muted)">${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}</div>
+            <div style="font-size:10px;color:var(--text-muted)">${esc(gSub)}</div>
           </div>
         </div>
         <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
@@ -229,11 +251,11 @@ function renderSources(){
         h+=`<div style="padding:10px 14px 10px 36px;font-size:11px;color:var(--text-muted);background:var(--bg-card-alt)">展开后加载 ${g.dirs.length} 个目录</div></div></div>`;
         return;
       }
-      // Group dirs by category within this agent
-      const catOrder=['user','marketplace','cache','cross-copy','project','commands','unknown'];
+      // Group dirs by runtime capability bucket within this agent.
+      const catOrder=['active-user','active-system','active-plugin','active-connector','commands','installed-disabled','source-catalog','source-cache','review-copy','project-local','unknown'];
       const dirsByCat={};
       g.dirs.forEach(t=>{
-        const c=t.category||'unknown';
+        const c=sourceCapabilityBucket(t);
         if(!dirsByCat[c]) dirsByCat[c]=[];
         dirsByCat[c].push(t);
       });
@@ -242,7 +264,7 @@ function renderSources(){
       if(catKeys.length<=1){
         // Single or no category — show one collapsible category header + dirs
         const cat=catKeys[0]||'unknown';
-        const cm=CAT_META[cat]||CAT_META.unknown;
+        const cm=capabilityMeta(cat);
         const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
         const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
         const catHint=sourceCategoryHint(g.dirs,cat);
@@ -261,7 +283,7 @@ function renderSources(){
       }else{
         // Multiple categories — render with category sub-headers
         catKeys.forEach(cat=>{
-          const cm=CAT_META[cat]||CAT_META.unknown;
+          const cm=capabilityMeta(cat);
           const catDirs=dirsByCat[cat];
           const catCount=catDirs.reduce((s,d)=>s+d.count,0);
           const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
@@ -366,9 +388,7 @@ async function expandDirAndShowSkill(dirPath,skillName){
   if(!group){toast('目录未找到','error');return}
   // Make sure the directory is visible under current view mode
   const target=group.dirs.find(d=>d.path===dirPath);
-  const visibleNow=!target||_sourceViewMode==='all'||
-    (_sourceViewMode==='mine'&&sourceIsMine(target))||
-    (_sourceViewMode==='source-market'&&sourceIsSourceMarket(target));
+  const visibleNow=!target||sourceMatchesView(target,_sourceViewMode);
   if(target&&!visibleNow){
     setSourceViewMode('all');
   }
@@ -598,9 +618,10 @@ function renderBrowseDir(path,itemList,container){
     const selKey=path+'::'+s.name;
     const isBroken=s.kind==='broken_symlink'||s.kind==='broken_skill_link';
     const kindLabel=s.kind==='broken_symlink'?'断链':(s.kind==='broken_skill_link'?'目录壳':'');
+    const itemDesc=s.description?`<div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.description)}</div>`:'';
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
-      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}">${s.name}</span>
+      <span style="flex:1;min-width:0;overflow:hidden;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>${itemDesc}</span>
       ${kindLabel?`<span style="font-size:9px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);border-radius:999px;padding:1px 5px">${kindLabel}</span>`:''}
       ${!isCurrentTarget&&!isInstalled&&!isCommands?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" title="以 ${copyMode==='symlink'?'链接':'复制'} 方式同步到当前目录" style="font-size:9px;padding:2px 6px">同步到当前目录</button>`:''}
       ${isInstalled&&!isCommands?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
