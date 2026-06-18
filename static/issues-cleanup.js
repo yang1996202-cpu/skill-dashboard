@@ -739,7 +739,7 @@ function renderIssues(){
   // ── Build HTML ──
   let h=executionHtml+planHtml+tabHtml;
 
-  const hasFilteredData=originalActionable>0;
+  const hasFilteredData=originalActionable>0||filteredUpstreams.some(s=>s.repo);
   if(!hasFilteredData){
     const meta=ISSUE_VIEW_META[tab]||ISSUE_VIEW_META.all;
     h+=`<div class="empty">✅ ${meta.emoji} ${meta.label} 视图下未发现问题</div>`;
@@ -776,9 +776,15 @@ function renderIssues(){
   }
 
   // ── Upstream section ──
-  if(visibleUpstreams.length){
-    const outdated=visibleUpstreams.filter(s=>s.status==='outdated');
-    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔗 上游追踪</h3><p>只提示可复核更新，不自动改文件。</p></div><span>${outdated.length} 个过时</span></div>`;
+  // 本地独立检测（.git remote / .skill-source.env / lock）不依赖 GitHub API，
+  // 未配 token 时为 status=unknown 但带 repo。这里一并展示，让没配 token 的用户
+  // 也能看到"哪些 skill 有可追踪来源"；只有 status=outdated 才标"过时"。
+  const upstreamDetected=filteredUpstreams.filter(s=>s.repo);
+  if(upstreamDetected.length){
+    const outdated=upstreamDetected.filter(s=>s.status==='outdated');
+    const pendingCompare=upstreamDetected.filter(s=>s.status!=='outdated');
+    const headTag=outdated.length?`${outdated.length} 个过时`:`${pendingCompare.length} 个待比对`;
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔗 上游追踪</h3><p>只提示可复核更新，不自动改文件。未配置 token 时仅展示检测到的来源。</p></div><span>${headTag}</span></div>`;
     h+=`<div class="card issue-list-card">`;
     if(outdated.length){
       const SOURCE_LABEL={
@@ -812,8 +818,14 @@ function renderIssues(){
           <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
           <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(updateDir)}')">${updateLabel}</button></div>`;
       });
+    }else if(pendingCompare.length){
+      h+=`<div style="font-size:12px;color:var(--text-muted);padding:6px 0">检测到 ${pendingCompare.length} 个 GitHub 来源，未配置 token 暂无法比对版本。</div>`;
+      pendingCompare.slice(0,12).forEach(s=>{
+        const canonical=s.canonical_dir||s.dir;
+        h+=`<div class="issue-row">${issueDirBadge(canonical)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span></div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(canonical)}</div><span style="font-size:11px;color:var(--text-muted)">版本待比对</span></div>`;
+      });
     }else{
-      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${visibleUpstreams.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
+      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${upstreamDetected.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
     }
     h+=`</div></section>`;
   }

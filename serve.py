@@ -775,6 +775,13 @@ def _github_api_get(url):
         return None, limited
     except Exception:
         return None, False
+
+
+def _github_latest_commit(repo, ref="main", subdir=""):
+    """Query GitHub API for the latest commit sha of a repo (or a sub-path).
+    Cached + rate-limit protected via _github_api_get. Returns sha string or ''.
+    """
+    if subdir:
         url = f"https://api.github.com/repos/{repo}/commits?path={urllib.parse.quote(subdir)}&sha={urllib.parse.quote(ref)}&per_page=1"
     else:
         url = f"https://api.github.com/repos/{repo}/commits/{urllib.parse.quote(ref)}"
@@ -2166,7 +2173,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
                     skill_dir = tdir / s["name"]
                     try:
                         status = check_upstream_status(skill_dir)
-                        if status.get("status") in ("current", "outdated"):
+                        # 允许有 repo 的 unknown 也进入：本地检测到 .git remote / lock 来源，
+                        # 但 GitHub API 限流或未配 token 时无法判定版本（status=unknown）。
+                        # 仍展示来源，让未配 token 的用户看到"哪些 skill 可追踪"。
+                        if status.get("repo") and status.get("status") in ("current", "outdated", "unknown"):
                             result["upstream_sources"].append({
                                 "name": s["name"],
                                 "repo": status.get("repo", ""),
