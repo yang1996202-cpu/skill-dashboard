@@ -282,14 +282,6 @@ async function startCleanupFlow(){
   }
 }
 
-async function runEvidenceBundle(scope='daily',opts={}){
-  // Kept for compatibility; now a thin wrapper around the unified cleanup flow.
-  _scanScope=scope;
-  localStorage.setItem('sd-scan-scope',_scanScope);
-  renderScanConfig();
-  await startCleanupFlow();
-}
-
 async function runScan(scope='deep',opts={}){
   try{
     const scanTargets=scope==='deep'?targets:getDailyScanTargets();

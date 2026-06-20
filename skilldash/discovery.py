@@ -174,74 +174,6 @@ def _is_project_agent_skill(dir_path):
     return False
 
 
-def _classify_skill_dir(dir_path):
-    """Classify a skill directory by its nature based on path patterns.
-
-    Classification rules (按 Agent 应用分组):
-    - 'user'       : Agent 全局技能 (在家目录: ~/.agent/skills/)
-    - 'project'    : Agent 项目级技能 (在项目内: ~/projects/xxx/.agent/skills/) 或其他非全局位置
-    - 'marketplace': 生态/插件市场技能
-    - 'cache'      : 安装制品 (快照、备份、缓存)
-    - 'cross-copy' : 跨 Agent 复制 (嵌套的 agent skills)
-    """
-    p = str(dir_path).lower()
-    home = str(Path.home()).lower()
-    path = Path(dir_path)
-
-    # Cache/backup: snapshots, backups, plugin caches, vendor imports
-    cache_signals = [".snapshots", "backup", "plugins-backup", "plugins/cache",
-                     "/cache/", "vendor_imports", ".tmp", ".temp",
-                     "bundled-marketplaces", "/install/cache/"]
-    for sig in cache_signals:
-        if sig in p:
-            return "cache"
-
-    # User-level: ~/.agent/skills/ only (Agent 全局技能)
-    if _is_user_level_skill(dir_path):
-        return "user"
-
-    # Project-level agent skill: ~/projects/xxx/.agent/skills/ (Agent 项目级技能)
-    if _is_project_agent_skill(dir_path):
-        return "project"
-
-    # Cross-agent copy: .<agent>/skills nested WITHIN home/.xxx/ directory (depth > 0)
-    # Pattern: ~/.skillslm/gstack/.cursor/skills (.cursor/skills inside another agent's dir)
-    # But: ~/projects/app/.claude/skills is project-level, NOT cross-copy
-    # Rule: Only check for cross-copy if first level under home is a dot-directory
-    try:
-        rel_parts = path.relative_to(Path.home()).parts
-        # Cross-copy only applies when first level is ~/.xxx/ (agent dir)
-        if len(rel_parts) > 0 and rel_parts[0].startswith("."):
-            # We're inside a ~/.xxx/ directory, now check for nested .yyy/skills
-            for i, pt in enumerate(rel_parts):
-                if pt.startswith(".") and not pt.startswith("..") and i + 1 < len(rel_parts) and rel_parts[i + 1] == "skills":
-                    if i > 0:  # Not at home root level (i=0 means ~/.agent/skills which is user-level)
-                        return "cross-copy"
-    except ValueError:
-        # Path is not relative to home → must be project-level
-        pass
-
-    # Marketplace: plugin stores, extension stores, agent-plugin repos
-    market_signals = ["marketplace", "agent-plugins", "/plugins/", "\\plugins\\",
-                      "extensions/", "\\extensions\\"]
-    for sig in market_signals:
-        if sig in p:
-            if sig == "/plugins/" or sig == "\\plugins\\":
-                idx = p.find(sig)
-                after = p[idx + len(sig):]
-                if after and ("/skills" in after or "\\skills" in after):
-                    return "marketplace"
-            else:
-                return "marketplace"
-
-    # Default: Everything else is project-level
-    # This includes:
-    # - ~/AI-Skills/                          (非标准路径，不在家目录 agent 下)
-    # - ~/projects/my-skills-repo/skills/     (非标准路径，在项目内)
-    # - ~/Downloads/skills-pack/              (下载目录)
-    # Rule: 只有 ~/.agent/skills/ 是 user-level; 其他都是 project-level
-    return "project"
-
 def _classify_skill_dir_detail(dir_path):
     """Return directory governance metadata used by the UI.
 
@@ -254,7 +186,46 @@ def _classify_skill_dir_detail(dir_path):
     p = str(path).replace("\\", "/").lower()
     padded_p = "/" + p.strip("/") + "/"
     home = Path.home()
-    category = _classify_skill_dir(path)
+    # Coarse path category — feeds the UI capability-bucket fallback and the
+    # two layer branches below. Inlined from the former _classify_skill_dir so
+    # the project has a single classification entry point.
+    # NOTE: this initial value may be overridden by mark() calls further down.
+    if any(sig in p for sig in (
+        ".snapshots", "backup", "plugins-backup", "plugins/cache",
+        "/cache/", "vendor_imports", ".tmp", ".temp",
+        "bundled-marketplaces", "/install/cache/",
+    )):
+        category = "cache"
+    elif _is_user_level_skill(path):
+        category = "user"
+    elif _is_project_agent_skill(path):
+        category = "project"
+    else:
+        try:
+            _cat_rel = path.relative_to(home).parts
+        except ValueError:
+            _cat_rel = ()
+        category = "project"
+        if _cat_rel and _cat_rel[0].startswith("."):
+            for _i, _pt in enumerate(_cat_rel):
+                if (_pt.startswith(".") and not _pt.startswith("..")
+                        and _i + 1 < len(_cat_rel) and _cat_rel[_i + 1] == "skills"
+                        and _i > 0):
+                    category = "cross-copy"
+                    break
+        if category == "project":
+            for sig in ("marketplace", "agent-plugins", "/plugins/", "\\plugins\\",
+                        "extensions/", "\\extensions\\"):
+                if sig in p:
+                    if sig in ("/plugins/", "\\plugins\\"):
+                        idx = p.find(sig)
+                        after = p[idx + len(sig):]
+                        if after and ("/skills" in after or "\\skills" in after):
+                            category = "marketplace"
+                            break
+                    else:
+                        category = "marketplace"
+                        break
     layer = "user-installed"
     policy = "manage"
     confidence = "medium"
@@ -280,7 +251,7 @@ def _classify_skill_dir_detail(dir_path):
     if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
         mark("active-root", "manage", "agent root skills directory", "user")
 
-    # User-level non-agent collections are now classified as project by _classify_skill_dir
+    # User-level non-agent collections fall through to "project" in the inlined category logic.
     # No special handling needed here
 
     # Project-local skills: anything not in ~/.xxx/skills/

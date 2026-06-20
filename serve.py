@@ -40,11 +40,8 @@ from skilldash.discovery import (
     _scan_commands,
     _scan_global_categories,
 )
-from skilldash.host_inspectors import discover_host_profiles, host_profile_summaries_by_agent, load_claude_plugin_state
-from skilldash.overlap import (
-    _find_same_name_duplicates,
-    detect_cross_dir_overlaps,
-)
+from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state
+from skilldash.overlap import _find_same_name_duplicates
 from skilldash.paths import (
     CACHE_DIR,
     DIAG_LOG,
@@ -82,221 +79,6 @@ def _skill_entry_kind(skill_dir):
     if marker.is_symlink() and not marker.exists():
         return "broken_skill_link"
     return "entity"
-
-def python_quick_check(target_path):
-    """Python-only structure check — no bash, no dashboard.
-    Returns: health_score, structure_issues, summary."""
-    target_dir = Path(target_path)
-    if not target_dir.is_dir():
-        return None
-
-    skills = []
-    structure_issues = []
-    no_desc = 0
-    broken = 0
-    symlinks = 0
-    entities = 0
-
-    for d in sorted(target_dir.iterdir()):
-        if not _is_skill_entry(d, include_broken=True):
-            continue
-        skill_md = d / "SKILL.md"
-        name = d.name
-
-        # Kind detection
-        kind = _skill_entry_kind(d)
-        if kind == "symlink":
-            symlinks += 1
-        elif kind == "broken_symlink":
-            broken += 1
-            structure_issues.append({"name": name, "note": "broken symlink", "kind": "broken_symlink"})
-        elif kind == "broken_skill_link":
-            broken += 1
-            structure_issues.append({"name": name, "note": "broken SKILL.md symlink", "kind": "broken_skill_link"})
-        else:
-            entities += 1
-
-        # Parse frontmatter
-        description = ""
-        has_fm = False
-        oversized = False
-        if skill_md.exists():
-            try:
-                text = skill_md.read_text("utf-8", errors="ignore")
-                if len(text.splitlines()) > 500:
-                    oversized = True
-                if text.startswith("---"):
-                    has_fm = True
-                    end = text.find("---", 3)
-                    if end > 0:
-                        fm = text[3:end]
-                        for line in fm.splitlines():
-                            line = line.strip()
-                            if line.startswith("description:"):
-                                description = line.split(":", 1)[1].strip().strip("'\"")
-                else:
-                    structure_issues.append({"name": name, "note": "missing frontmatter", "kind": "no_frontmatter"})
-            except Exception:
-                structure_issues.append({"name": name, "note": "read error", "kind": "read_error"})
-
-        if not description:
-            no_desc += 1
-
-        skills.append({
-            "name": name,
-            "description": description,
-            "kind": kind,
-            "has_frontmatter": has_fm,
-            "oversized": oversized,
-        })
-
-    total = len(skills)
-
-    # ── Independent upstream detection (no dashboard) ──
-    upstream_sources = []
-    for s in skills:
-        skill_dir = target_dir / s["name"]
-        repo = ""
-        detected = False
-
-        # 1) Try .git remote
-        git_dir = skill_dir / ".git"
-        if git_dir.exists():
-            try:
-                r = subprocess.run(
-                    ["git", "-C", str(skill_dir), "remote", "get-url", "origin"],
-                    capture_output=True, text=True, timeout=5,
-                )
-                if r.returncode == 0:
-                    url = r.stdout.strip()
-                    if "github.com" in url:
-                        if url.startswith("git@github.com:"):
-                            repo = url.replace("git@github.com:", "").replace(".git", "")
-                        elif "github.com/" in url:
-                            parts = url.split("github.com/")
-                            if len(parts) > 1:
-                                repo = parts[1].replace(".git", "")
-                    upstream_sources.append({
-                        "name": s["name"],
-                        "repo": repo or url,
-                        "status": "unknown",
-                        "source": "git-remote",
-                    })
-                    detected = True
-            except Exception:
-                pass
-
-        # 2) Fallback: dashboard source metadata (steal installs)
-        if not detected:
-            meta_file = skill_dir / ".skill-source.env"
-            if not meta_file.exists():
-                meta_file = skill_dir / ".skill-manager-source.env"
-            if meta_file.exists():
-                try:
-                    for line in meta_file.read_text().splitlines():
-                        if line.startswith("SKILL_SOURCE_URL="):
-                            url = line.split("=", 1)[1].strip().strip('"').strip("'")
-                            repo = ""
-                            if "github.com" in url:
-                                # Normalize github.com URLs to user/repo
-                                clean = url.replace("https://", "").replace("http://", "").replace("github.com/", "")
-                                repo = clean.split("/")[0] + "/" + clean.split("/")[1].split("?")[0].split("#")[0] if "/" in clean else clean
-                            upstream_sources.append({
-                                "name": s["name"],
-                                "repo": repo or url,
-                                "status": "unknown",
-                                "source": "steal-meta",
-                            })
-                            detected = True
-                            break
-                except Exception:
-                    pass
-
-        # 3) Fallback: Vercel skills CLI lock file (npx skills add)
-        if not detected:
-            vercel = read_vercel_skill_lock(skill_dir)
-            if vercel:
-                upstream_sources.append({
-                    "name": s["name"],
-                    "repo": vercel.get("source", ""),
-                    "status": "unknown",
-                    "source": "vercel-lock",
-                })
-                detected = True
-
-    # ── Cleanup candidates (independent rules) ──
-    cleanup_candidates = []
-    for s in skills:
-        if s["kind"] == "broken_symlink":
-            cleanup_candidates.append(s["name"])
-        elif not s["has_frontmatter"]:
-            cleanup_candidates.append(s["name"])
-        elif not s["description"]:
-            cleanup_candidates.append(s["name"])
-        elif s.get("oversized"):
-            cleanup_candidates.append(s["name"])
-
-    # Health score (mirrors dashboard check.sh formula)
-    score = 100
-    # Quantity penalty: >20, -2 per extra (max -60)
-    if total > 20:
-        penalty = min((total - 20) * 2, 60)
-        score -= penalty
-    # Structure issue penalty: -3 each
-    score -= len(structure_issues) * 3
-    # Missing description: proportional, max -15
-    if total > 0:
-        desc_penalty = min(no_desc * 15 // total, 15)
-        score -= desc_penalty
-    # Oversized: -2 each
-    oversized_count = sum(1 for s in skills if s.get("oversized"))
-    score -= oversized_count * 2
-    # Clamp
-    score = max(0, min(100, score))
-
-    # Accuracy estimate (mirrors dashboard)
-    if total <= 5:
-        accuracy = 96
-    elif total <= 20:
-        accuracy = 96 - (total - 5)
-    else:
-        accuracy = max(15, int(96 * (2.71828 ** (-0.005 * (total - 5) ** 1.3))))
-
-    # Level
-    if score >= 80:
-        level = "green"
-    elif score >= 50:
-        level = "yellow"
-    else:
-        level = "red"
-
-    # Content change detection
-    content_changes = check_content_changes(target_path)
-
-    return {
-        "health_score": {
-            "score": score,
-            "level": level,
-            "accuracy_estimate": accuracy,
-        },
-        "structure_issues": structure_issues,
-        "upstream_sources": upstream_sources,
-        "cleanup_candidates": list(dict.fromkeys(cleanup_candidates)),  # dedup, preserve order
-        "content_changes": content_changes,
-        "summary": {
-            "total": total,
-            "entities": entities,
-            "symlinks": symlinks,
-            "broken_symlinks": broken,
-            "no_description": no_desc,
-            "structure_issues": len(structure_issues),
-            "oversized": oversized_count,
-            "runtime_ready": entities - len(structure_issues),
-        },
-        "source": "python-quick-check",
-        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-    }
-
 
 # ── GitHub URL parsing ──
 GITHUB_HTTPS_RE = re.compile(
@@ -966,8 +748,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_history()
         elif path == "/api/targets":
             self._list_targets()
-        elif path == "/api/host-profiles":
-            self._json_response({"profiles": discover_host_profiles()})
         elif path == "/api/cleanup-plan":
             self._cleanup_plan()
         elif path == "/api/cleanup-execution-plan":
@@ -980,12 +760,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(json.loads(data))
         elif path == "/api/fast-scan":
             self._fast_scan()
-        elif path == "/api/quick-check":
-            self._quick_check()
         elif path == "/api/diagnosis-status":
             self._diagnosis_status()
-        elif path == "/api/export":
-            self._export_skills()
         elif path == "/api/openapi":
             self._openapi()
         elif path == "/api/understand":
@@ -1000,8 +776,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._json_response(_scan_global_categories())
         elif path == "/api/installed-plugins":
             self._json_response(self._installed_plugins())
-        elif path == "/api/global-overlap":
-            self._json_response(detect_cross_dir_overlaps())
         elif path == "/api/scan-result":
             self._serve_json(CACHE_DIR / "scan-result.json")
         elif path == "/api/trash":
@@ -1313,46 +1087,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         result["name"] = name
         self._json_response(result)
 
-    def _export_skills(self):
-        """Export current target's skills as JSON."""
-        target = self._current_target()
-        target_dir = Path(target)
-        result = []
-        if target_dir.is_dir():
-            for d in sorted(target_dir.iterdir()):
-                if not d.is_dir():
-                    continue
-                skill_md = d / "SKILL.md"
-                if not skill_md.exists():
-                    continue
-                name = d.name
-                description = ""
-                category = ""
-                try:
-                    text = skill_md.read_text("utf-8", errors="ignore")[:2000]
-                    if text.startswith("---"):
-                        end = text.find("---", 3)
-                        if end > 0:
-                            fm = text[3:end]
-                            for line in fm.splitlines():
-                                line = line.strip()
-                                if line.startswith("description:"):
-                                    description = line.split(":", 1)[1].strip().strip("'\"")
-                                elif line.startswith("category:"):
-                                    category = line.split(":", 1)[1].strip().strip("'\"")
-                except Exception:
-                    pass
-                result.append({
-                    "name": name,
-                    "category": category,
-                    "description": description,
-                })
-        self._json_response({
-            "exported_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            "target": target,
-            "skills": result,
-        })
-
     def _openapi(self):
         """Return simple API documentation."""
         self._json_response({
@@ -1360,9 +1094,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "version": "2.0",
             "endpoints": [
                 {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
-                {"method": "GET", "path": "/api/quick-check", "desc": "Health score + structure issues + upstream + cleanup"},
                 {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
-                {"method": "GET", "path": "/api/host-profiles", "desc": "Non-secret host source/MCP profiles for agent-specific scanners"},
                 {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
                 {"method": "GET", "path": "/api/cleanup-execution-plan?scope=&strategy=", "desc": "Executable-shaped cleanup preview without deletion"},
                 {"method": "POST", "path": "/api/cleanup-execute", "desc": "Move selected cleanup candidates to trash"},
@@ -1370,7 +1102,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 {"method": "POST", "path": "/api/duplicate-decision", "desc": "Persist exact-duplicate handling decisions"},
                 {"method": "DELETE", "path": "/api/duplicate-decision?key=", "desc": "Remove a local exact-duplicate handling decision"},
                 {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
-                {"method": "GET", "path": "/api/export", "desc": "Export skill manifest as JSON"},
                 {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
                 {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
                 {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
@@ -2097,15 +1828,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "scan_mode": "fast",
             "duration_ms": int((time.time() - start) * 1000),
         }
-        self._json_response(result)
-
-    def _quick_check(self):
-        """Python-only structure check — instant, no bash."""
-        target = self._current_target()
-        result = python_quick_check(target)
-        if result is None:
-            self._json_response({"error": "target not found"}, status=400)
-            return
         self._json_response(result)
 
     # ── Diagnosis (uses module-level globals + lock) ──
