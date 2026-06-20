@@ -23,7 +23,7 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端入口：HTTP handler + 路由编排（~2400 行）
+serve.py           — 后端入口：HTTP handler + 路由编排
 skilldash/paths.py          — 共享路径、端口、缓存文件定位
 skilldash/classification.py — skill 分类关键词和描述读取
 skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
@@ -33,6 +33,7 @@ skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
 skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
+tests/             — 零依赖 unittest 回归测试（`python3 -m unittest discover -s tests -t .`）
 index.html         — 前端 HTML 骨架（~150 行）
 static/skill-dashboard.css — 前端样式
 static/app-core.js         — 前端状态、数据加载、仪表盘、当前目录技能
@@ -77,8 +78,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
-| `/api/global-overlap` | GET | 跨目录同名 + 完全重复分析（遗留接口，前端不再自动调用） |
-| `/api/quick-check` | GET | 健康评分 + 结构问题（遗留接口，前端不再自动调用） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/scan` | GET | 返回最近一次完整扫描结果 |
@@ -86,7 +85,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/history` | GET | 操作历史记录 |
 | `/api/installed-plugins` | GET | 读取 Claude 插件安装和启用状态 |
 | `/api/target` | POST | 切换当前目标库 |
-| `/api/export` | GET | 导出 skill 清单 JSON |
 | `/api/source/skills` | GET | 读取来源 skill 列表 |
 | `/api/custom-sources` | GET/POST/PATCH/DELETE | 管理自定义来源 |
 | `/api/steal` | POST | 从 GitHub URL 安装 skill |
@@ -184,8 +182,7 @@ for root, dirs, _files in os.walk(projects_dir):
 **实现函数**：
 - `_is_user_level_skill(dir_path)` — 判断是否为 `~/.agent/skills/` 格式
 - `_is_project_agent_skill(dir_path)` — 判断是否为项目内 `.agent/skills/` 格式
-- `_classify_skill_dir(dir_path)` — 综合分类逻辑
-- `_classify_skill_dir_detail(dir_path)` — 治理策略标注
+- `_classify_skill_dir_detail(dir_path)` — 治理分类（category/layer/policy），UI 唯一分类入口
 
 ### 目录发现：不预设"谁是 Agent"
 
@@ -211,7 +208,7 @@ for root, dirs, _files in os.walk(projects_dir):
 
 `POST /api/scan-run` 接受 `{directories, checks}` 参数。只跑用户请求的分析类型（同名/上游/内容变更）在用户选择的目录上。
 
-辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
+辅助函数 `_find_same_name_duplicates(dirs)` 接受 Path 列表参数，被 cleanup 和扫描复用。
 
 ### 清理执行准则：hash 一致不是直接删除依据
 

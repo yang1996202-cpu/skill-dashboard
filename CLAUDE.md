@@ -22,7 +22,7 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端入口：HTTP handler + 路由编排（~2400 行）
+serve.py           — 后端入口：HTTP handler + 路由编排
 skilldash/paths.py          — 共享路径、端口、缓存文件定位
 skilldash/classification.py — skill 分类关键词和描述读取
 skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
@@ -32,6 +32,7 @@ skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
 skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
 _diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
+tests/             — 零依赖 unittest 回归测试（`python3 -m unittest discover -s tests -t .`）
 index.html         — 前端 HTML 骨架（~150 行）
 static/skill-dashboard.css — 前端样式
 static/app-core.js         — 前端状态、数据加载、仪表盘、当前目录技能
@@ -76,15 +77,12 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
-| `/api/global-overlap` | GET | 跨目录同名重复分析（遗留接口，前端不再自动调用） |
-| `/api/quick-check` | GET | 健康评分 + 结构问题（遗留接口，前端不再自动调用） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/scan` | GET | 返回最近一次完整扫描结果 |
 | `/api/health` | GET | 返回最近一次健康检查结果 |
 | `/api/history` | GET | 操作历史记录 |
 | `/api/target` | POST | 切换当前目标库 |
-| `/api/export` | GET | 导出 skill 清单 JSON |
 | `/api/source/skills` | GET | 读取来源 skill/command 列表；默认不生成 understanding，加 `?understanding=1` 才计算 |
 | `/api/installed-plugins` | GET | 返回本机 Claude 插件状态（已启用 / 已安装 / 市场列表）|
 | `/api/custom-sources` | GET/POST/PATCH/DELETE | 管理自定义来源 |
@@ -149,13 +147,13 @@ screenshots/       — 截图（当前只有 .gitkeep）
 2. **Host profile**：`discover_host_profiles()` 给每个宿主生成非敏感轮廓，包括 source roots、profile family、MCP 配置数量、runtime/catalog MCP server 数。MCP 只保留 server 名、transport、disabled 标记和计数；不返回 URL、headers、env、command args。
 3. **Host inspector**：`plugin_context_for_dir()` 把目录解释成统一 runtime metadata。Claude/Codex 保留独立逻辑；WorkBuddy 和 CodeBuddy 走同一个 `buddy-family` inspector，因为二者共享 `skills`、`skills-marketplace`、`plugins/marketplaces`、`connectors`、`connectors-marketplace`、`mcp.json` 目录范式。
 
-`/api/targets` 会把 compact `profile_summary` 挂到每个 Agent group 上；`/api/host-profiles` 返回完整非敏感 profile。新增 Agent 时，先看 generic profile 是否已发现 source roots/MCP，再决定是否补专属 inspector。
+`/api/targets` 会把 compact `profile_summary` 挂到每个 Agent group 上（来自 `host_profile_summaries_by_agent`）。完整 profile 仅内部复用，无独立路由。新增 Agent 时，先看 generic profile 是否已发现 source roots/MCP，再决定是否补专属 inspector。
 
 ### 扫描 API：用户选范围 + 选类型
 
 `POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 在 UI 上叫“重点扫描”，使用 `sourceIsDaily()` 的重点整理目标；`deep` 在 UI 上叫“全量扫描”，含全部目录）。
 
-辅助函数 `_find_same_name_duplicates(dirs)` 从 `detect_cross_dir_overlaps()` 提取出来，接受 Path 列表参数，可复用。
+辅助函数 `_find_same_name_duplicates(dirs)` 接受 Path 列表参数，被 cleanup 和扫描复用。
 
 ### 清理执行准则：hash 一致不是直接删除依据
 
@@ -235,6 +233,9 @@ screenshots/       — 截图（当前只有 .gitkeep）
 - **路径安全**：所有文件操作用 `is_relative_to()` 验证，不用 `startswith()`
 - **Symlink 安全**：垃圾站移动 symlink 时只移动链接入口本身，不追随链接目标；broken symlink 可清理
 - **前端 JS 调试**：模板字符串嵌套 HTML 属性时注意引号冲突，优先抽全局函数而非内联 onclick
+- **重构必须删旧**：新旧实现并存是 stale-contract bug 根源（`_classify_skill_dir` 老五分类曾因此被误当 UI 契约测试）。重构到新实现后必须删旧函数，别留半死的过渡态。
+- **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
+- **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
 
 ## 下一步方向
 
