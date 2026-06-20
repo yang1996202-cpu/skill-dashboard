@@ -133,21 +133,6 @@ async function checkCachedDiagnosis(){
   if((r.status==='cached'||r.status==='done')&&r.health_score){
     applyFullDiagnosis(r);
   }
-  // Also load sources from full scan if available
-  if(!scan.sources?.length){
-    loadSourcesFallback();
-  }
-}
-
-async function loadSourcesFallback(){
-  // Only use stale /api/scan data if we don't have fresh /api/targets data
-  if(scan.sources?.length) return;
-  const fullScan=await fetch('/api/scan').then(r=>r.json()).catch(()=>null);
-  if(fullScan?.sources?.length){
-    scan.sources=fullScan.sources;
-    renderSources();
-    // badge-sources is maintained by updateTargetSelector — don't overwrite with flat source count
-  }
 }
 
 function applyFullDiagnosis(d){

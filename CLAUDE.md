@@ -79,7 +79,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
-| `/api/scan` | GET | 返回最近一次完整扫描结果 |
 | `/api/history` | GET | 操作历史记录 |
 | `/api/target` | POST | 切换当前目标库 |
 | `/api/source/skills` | GET | 读取来源 skill/command 列表；默认不生成 understanding，加 `?understanding=1` 才计算 |
@@ -215,7 +214,7 @@ screenshots/       — 截图（当前只有 .gitkeep）
 
 ## 数据目录
 
-- 状态与缓存：`.data/`（state/ 存 current-target.json/latest-scan.json，cache/ 存诊断结果和全域分类）
+- 状态与缓存：`.data/`（state/ 存 current-target.json，cache/ 存诊断结果和全域分类）
 - 完全重复处理决策：`.data/state/duplicate-decisions.json`（本地运行态，不提交）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 

@@ -740,8 +740,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_file(HTML_FILE, "text/html; charset=utf-8")
         elif path.startswith("/static/"):
             self._serve_static(path)
-        elif path == "/api/scan":
-            self._serve_json(STATE_DIR / "latest-scan.json")
         elif path == "/api/history":
             self._serve_history()
         elif path == "/api/targets":
@@ -2182,7 +2180,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self._json_response(result)
 
     def _current_target(self):
-        """Read current target from dedicated state file, fallback to latest-scan.json, fallback to ~/.claude/skills."""
+        """Read current target from dedicated state file, fallback to ~/.claude/skills."""
         # 1) Dedicated state file (most reliable)
         try:
             ct = json.loads((STATE_DIR / "current-target.json").read_text())
@@ -2193,16 +2191,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 return tp
         except Exception:
             pass
-        # 2) Legacy: latest-scan.json from dashboard
-        try:
-            scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
-            tp = scan.get("target", {}).get("path", "")
-            if tp.startswith("~"):
-                tp = str(Path.home() / tp[2:])
-            return tp
-        except Exception:
-            pass
-        # 3) Fallback
+        # 2) Fallback
         return str(Path.home() / ".claude/skills")
 
     def _set_target(self):
@@ -2229,19 +2218,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         rel = str(target_path).replace(str(home), "~")
         ct_file = STATE_DIR / "current-target.json"
         ct_file.write_text(json.dumps({"path": rel, "label": Path(target_path).parent.name}, ensure_ascii=False, indent=2), encoding="utf-8")
-        # Also update legacy latest-scan.json for compatibility
-        scan_file = STATE_DIR / "latest-scan.json"
-        scan_data = {}
-        if scan_file.exists():
-            try:
-                scan_data = json.loads(scan_file.read_text("utf-8"))
-            except Exception:
-                pass
-        scan_data["target"] = {
-            "path": rel,
-            "label": Path(target_path).parent.name,
-        }
-        scan_file.write_text(json.dumps(scan_data, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self._log_history(
             "switch_target",
@@ -2380,17 +2356,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         candidates = [Path(target) / name]
         # 2) Fallback: ~/.claude/skills
         candidates.append(Path.home() / ".claude/skills" / name)
-        # 3) Fallback: from latest-scan.json if different
-        try:
-            scan = json.loads((STATE_DIR / "latest-scan.json").read_text())
-            tp = scan.get("target", {}).get("path", "")
-            if tp.startswith("~"):
-                tp = str(Path.home() / tp[2:])
-            p = Path(tp) / name
-            if str(p) != str(candidates[0]):
-                candidates.append(p)
-        except Exception:
-            pass
         for d in candidates:
             if d.exists() or _is_skill_entry(d, include_broken=True):
                 return d
