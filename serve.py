@@ -742,8 +742,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._serve_static(path)
         elif path == "/api/scan":
             self._serve_json(STATE_DIR / "latest-scan.json")
-        elif path == "/api/health":
-            self._serve_json(STATE_DIR / "latest-health.json")
         elif path == "/api/history":
             self._serve_history()
         elif path == "/api/targets":

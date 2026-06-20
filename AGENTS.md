@@ -81,7 +81,6 @@ screenshots/       — 截图（当前只有 .gitkeep）
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/scan` | GET | 返回最近一次完整扫描结果 |
-| `/api/health` | GET | 返回最近一次健康检查结果 |
 | `/api/history` | GET | 操作历史记录 |
 | `/api/installed-plugins` | GET | 读取 Claude 插件安装和启用状态 |
 | `/api/target` | POST | 切换当前目标库 |
