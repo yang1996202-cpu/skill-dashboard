@@ -41,6 +41,7 @@ from skilldash.discovery import (
     _scan_global_categories,
 )
 from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state
+from skilldash.routes.system import SystemRoutes
 from skilldash.overlap import _find_same_name_duplicates
 from skilldash.paths import (
     CACHE_DIR,
@@ -681,7 +682,7 @@ _diag_start = 0
 _diag_phase = ""
 
 
-class DashboardHandler(BaseHTTPRequestHandler):
+class DashboardHandler(SystemRoutes, BaseHTTPRequestHandler):
     """Serve index.html and API endpoints."""
 
     def _read_json(self):
@@ -844,26 +845,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def _scan_result(self):
         self._serve_json(CACHE_DIR / "scan-result.json")
 
-    def _get_category_order(self):
-        f = STATE_DIR / "category-order.json"
-        data = f.read_text(encoding="utf-8") if f.exists() else "[]"
-        self._json_response(json.loads(data))
-
-    def _set_category_order(self):
-        try:
-            length = int(self.headers.get('Content-Length', 0))
-            raw = self.rfile.read(length).decode('utf-8') if length else '[]'
-            data = json.loads(raw)
-            if isinstance(data, list):
-                (STATE_DIR / "category-order.json").write_text(
-                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                )
-                self._json_response({"ok": True})
-            else:
-                self.send_error(400, "Expected JSON array")
-        except Exception as e:
-            self._json_response({"error": str(e)}, 400)
-
     def _preview_route(self):
         qs = parse_qs(urlparse(self.path).query)
         preview_dir = qs.get("dir", [""])[0]
@@ -928,22 +909,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"error": "state file not found, switch target to generate data"}')
-
-    def _serve_history(self):
-        hist_file = STATE_DIR / "history.jsonl"
-        try:
-            lines = hist_file.read_text(encoding="utf-8").strip().split("\n")
-            entries = []
-            for line in lines[-50:]:
-                line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-            self._json_response(entries)
-        except FileNotFoundError:
-            self._json_response([])
 
     def _log_history(self, op, paths=None, count=0, source="", status="ok", detail=None):
         """Append one operation entry to history.jsonl.
@@ -1079,34 +1044,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         result = check_upstream_status(skill_dir)
         result["name"] = name
         self._json_response(result)
-
-    def _openapi(self):
-        """Return simple API documentation."""
-        self._json_response({
-            "title": "Skill Dashboard API",
-            "version": "2.0",
-            "endpoints": [
-                {"method": "GET", "path": "/api/fast-scan", "desc": "Instant skill list + classification"},
-                {"method": "GET", "path": "/api/targets", "desc": "List available skill directories"},
-                {"method": "GET", "path": "/api/cleanup-plan?scope=daily|deep", "desc": "Dry-run cleanup governance plan"},
-                {"method": "GET", "path": "/api/cleanup-execution-plan?scope=&strategy=", "desc": "Executable-shaped cleanup preview without deletion"},
-                {"method": "POST", "path": "/api/cleanup-execute", "desc": "Move selected cleanup candidates to trash"},
-                {"method": "GET", "path": "/api/duplicate-decisions", "desc": "List local exact-duplicate handling decisions"},
-                {"method": "POST", "path": "/api/duplicate-decision", "desc": "Persist exact-duplicate handling decisions"},
-                {"method": "DELETE", "path": "/api/duplicate-decision?key=", "desc": "Remove a local exact-duplicate handling decision"},
-                {"method": "GET", "path": "/api/global-stats", "desc": "Global category distribution across all skill libraries (cached 5min)"},
-                {"method": "GET", "path": "/api/understand?dir=&name=", "desc": "Rule-based Chinese understanding for one skill"},
-                {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
-                {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
-                {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
-                {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (Python-only)"},
-                {"method": "POST", "path": "/api/scan-run", "desc": "Targeted scan: selected directories + analysis types"},
-                {"method": "GET", "path": "/api/scan-result", "desc": "Get cached scan result"},
-                {"method": "POST", "path": "/api/steal", "desc": "Install skill from GitHub URL"},
-                {"method": "DELETE", "path": "/api/skill/{name}", "desc": "Delete a skill"},
-                {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
-            ],
-        })
 
     def _installed_plugins(self):
         """Return Claude plugins installed on this machine."""
