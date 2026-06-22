@@ -457,11 +457,8 @@ function renderGovernActionCard(a){
     ? `${a.skill_name||''} · 多端部署`
     : a.skill_name?`${a.skill_name} → 垃圾站`:`${a.agent||''} → 垃圾站`;
   return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
-    <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center">
       <span style="font-size:13px;font-weight:700;color:${bTone}">📦 ${escapeHtml(layerText)}</span>
-      <span style="font-size:10px;font-weight:700;color:#fff;background:${bTone};padding:2px 8px;border-radius:10px">${escapeHtml(boundary)}</span>
-      <span style="flex:1"></span>
-      ${a.policy_label?`<span style="font-size:10px;color:var(--text-muted)">策略：${escapeHtml(a.policy_label)}</span>`:''}
     </div>
     ${doc.explain?`<div style="font-size:11px;color:var(--text-muted);line-height:1.6;padding:6px 10px;background:var(--bg-card);border-bottom:1px solid var(--border-subtle)">${escapeHtml(doc.explain)}</div>`:''}
     <div style="padding:8px 10px">
@@ -693,10 +690,11 @@ function renderIssues(){
   }
 
   const tabBtn=(t)=>`<button class="issue-tab ${_issueTypeTab===t.key?'active':''}" onclick="_issueTypeTab='${t.key}';_issueShowAll=false;renderIssues()"><span>${t.emoji}</span><span>${t.label}</span>${t.count?`<b>${t.count}</b>`:''}</button>`;
-  let tabHtml='<div class="issue-tabs">'+issueTabs.map(tabBtn).join('')+'</div>';
+  let tabHtml='<div class="issue-tabs">'+issueTabs.map(tabBtn).join('');
   if(governTabs.length){
-    tabHtml+=`<div class="issue-tabs" style="margin-top:6px"><span style="font-size:10px;color:var(--text-muted);padding:0 6px;white-space:nowrap">建议处理</span>${governTabs.map(tabBtn).join('')}</div>`;
+    tabHtml+=`<span aria-hidden="true" style="display:inline-flex;align-self:center;width:1px;height:16px;background:var(--border);margin:0 4px"></span>${governTabs.map(tabBtn).join('')}`;
   }
+  tabHtml+='</div>';
 
   // 截断：默认前 LIMIT 条，显式标注「显示前 N / 共 M」，消除隐性截断
   const LIMIT=12;
