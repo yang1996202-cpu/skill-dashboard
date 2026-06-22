@@ -194,6 +194,10 @@ def _execution_action_for_item(item, strategy="conservative"):
         "count": item.get("count", 0),
         "sample_skills": item.get("sample_skills", []),
         "from_state": item.get("layer_label") or layer,
+        "layer": layer,
+        "policy": item.get("policy", ""),
+        "policy_label": item.get("policy_label", ""),
+        "layer_label": item.get("layer_label", "") or layer,
         "evidence": item.get("reasons", []),
         "risk": item.get("risk", "medium"),
     }
@@ -412,6 +416,10 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
                     "content_hash": content_hash,
                     "sample_skills": [name],
                     "from_state": governance.get("layer_label") or governance.get("layer", ""),
+                    "layer": governance.get("layer", ""),
+                    "policy": governance.get("policy", ""),
+                    "policy_label": governance.get("policy_label", ""),
+                    "layer_label": governance.get("layer_label", "") or governance.get("layer", ""),
                     "evidence": list(dict.fromkeys([
                         "SKILL.md content hash matches current target copy",
                         f"kept copy: {keeper_dir}",

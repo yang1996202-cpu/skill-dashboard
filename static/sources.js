@@ -171,8 +171,9 @@ function renderSources(){
       <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-      <div class="search-wrap" style="flex:1;min-width:200px">
-        <input class="search" id="global-skill-search" value="${escapeHtml(_globalSearchQuery)}" placeholder="跨所有目录搜索 skill 名称..." oninput="onGlobalSearchInput(this.value)" autocomplete="off" style="max-width:100%">
+      <div class="search-wrap" style="flex:1;min-width:200px;display:flex;gap:6px">
+        <input class="search" id="global-skill-search" value="${escapeHtml(_globalSearchQuery)}" placeholder="跨所有目录搜索 skill 名称（回车搜索）..." oninput="onGlobalSearchInput(this.value)" onkeydown="if(event.key==='Enter'){event.preventDefault();doGlobalSearch(this.value)}" autocomplete="off" style="flex:1;min-width:0">
+        <button class="btn btn-sm btn-primary" onclick="doGlobalSearch(document.getElementById('global-skill-search').value)" title="搜索">搜索</button>
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -316,38 +317,51 @@ function renderSources(){
   }catch(e){$('sources-list').innerHTML='<div class="empty">渲染出错: '+e.message+'</div>'}
 }
 
-/* ── Global skill search ── */
+/* ── Global skill search (explicit: Enter or 搜索 button) ── */
+// Search runs only on Enter / 搜索 click. Typing never triggers a fetch or a
+// re-render, so the input keeps focus. This fixes the old symptom where the
+// 2nd keystroke lost focus (renderSources rebuilt the <input> node) and the
+// user had to click back into the box to keep typing.
+function updateSearchResultsPane(){
+  const pane=document.getElementById('global-search-results');
+  if(pane){pane.innerHTML=renderGlobalSearchResultsHtml();return true}
+  return false;
+}
+function restoreSearchFocus(){
+  // renderSources rebuilds the <input>; put focus back at the end so the user
+  // can tweak the query and press Enter again without re-clicking the box.
+  const inp=document.getElementById('global-skill-search');
+  if(inp){inp.focus();const v=inp.value.length;try{inp.setSelectionRange(v,v)}catch(e){}}
+}
 function onGlobalSearchInput(value){
+  // Explicit search only — just remember the value. No debounce, no render.
   _globalSearchQuery=value;
-  if(value.length<2){
-    _globalSearchResults=null;
-    renderSources();
-    return;
-  }
-  clearTimeout(_globalSearchTimer);
-  _globalSearchTimer=setTimeout(()=>doGlobalSearch(value.trim()),250);
 }
 async function doGlobalSearch(q){
-  if(q.length<2)return;
+  q=(q||'').trim();
+  if(q.length<2){toast('至少输入 2 个字符再搜索','error');restoreSearchFocus();return;}
   _globalSearchQuery=q;
+  clearTimeout(_globalSearchTimer);
   const cached=_globalSearchCache[q];
   if(cached&&(Date.now()-cached.ts)<GLOBAL_SEARCH_CACHE_TTL){
     _globalSearchResults=cached.data;
-    renderSources();
+    if(!updateSearchResultsPane()) renderSources();
+    restoreSearchFocus();
     return;
   }
   _globalSearchResults=null;
-  renderSources();
+  renderSources();  // switch to search view + show "搜索中..."
   try{
     const r=await fetch('/api/search-skills?q='+encodeURIComponent(q)+'&limit=50');
     const d=await r.json();
     _globalSearchResults=d;
     _globalSearchCache[q]={data:d,ts:Date.now()};
-    renderSources();
+    updateSearchResultsPane();
   }catch(e){
     _globalSearchResults={error:'搜索失败',groups:[]};
-    renderSources();
+    updateSearchResultsPane();
   }
+  restoreSearchFocus();
 }
 function renderGlobalSearchResultsHtml(){
   if(!_globalSearchResults)return '<div style="padding:20px;text-align:center;color:var(--text-muted)">搜索中...</div>';
@@ -372,7 +386,7 @@ function renderGlobalSearchResultsHtml(){
     g.skills.forEach(s=>{
       const dirPath=s.dir;
       const skillName=s.name;
-      h+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick="expandDirAndShowSkill('${esc(dirPath)}','${esc(skillName)}')" title="${esc(s.rel+'/'+s.name)}">
+      h+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick="showSkill('${esc(skillName)}','${esc(dirPath)}')" title="${esc(s.rel+'/'+s.name)}">
         <span style="font-size:12px;font-weight:500;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name)}</span>
         <span style="font-size:10px;color:var(--text-muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.rel)}</span>
         <span style="font-size:9px;color:var(--text-dim);text-transform:uppercase">${esc(s.category||'')}</span>
@@ -381,62 +395,6 @@ function renderGlobalSearchResultsHtml(){
     h+=`</div></div>`;
   });
   return h;
-}
-async function expandDirAndShowSkill(dirPath,skillName){
-  // Find the agent group containing this directory
-  const group=targetGroups.find(g=>g.dirs.some(d=>d.path===dirPath));
-  if(!group){toast('目录未找到','error');return}
-  // Make sure the directory is visible under current view mode
-  const target=group.dirs.find(d=>d.path===dirPath);
-  const visibleNow=!target||sourceMatchesView(target,_sourceViewMode);
-  if(target&&!visibleNow){
-    setSourceViewMode('all');
-  }
-  // Expand the agent card
-  _expandedSourceAgent=group.agent;
-  renderSources();
-  // After DOM update, find the directory row and expand it
-  await new Promise(r=>setTimeout(r,50));
-  const cards=document.querySelectorAll('.src-card');
-  let card=null;
-  cards.forEach(c=>{if(c.dataset.agent===group.agent)card=c});
-  if(!card){toast('目录卡片未找到','error');return}
-  const dirRows=card.querySelectorAll('.target-opt');
-  let targetRow=null,containerId=null;
-  dirRows.forEach(row=>{
-    const onclick=row.getAttribute('onclick')||'';
-    if(onclick.includes(dirPath)){
-      targetRow=row;
-      const container=row.parentElement.querySelector('div[id^="sd-"],div[id^="fb-"]');
-      if(container)containerId=container.id;
-    }
-  });
-  if(!targetRow||!containerId){toast('目录行未找到','error');return}
-  // Load skills if not already loaded
-  if(!sourceSkillsCache[dirPath]){
-    browseSourceDir(containerId,dirPath,targetRow);
-  }else{
-    const container=$(containerId);
-    if(container&&container.style.display!=='block'){
-      browseSourceDir(containerId,dirPath,targetRow);
-    }
-    renderBrowseDir(dirPath,sourceSkillsCache[dirPath],container);
-  }
-  // Wait for render and highlight the skill
-  await new Promise(r=>setTimeout(r,100));
-  const container=$(containerId);
-  if(!container)return;
-  const checks=container.querySelectorAll('.src-skill-check');
-  checks.forEach(ch=>{
-    if(ch.dataset.name===skillName){
-      const row=ch.closest('div[style*="display:flex"]');
-      if(row){
-        row.style.background='var(--accent-bg)';
-        row.scrollIntoView({behavior:'smooth',block:'center'});
-        setTimeout(()=>{row.style.background=''},2000);
-      }
-    }
-  });
 }
 
 // --- Source card toggle + drag-and-drop ---

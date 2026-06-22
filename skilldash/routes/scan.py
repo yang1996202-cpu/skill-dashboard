@@ -13,6 +13,8 @@ import shutil
 import subprocess
 import threading
 import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
@@ -231,46 +233,23 @@ class ScanRoutes:
             )),
         }
 
-        # Per-directory checks
+        # 收集每个目录的 skill 名单。上游检测要跨目录全并发——串行打 GitHub API
+        # 时 146 目录累计 70s+，浏览器 fetch 挂太久会 Failed to fetch。
+        dir_skill_map = {}
         for tdir in valid_dirs:
-            dir_skills = []
+            names = []
             try:
                 for d in sorted(tdir.iterdir()):
                     if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists():
-                        dir_skills.append({"name": d.name})
+                        names.append(d.name)
             except Exception:
                 continue
+            if names:
+                dir_skill_map[tdir] = names
 
-            if not dir_skills:
-                continue
-
-            # Upstream tracking
-            if "upstream" in checks:
-                for s in dir_skills:
-                    skill_dir = tdir / s["name"]
-                    try:
-                        status = check_upstream_status(skill_dir)
-                        # 允许有 repo 的 unknown 也进入：本地检测到 .git remote / lock 来源，
-                        # 但 GitHub API 限流或未配 token 时无法判定版本（status=unknown）。
-                        # 仍展示来源，让未配 token 的用户看到"哪些 skill 可追踪"。
-                        if status.get("repo") and status.get("status") in ("current", "outdated", "unknown"):
-                            result["upstream_sources"].append({
-                                "name": s["name"],
-                                "repo": status.get("repo", ""),
-                                "status": status["status"],
-                                "installed_commit": status.get("installed_commit", ""),
-                                "latest_commit": status.get("latest_commit", ""),
-                                "dir": str(tdir),
-                                "source": status.get("source", "unknown"),
-                                "is_symlink": status.get("is_symlink", False),
-                                "link_target": status.get("link_target", ""),
-                                "canonical_dir": status.get("canonical_dir", str(tdir)),
-                            })
-                    except Exception:
-                        pass
-
-            # Content changes
-            if "content-changes" in checks:
+        # Content changes（本地读文件，快，保持串行）
+        if "content-changes" in checks:
+            for tdir in dir_skill_map:
                 try:
                     changes = check_content_changes(str(tdir))
                     if changes and changes.get("total_changed", 0) > 0:
@@ -282,6 +261,37 @@ class ScanRoutes:
                         result["content_changes"]["total_changed"] += changes.get("total_changed", 0)
                 except Exception:
                     pass
+
+        # Upstream tracking（GitHub API，慢，跨目录全并发；max_workers=10 把 70s+ 压到 ~10s）
+        if "upstream" in checks:
+            all_tasks = [(tdir, name) for tdir, names in dir_skill_map.items() for name in names]
+            def _check_upstream(task):
+                tdir, name = task
+                try:
+                    return (tdir, name, check_upstream_status(tdir / name))
+                except Exception:
+                    return (tdir, name, None)
+            with ThreadPoolExecutor(max_workers=10) as _upool:
+                upstream_results = list(_upool.map(_check_upstream, all_tasks))
+            for tdir, name, status in upstream_results:
+                if not status:
+                    continue
+                # 允许有 repo 的 unknown 也进入：本地检测到 .git remote / lock 来源，
+                # 但 GitHub API 限流或未配 token 时无法判定版本（status=unknown）。
+                # 仍展示来源，让未配 token 的用户看到"哪些 skill 可追踪"。
+                if status.get("repo") and status.get("status") in ("current", "outdated", "unknown"):
+                    result["upstream_sources"].append({
+                        "name": name,
+                        "repo": status.get("repo", ""),
+                        "status": status["status"],
+                        "installed_commit": status.get("installed_commit", ""),
+                        "latest_commit": status.get("latest_commit", ""),
+                        "dir": str(tdir),
+                        "source": status.get("source", "unknown"),
+                        "is_symlink": status.get("is_symlink", False),
+                        "link_target": status.get("link_target", ""),
+                        "canonical_dir": status.get("canonical_dir", str(tdir)),
+                    })
 
         # Cross-directory checks (need 2+ dirs)
         if len(valid_dirs) >= 2:
