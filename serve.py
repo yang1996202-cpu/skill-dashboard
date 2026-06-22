@@ -733,148 +733,145 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Send a 403 CSRF rejection response."""
         self._json_response({"error": "CSRF check failed — cross-origin request rejected"}, status=403)
 
-    def do_GET(self):
-        path = urlparse(self.path).path
+    # ── 路由表:(method, rule) → (handler, param) ──
+    # rule 为 str:精确匹配;为 (prefix, suffix):前缀+后缀,suffix="" 表示纯前缀
+    # param: None=无参;"name"=解析路径第3段为 skill 名并校验;"path"=传完整 path
+    _ROUTES_EXACT = {
+        ("GET", "/"):                           ("_serve_index", None),
+        ("GET", "/index.html"):                 ("_serve_index", None),
+        ("GET", "/api/history"):                ("_serve_history", None),
+        ("GET", "/api/targets"):                ("_list_targets", None),
+        ("GET", "/api/cleanup-plan"):           ("_cleanup_plan", None),
+        ("GET", "/api/cleanup-execution-plan"): ("_cleanup_execution_plan", None),
+        ("GET", "/api/duplicate-decisions"):    ("_list_duplicate_decisions", None),
+        ("GET", "/api/category-order"):         ("_get_category_order", None),
+        ("GET", "/api/fast-scan"):              ("_fast_scan", None),
+        ("GET", "/api/diagnosis-status"):       ("_diagnosis_status", None),
+        ("GET", "/api/openapi"):                ("_openapi", None),
+        ("GET", "/api/understand"):             ("_serve_understanding", None),
+        ("GET", "/api/source/skills"):          ("_list_source_skills", None),
+        ("GET", "/api/search-skills"):          ("_search_skills", None),
+        ("GET", "/api/custom-sources"):         ("_get_custom_sources", None),
+        ("GET", "/api/global-stats"):           ("_global_stats", None),
+        ("GET", "/api/installed-plugins"):      ("_installed_plugins_api", None),
+        ("GET", "/api/scan-result"):            ("_scan_result", None),
+        ("GET", "/api/trash"):                  ("_list_trash", None),
+        ("GET", "/api/preview"):                ("_preview_route", None),
+        ("POST", "/api/target"):                ("_set_target", None),
+        ("POST", "/api/diagnose"):              ("_diagnose", None),
+        ("POST", "/api/scan-run"):              ("_run_scan", None),
+        ("POST", "/api/cleanup-execute"):       ("_cleanup_execute", None),
+        ("POST", "/api/duplicate-decision"):    ("_duplicate_decision", None),
+        ("POST", "/api/steal"):                 ("_steal_skill", None),
+        ("POST", "/api/copy-skill"):            ("_copy_skill", None),
+        ("POST", "/api/batch-delete"):          ("_batch_delete", None),
+        ("POST", "/api/custom-sources"):        ("_add_custom_source", None),
+        ("POST", "/api/category-order"):        ("_set_category_order", None),
+        ("DELETE", "/api/custom-sources"):      ("_remove_custom_source", None),
+        ("DELETE", "/api/duplicate-decision"):  ("_remove_duplicate_decision", None),
+        ("DELETE", "/api/trash"):               ("_empty_trash", None),
+    }
 
-        if path == "/" or path == "/index.html":
-            self._serve_file(HTML_FILE, "text/html; charset=utf-8")
-        elif path.startswith("/static/"):
-            self._serve_static(path)
-        elif path == "/api/history":
-            self._serve_history()
-        elif path == "/api/targets":
-            self._list_targets()
-        elif path == "/api/cleanup-plan":
-            self._cleanup_plan()
-        elif path == "/api/cleanup-execution-plan":
-            self._cleanup_execution_plan()
-        elif path == "/api/duplicate-decisions":
-            self._list_duplicate_decisions()
-        elif path == "/api/category-order":
-            f = STATE_DIR / "category-order.json"
-            data = f.read_text(encoding="utf-8") if f.exists() else "[]"
-            self._json_response(json.loads(data))
-        elif path == "/api/fast-scan":
-            self._fast_scan()
-        elif path == "/api/diagnosis-status":
-            self._diagnosis_status()
-        elif path == "/api/openapi":
-            self._openapi()
-        elif path == "/api/understand":
-            self._serve_understanding()
-        elif path == "/api/source/skills":
-            self._list_source_skills()
-        elif path == "/api/search-skills":
-            self._search_skills()
-        elif path == "/api/custom-sources":
-            self._get_custom_sources()
-        elif path == "/api/global-stats":
-            self._json_response(_scan_global_categories())
-        elif path == "/api/installed-plugins":
-            self._json_response(self._installed_plugins())
-        elif path == "/api/scan-result":
-            self._serve_json(CACHE_DIR / "scan-result.json")
-        elif path == "/api/trash":
-            self._list_trash()
-        elif path.startswith("/api/trash/") and path.endswith("/restore"):
-            self._restore_trash(path)
-        elif path.startswith("/api/skill/") and path.endswith("/content"):
+    _ROUTES_PREFIX = [
+        # (method, prefix, suffix, handler, param)  suffix="" 表示纯前缀
+        ("GET", "/static/", "", "_serve_static", "path"),
+        ("GET", "/api/trash/", "/restore", "_restore_trash", "path"),
+        ("GET", "/api/skill/", "/content", "_serve_skill_content", "name"),
+        ("GET", "/api/skill/", "/upstream", "_check_skill_upstream", "name"),
+        ("POST", "/api/trash/", "/restore", "_restore_trash", "path"),
+        ("POST", "/api/skill/", "/rehash", "_rehash_skill", "name"),
+        ("DELETE", "/api/skill/", "", "_delete_skill", "name"),
+        ("DELETE", "/api/trash/", "", "_delete_trash", "path"),
+        ("PATCH", "/api/skill/", "/update", "_update_upstream", "name"),
+        ("PATCH", "/api/skill/", "/fix", "_fix_skill", "name"),
+    ]
+
+    def _dispatch(self, method):
+        """路由分发:先查精确表,再遍历前缀表。"""
+        path = urlparse(self.path).path
+        route = self._ROUTES_EXACT.get((method, path))
+        if route:
+            self._invoke(route[0], route[1], path)
+            return
+        for m, prefix, suffix, handler_name, param in self._ROUTES_PREFIX:
+            if m != method or not path.startswith(prefix):
+                continue
+            if suffix and not path.endswith(suffix):
+                continue
+            self._invoke(handler_name, param, path)
+            return
+        self.send_error(404)
+
+    def _invoke(self, handler_name, param, path):
+        """按 param 约定调用 handler。"""
+        handler = getattr(self, handler_name)
+        if param is None:
+            handler()
+        elif param == "name":
             name = self._validate_skill_name(self._path_part(path, 3))
             if not name:
                 self.send_error(400, "Invalid skill name")
-            else:
-                self._serve_skill_content(name)
-        elif path == "/api/preview":
-            # Preview skill from any directory: /api/preview?dir=...&name=...
-            from urllib.parse import parse_qs
-            qs = parse_qs(urlparse(self.path).query)
-            preview_dir = qs.get("dir", [""])[0]
-            preview_name = qs.get("name", [""])[0]
-            if preview_dir and preview_name:
-                self._serve_preview(preview_dir, preview_name)
-            else:
-                self.send_error(400, "Missing dir or name")
-        elif path.startswith("/api/skill/") and path.endswith("/upstream"):
-            name = self._validate_skill_name(self._path_part(path, 3))
-            if not name:
-                self.send_error(400, "Invalid skill name")
-            else:
-                self._check_skill_upstream(name)
-        else:
-            self.send_error(404)
+                return
+            handler(name)
+        else:  # "path"
+            handler(path)
+
+    def do_GET(self):
+        self._dispatch("GET")
 
     def do_POST(self):
         if not self._check_csrf():
             self._csrf_reject()
             return
-        path = urlparse(self.path).path
-        if path == "/api/target":
-            self._set_target()
-        elif path == "/api/diagnose":
-            self._diagnose()
-        elif path == "/api/scan-run":
-            self._run_scan()
-        elif path == "/api/cleanup-execute":
-            self._cleanup_execute()
-        elif path == "/api/duplicate-decision":
-            self._duplicate_decision()
-        elif path == "/api/steal":
-            self._steal_skill()
-        elif path == "/api/copy-skill":
-            self._copy_skill()
-        elif path == "/api/batch-delete":
-            self._batch_delete()
-        elif path == "/api/custom-sources":
-            self._add_custom_source()
-        elif path == "/api/category-order":
-            try:
-                length = int(self.headers.get('Content-Length', 0))
-                raw = self.rfile.read(length).decode('utf-8') if length else '[]'
-                data = json.loads(raw)
-                if isinstance(data, list):
-                    (STATE_DIR / "category-order.json").write_text(
-                        json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                    )
-                    self._json_response({"ok": True})
-                else:
-                    self.send_error(400, "Expected JSON array")
-            except Exception as e:
-                self._json_response({"error": str(e)}, 400)
-        elif path.startswith("/api/trash/") and path.endswith("/restore"):
-            self._restore_trash(path)
-        elif path.startswith("/api/skill/") and path.endswith("/rehash"):
-            name = self._validate_skill_name(self._path_part(path, 3))
-            if not name:
-                self.send_error(400, "Invalid skill name")
-            else:
-                self._rehash_skill(name)
-        else:
-            self.send_error(404)
+        self._dispatch("POST")
 
     def do_DELETE(self):
         if not self._check_csrf():
             self._csrf_reject()
             return
-        path = urlparse(self.path).path
-        query = parse_qs(urlparse(self.path).query)
-        if path.startswith("/api/skill/"):
-            name = self._validate_skill_name(self._path_part(path, 3))
-            if not name:
-                self.send_error(400, "Invalid skill name")
+        self._dispatch("DELETE")
+
+    # ── 路由 handler 包装(从原 do_ 内联业务抽离)──
+    def _serve_index(self):
+        self._serve_file(HTML_FILE, "text/html; charset=utf-8")
+
+    def _global_stats(self):
+        self._json_response(_scan_global_categories())
+
+    def _installed_plugins_api(self):
+        self._json_response(self._installed_plugins())
+
+    def _scan_result(self):
+        self._serve_json(CACHE_DIR / "scan-result.json")
+
+    def _get_category_order(self):
+        f = STATE_DIR / "category-order.json"
+        data = f.read_text(encoding="utf-8") if f.exists() else "[]"
+        self._json_response(json.loads(data))
+
+    def _set_category_order(self):
+        try:
+            length = int(self.headers.get('Content-Length', 0))
+            raw = self.rfile.read(length).decode('utf-8') if length else '[]'
+            data = json.loads(raw)
+            if isinstance(data, list):
+                (STATE_DIR / "category-order.json").write_text(
+                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
+                )
+                self._json_response({"ok": True})
             else:
-                target = query.get("target", [""])[0]
-                self._delete_skill(name, target or None)
-        elif path == "/api/custom-sources":
-            self._remove_custom_source()
-        elif path == "/api/duplicate-decision":
-            self._remove_duplicate_decision()
-        elif path == "/api/trash":
-            self._empty_trash()
-        elif path.startswith("/api/trash/"):
-            # Permanent delete: DELETE /api/trash/{trash_dir_name}
-            self._delete_trash(path)
+                self.send_error(400, "Expected JSON array")
+        except Exception as e:
+            self._json_response({"error": str(e)}, 400)
+
+    def _preview_route(self):
+        qs = parse_qs(urlparse(self.path).query)
+        preview_dir = qs.get("dir", [""])[0]
+        preview_name = qs.get("name", [""])[0]
+        if preview_dir and preview_name:
+            self._serve_preview(preview_dir, preview_name)
         else:
-            self.send_error(404)
+            self.send_error(400, "Missing dir or name")
 
     # ── API implementations ──
 
@@ -2266,8 +2263,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         _invalidate_runtime_caches()
         return dest
 
-    def _delete_skill(self, name, target=None):
-        """Move a skill to trash. If target is given, delete from that dir."""
+    def _delete_skill(self, name):
+        """Move a skill to trash. If ?target= is given, delete from that dir."""
+        query = parse_qs(urlparse(self.path).query)
+        target = query.get("target", [""])[0] or None
         if target:
             target_path = Path(target).expanduser().resolve()
             # Validate target is under home directory
@@ -2366,30 +2365,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         if not self._check_csrf():
             self._csrf_reject()
             return
-        path = urlparse(self.path).path
-        # Read body
-        length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(length).decode('utf-8') if length else '{}'
-        try:
-            data = json.loads(body)
-        except Exception:
-            data = {}
-
-        if path.startswith("/api/skill/") and path.endswith("/update"):
-            name = self._validate_skill_name(self._path_part(path, 3))
-            if not name:
-                self.send_error(400, "Invalid skill name")
-            else:
-                self._update_upstream(name)
-        elif path.startswith("/api/skill/") and path.endswith("/fix"):
-            name = self._validate_skill_name(self._path_part(path, 3))
-            if not name:
-                self.send_error(400, "Invalid skill name")
-            else:
-                action = data.get("action", "")
-                self._fix_skill(name, action, data)
-        else:
-            self.send_error(404)
+        self._dispatch("PATCH")
 
     def _rehash_skill(self, name):
         """Re-record content hash for a skill (confirm change)."""
@@ -2539,8 +2515,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
             detail={"name": name, "target": target, "error": result.get("error", "")},
         )
 
-    def _fix_skill(self, name, action, body=None):
+    def _fix_skill(self, name):
         """Fix a skill issue."""
+        body = self._read_json() or {}
+        action = body.get("action", "")
         if action == "delete":
             self._delete_skill(name)
             return
