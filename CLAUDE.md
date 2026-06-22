@@ -22,16 +22,19 @@ python3 serve.py
 ## 文件结构
 
 ```
-serve.py           — 后端入口：HTTP handler + 路由编排
+serve.py           — 后端入口：路由表分发 + 基础设施(CSRF/静态/JSON/运行态缓存);domain handler 已拆到 routes/
 skilldash/paths.py          — 共享路径、端口、缓存文件定位
 skilldash/classification.py — skill 分类关键词和描述读取
-skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层
+skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理分层、skill 实体判定(_is_skill_entry 等)
 skilldash/overlap.py        — 跨目录同名、完全重复扫描
 skilldash/cleanup.py        — 清理计划、执行预案、重复 skill 处理准则
 skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
 skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
-_diag_worker.py    — 诊断子进程（由 serve.py 通过 subprocess 调用）
+skilldash/source_ops.py     — GitHub 业务:来源解析、安装、更新、上游检查、API(纯库,不依赖 serve)
+skilldash/host_inspectors.py — 宿主专属 inspector(Claude/Codex/buddy family)+ host profile
+skilldash/routes/           — 按 domain 拆分的 HTTP handler mixin:system/source/skill/cleanup/scan
+_diag_worker.py    — 诊断子进程（由 scan.py 通过 subprocess 调用）
 tests/             — 零依赖 unittest 回归测试（`python3 -m unittest discover -s tests -t .`）
 index.html         — 前端 HTML 骨架（~150 行）
 static/skill-dashboard.css — 前端样式

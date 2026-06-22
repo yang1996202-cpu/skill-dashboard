@@ -1,72 +1,27 @@
 #!/usr/bin/env python3
-"""Skill Dashboard — 零依赖本地 WebUI，可视化管理 AI skill 文件"""
+"""Skill Dashboard — 零依赖本地 WebUI，可视化管理 AI skill 文件。
+
+HTTP 入口与基础设施:路由表分发、CSRF、静态文件、JSON 响应、运行态缓存。
+各 domain 的 handler 在 skilldash/routes/*(DashboardHandler 多继承);
+GitHub 业务在 skilldash/source_ops;扫描/治理在 skilldash 子模块。
+"""
 
 import json
-import os
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
-import threading
 import time
-import urllib.request
 import urllib.parse
 import webbrowser
-from collections import Counter
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 
-from skilldash.understanding import compact_understanding, understand_skill
-
-from skilldash.cleanup import (
-    _duplicate_skill_execute_allowed,
-    _is_cleanup_execute_allowed,
-    build_cleanup_execution_plan,
-    build_cleanup_plan,
-)
-from skilldash.content_hash import check_content_changes, record_content_hash
-from skilldash.decisions import (
-    _duplicate_decision_key,
-    _load_duplicate_decisions,
-    _save_duplicate_decisions,
-)
-from skilldash.discovery import (
-    _agent_from_path,
-    _classify_skill_dir_detail,
-    _discover_command_dirs,
-    _discover_skill_dirs,
-    _is_skill_entry,
-    _scan_commands,
-    _scan_global_categories,
-    _skill_entry_kind,
-    _skill_marker_exists,
-)
-from skilldash.source_ops import (
-    GITHUB_TOKEN,
-    check_upstream_status,
-    create_snapshot,
-    install_skill,
-    update_skill,
-)
-from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state
+from skilldash.paths import CACHE_DIR, HTML_FILE, PORT, STATE_DIR, STATIC_DIR
 from skilldash.routes.cleanup import CleanupRoutes
 from skilldash.routes.scan import ScanRoutes
 from skilldash.routes.skill import SkillRoutes
 from skilldash.routes.source import SourceRoutes
 from skilldash.routes.system import SystemRoutes
-from skilldash.overlap import _find_same_name_duplicates
-from skilldash.paths import (
-    CACHE_DIR,
-    DIAG_LOG,
-    DUPLICATE_DECISIONS_FILE,
-    HTML_FILE,
-    PORT,
-    STATE_DIR,
-    STATIC_DIR,
-    load_cached_diagnosis,
-)
 
 # ── 运行态缓存(/api/targets 缓存;GitHub API 缓存在 skilldash.source_ops)──
 _targets_cache = None  # cached /api/targets response
@@ -228,9 +183,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         self._serve_file(HTML_FILE, "text/html; charset=utf-8")
 
 
-
-
-
     # ── API implementations ──
 
     def _serve_file(self, filepath, content_type):
@@ -323,35 +275,10 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
             pass
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     # ── Trash ──
 
 
-
-
-
-
     # ── Diagnosis (uses module-level globals + lock) ──
-
-
-
-
-
-
 
 
     def _targets_cache_hit(self, force_refresh=False):
@@ -395,20 +322,12 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         return str(Path.home() / ".claude/skills")
 
 
-
-
-
-
     def do_PATCH(self):
         """Handle skill update actions."""
         if not self._check_csrf():
             self._csrf_reject()
             return
         self._dispatch("PATCH")
-
-
-
-
 
 
     def _json_response(self, data, status=200):
