@@ -63,7 +63,6 @@
 | ⬇️ **安装 Skill** | 粘贴 GitHub URL → Python 自动 git clone + 子目录选择 + 快照备份 |
 | ⬆️ **更新 Skill** | 一键从上游重新安装，自动快照 |
 | 💾 **清理候选** | 基于规则自动推荐无用/低质量 skill |
-| 📤 **导入/导出** | 批量导入 GitHub URL，导出 Markdown 格式清单 |
 | 📜 **操作日志** | 记录切换、删除、清空垃圾站、安装、更新等本地操作 |
 
 ---
@@ -124,7 +123,9 @@ python3 serve.py
 
 后端模块边界：
 
-- `serve.py`：HTTP 路由和请求/响应编排
+- `serve.py`：路由表分发 + 基础设施（CSRF / 静态 / JSON / 运行态缓存）；各 domain 的 handler 已拆成 mixin
+- `skilldash/routes/`：按 domain 拆分的 HTTP handler mixin（system / source / skill / cleanup / scan）
+- `skilldash/source_ops.py`：GitHub 业务（来源解析、安装、更新、上游检查），纯库，不依赖 serve
 - `skilldash/discovery.py`：目录发现、Agent 推断、目录治理分层
 - `skilldash/host_inspectors.py`：宿主专属解释器，将 Codex/Claude/WorkBuddy/CodeBuddy 的私有目录和非敏感 MCP 摘要转成统一 runtime metadata
 - `skilldash/cleanup.py`：清理计划和可执行 dry-run 预案

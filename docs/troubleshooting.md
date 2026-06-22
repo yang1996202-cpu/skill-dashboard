@@ -78,7 +78,7 @@ fetch('/api/global-stats').then(...);
 
 **根因**：SKILL.md 使用 YAML 多行语法（`description: >` 或 `description: |`），后端解析时只取了指示符本身，没有收集后续缩进行。
 
-**修复**（`serve.py` `_fast_scan`）：
+**修复**（`skilldash/routes/scan.py` `_fast_scan`）：
 ```python
 if val in (">", "|", ">-", "|-", ">+", "|+"):
     parts = []
