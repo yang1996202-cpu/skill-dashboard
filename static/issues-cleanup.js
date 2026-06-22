@@ -1,22 +1,20 @@
 // Issue view state
 let _issueTypeTab='same-name'; // 'same-name' | 'upstream' | 'changes' | 'broken'
 
-// layer 安全边界文档：每个层级的含义 + 能不能动。用户要"大大展示"的安全边界全景。
-// key 是 layer 英文名（后端 action.layer），前端据此渲染详细解释。
+// layer → 安全边界色。boundary 决定治理卡头部配色（保护/复核·可清理/只观察/隐藏）。
+// 详细解释文案随卡片降噪移除；判定链在 discovery.py + cleanup.py，前端只取 boundary 上色。
 const LAYER_DOC={
-  'active-root':{boundary:'保护',explain:'Agent 的活跃技能根目录（如 ~/.codex/skills）。Agent 运行时直接读取这里，删目录会让 Agent 丢技能。只能在单个 skill 级别整理，不做整目录清理。'},
-  'user-installed':{boundary:'保护',explain:'你主动安装管理的技能库。归你所有，可日常增删单个 skill，但不做整目录一键清理。'},
-  'app-local-library':{boundary:'复核·可清理',explain:'某个 App 的本地技能库。通常是 App 自己管理的副本，确认无用、且有其他保留副本时，可进垃圾站。'},
-  'downloaded-package':{boundary:'复核·可清理',explain:'从网上下载或解包得到的技能目录，多为临时产物。hash 与保留副本一致时可进垃圾站。'},
-  'project-local':{boundary:'复核',explain:'绑定到某个项目的技能（~/projects/xxx/skills）。是否清理取决于该项目还要不要，不自动删。'},
-  'imported-copy':{boundary:'复核·可清理',explain:'从一个 Agent 复制到另一个的技能副本。原版还在的前提下，重复副本可进垃圾站。'},
-  'backup-snapshot':{boundary:'复核·可清理',explain:'备份或快照目录里的技能。通常有原版可恢复，重复的可进垃圾站。'},
-  'package-cache':{boundary:'隐藏',explain:'包管理器（npm/bun 等）的安装缓存。不该用本工具删，交给对应包管理器清理。'},
-  'plugin-cache':{boundary:'只观察',explain:'插件运行/下载产生的缓存工件。只解释来源，不作为清理目标。'},
-  'plugin-package':{boundary:'只观察',explain:'宿主已启用插件包内的技能。由宿主管理，本工具只展示，不清理。'},
-  'plugin-marketplace':{boundary:'只观察',explain:'市场/货架目录里的技能。数量大但只是货架，不等于已加载进上下文。不清理。'},
-  'vendor-bundled':{boundary:'只观察',explain:'App/宿主自带的技能，随 App 更新。不由用户管理，不清理。'},
-  'fixture-example':{boundary:'隐藏·可清理',explain:'测试 fixture 或示例技能，不是真实技能库。断舍离策略下可进垃圾站。'},
+  'active-root':{boundary:'保护'},
+  'user-installed':{boundary:'保护'},
+  'project-local':{boundary:'复核'},
+  'imported-copy':{boundary:'复核·可清理'},
+  'backup-snapshot':{boundary:'复核·可清理'},
+  'package-cache':{boundary:'隐藏'},
+  'plugin-cache':{boundary:'只观察'},
+  'plugin-package':{boundary:'只观察'},
+  'plugin-marketplace':{boundary:'只观察'},
+  'vendor-bundled':{boundary:'只观察'},
+  'fixture-example':{boundary:'隐藏·可清理'},
 };
 const boundaryTone=(b)=>{
   if(/保护/.test(b))return 'var(--green)';
@@ -394,7 +392,6 @@ function renderCleanupPlan(){
       <div style="display:grid;gap:8px">
         ${items.map(item=>`<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:8px;background:var(--bg-card-alt)">
           <div style="display:flex;align-items:center;gap:8px;min-width:0">
-            <span class="skill-tag">${escapeHtml(item.policy_label||item.policy)}</span>
             <span class="skill-tag">${escapeHtml(item.layer_label||item.layer)}</span>
             <span class="skill-tag" style="color:${item.risk==='high'?'var(--red)':item.risk==='medium'?'var(--amber)':'var(--green)'}">${riskLabel[item.risk]||item.risk}</span>
             <span style="flex:1"></span>
@@ -453,22 +450,21 @@ function renderGovernActionCard(a){
   const boundary=doc.boundary||boundaryLabel(a);
   const bTone=boundaryTone(boundary);
   const layerText=a.layer_label||a.from_state||'未知层级';
-  const title=a.operation==='mark_multi_agent_deploy'
-    ? `${a.skill_name||''} · 多端部署`
-    : a.skill_name?`${a.skill_name} → 垃圾站`:`${a.agent||''} → 垃圾站`;
+  const dest=a.operation==='mark_multi_agent_deploy'?' · 多端部署'
+    :a.operation==='manual_review'?' · 待你看'
+    :/move_.*_trash/.test(a.operation)?' → 垃圾站'
+    :' · 不动';
+  const subj=a.skill_name||a.agent||'';
+  const title=subj+dest;
   return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
     <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center">
       <span style="font-size:13px;font-weight:700;color:${bTone}">📦 ${escapeHtml(layerText)}</span>
     </div>
-    ${doc.explain?`<div style="font-size:11px;color:var(--text-muted);line-height:1.6;padding:6px 10px;background:var(--bg-card);border-bottom:1px solid var(--border-subtle)">${escapeHtml(doc.explain)}</div>`:''}
     <div style="padding:8px 10px">
       ${executable?`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:${cleanupExcludedActions.has(a.id)?'var(--bg-card)':'var(--red)'}14;border:1px solid ${cleanupExcludedActions.has(a.id)?'var(--border-subtle)':'var(--red)'}55"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)"><span style="font-size:12px;font-weight:700;color:${cleanupExcludedActions.has(a.id)?'var(--text-muted)':'var(--red)'}">${cleanupExcludedActions.has(a.id)?'已排除（这个目录不会被处理）':`☑ 纳入清理 · 移入垃圾站 · ${a.count||0} skills`}</span></label>`:''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
-        <span class="skill-tag">${escapeHtml(a.label)}</span>
         ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
-        ${a.destructive?'<span class="skill-tag" style="color:var(--red)">会移动文件</span>':'<span class="skill-tag" style="color:var(--green)">不动文件</span>'}
-        ${a.requires_confirmation?'<span class="skill-tag" style="color:var(--amber)">需二次确认</span>':''}
         <span style="flex:1"></span>
         <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
       </div>

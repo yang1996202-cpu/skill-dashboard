@@ -376,8 +376,6 @@ def _classify_skill_dir_detail(dir_path):
     layer_labels = {
         "active-root": "当前/Agent 根目录",
         "user-installed": "用户技能库",
-        "app-local-library": "App 本地库",
-        "downloaded-package": "下载/解包目录",
         "project-local": "项目内技能",
         "imported-copy": "导入/跨 Agent 副本",
         "backup-snapshot": "备份/快照",
