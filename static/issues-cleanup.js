@@ -433,116 +433,73 @@ function renderCleanupPlan(){
   </div>`;
 }
 
-function renderExecutionPlan(){
+// 治理分桶：从 executionPlan.phases 按 operation 归成 3 组（供治理 tab 用）
+// trash=可移垃圾站(勾选删除) / review=待你看(展示+多端部署标记) / frozen=不动(锁定/观察)
+function computeGovernBuckets(){
+  const buckets={trash:[],review:[],frozen:[]};
+  if(!executionPlan)return buckets;
+  const trashOps=['move_skills_to_trash','move_skill_to_trash'];
+  (executionPlan.phases||[]).forEach(p=>(p.actions||[]).forEach(a=>{
+    if(trashOps.includes(a.operation))buckets.trash.push(a);
+    else if(a.operation==='manual_review'||a.operation==='mark_multi_agent_deploy')buckets.review.push(a);
+    else buckets.frozen.push(a);
+  }));
+  return buckets;
+}
+// 单个治理目录卡（layer 横幅 + LAYER_DOC 解释 + 勾选/标记操作）
+function renderGovernActionCard(a){
+  const executable=cleanupIsCandidateAction(a);
+  const doc=LAYER_DOC[a.layer]||{};
+  const boundary=doc.boundary||boundaryLabel(a);
+  const bTone=boundaryTone(boundary);
+  const layerText=a.layer_label||a.from_state||'未知层级';
+  const title=a.operation==='mark_multi_agent_deploy'
+    ? `${a.skill_name||''} · 多端部署`
+    : a.skill_name?`${a.skill_name} → 垃圾站`:`${a.agent||''} → 垃圾站`;
+  return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
+    <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="font-size:13px;font-weight:700;color:${bTone}">📦 ${escapeHtml(layerText)}</span>
+      <span style="font-size:10px;font-weight:700;color:#fff;background:${bTone};padding:2px 8px;border-radius:10px">${escapeHtml(boundary)}</span>
+      <span style="flex:1"></span>
+      ${a.policy_label?`<span style="font-size:10px;color:var(--text-muted)">策略：${escapeHtml(a.policy_label)}</span>`:''}
+    </div>
+    ${doc.explain?`<div style="font-size:11px;color:var(--text-muted);line-height:1.6;padding:6px 10px;background:var(--bg-card);border-bottom:1px solid var(--border-subtle)">${escapeHtml(doc.explain)}</div>`:''}
+    <div style="padding:8px 10px">
+      ${executable?`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:${cleanupExcludedActions.has(a.id)?'var(--bg-card)':'var(--red)'}14;border:1px solid ${cleanupExcludedActions.has(a.id)?'var(--border-subtle)':'var(--red)'}55"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)"><span style="font-size:12px;font-weight:700;color:${cleanupExcludedActions.has(a.id)?'var(--text-muted)':'var(--red)'}">${cleanupExcludedActions.has(a.id)?'已排除（这个目录不会被处理）':`☑ 纳入清理 · 移入垃圾站 · ${a.count||0} skills`}</span></label>`:''}
+      <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
+        ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
+        <span class="skill-tag">${escapeHtml(a.label)}</span>
+        ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
+        ${a.destructive?'<span class="skill-tag" style="color:var(--red)">会移动文件</span>':'<span class="skill-tag" style="color:var(--green)">不动文件</span>'}
+        ${a.requires_confirmation?'<span class="skill-tag" style="color:var(--amber)">需二次确认</span>':''}
+        <span style="flex:1"></span>
+        <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:var(--text);margin-top:6px">${escapeHtml(title)}</div>
+      <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">原因：${escapeHtml(a.why||'')}</div>
+      <div style="font-size:11px;color:var(--text-muted);line-height:1.5">回滚：${escapeHtml(a.rollback||'')}</div>
+      ${renderIssuePath(a.path)}
+      ${a.duplicate_of?`<div style="font-size:10px;color:var(--text-dim);margin-top:5px">保留副本</div>${renderIssuePath(a.duplicate_of)}`:''}
+      ${a.evidence?.length?`<div style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:5px">证据：${a.evidence.map(escapeHtml).join(' / ')}</div>`:''}
+      ${a.sample_skills?.length?`<div class="skill-tags" style="margin-top:6px">${a.sample_skills.slice(0,5).map(n=>`<span class="skill-tag">${escapeHtml(n)}</span>`).join('')}</div>`:''}
+    </div>
+  </div>`;
+}
+// 处理建议顶部操作条（精简一行：移入垃圾站 + 本地决策 + 收起）。常驻 tab 上方。
+function renderExecHeader(){
   if(!executionPlan)return '';
-  const s=executionPlan.summary||{};
-  const phaseTone={protect:'var(--green)',review:'var(--amber)',organize:'var(--accent)',deploy:'var(--green)',candidate:'var(--red)'};
-  const phaseIcon={protect:'锁定',review:'复核',organize:'收纳',deploy:'部署',candidate:'候选'};
-  const strategyLabel=executionPlan.strategy==='declutter'?'断舍离策略':'保守策略';
   const candidateActions=cleanupCandidateActions();
   const executableActions=candidateActions.filter(a=>!cleanupExcludedActions.has(a.id));
+  const executableSkillCount=executableActions.reduce((s,a)=>s+(a.count||0),0);
   const excludedCount=candidateActions.length-executableActions.length;
-  const executableSkillCount=executableActions.reduce((sum,a)=>sum+(a.count||0),0);
-  const directoryCandidateCount=executableActions.filter(a=>a.operation==='move_skills_to_trash').length;
-  const exactDuplicateCount=executableActions.filter(a=>a.operation==='move_skill_to_trash').length;
-  const deployCount=(executionPlan.phases||[]).find(p=>p.key==='deploy')?.action_count||0;
-  const phaseOrder=executionPlan.strategy==='declutter'?{candidate:0,deploy:1,review:2,organize:3,protect:4}:{protect:0,review:1,organize:2,deploy:3,candidate:4};
-  const sortedPhases=[...(executionPlan.phases||[])].sort((a,b)=>(phaseOrder[a.key]??9)-(phaseOrder[b.key]??9));
-
-  const renderActionCard=(a)=> {
-    const executable=cleanupIsCandidateAction(a);
-    const doc=LAYER_DOC[a.layer]||{};
-    const boundary=doc.boundary||boundaryLabel(a);
-    const bTone=boundaryTone(boundary);
-    const layerText=a.layer_label||a.from_state||'未知层级';
-    const title=a.operation==='mark_multi_agent_deploy'
-      ? `${a.skill_name||''} · 多端部署`
-      : a.skill_name
-        ? `${a.skill_name} → 垃圾站`
-        : `${a.agent||''} → 垃圾站`;
-    return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
-      <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span style="font-size:13px;font-weight:700;color:${bTone}">📦 ${escapeHtml(layerText)}</span>
-        <span style="font-size:10px;font-weight:700;color:#fff;background:${bTone};padding:2px 8px;border-radius:10px">${escapeHtml(boundary)}</span>
-        <span style="flex:1"></span>
-        ${a.policy_label?`<span style="font-size:10px;color:var(--text-muted)">策略：${escapeHtml(a.policy_label)}</span>`:''}
-      </div>
-      ${doc.explain?`<div style="font-size:11px;color:var(--text-muted);line-height:1.6;padding:6px 10px;background:var(--bg-card);border-bottom:1px solid var(--border-subtle)">${escapeHtml(doc.explain)}</div>`:''}
-      <div style="padding:8px 10px">
-        <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-          ${executable?`<label class="skill-tag" style="cursor:pointer;display:inline-flex;align-items:center;gap:4px"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="margin:0">${cleanupExcludedActions.has(a.id)?'已排除':`纳入清理 · ${a.count||0} skills`}</label>`:''}
-          ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
-          <span class="skill-tag">${escapeHtml(a.label)}</span>
-          ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
-          ${a.destructive?'<span class="skill-tag" style="color:var(--red)">会移动文件</span>':'<span class="skill-tag" style="color:var(--green)">不动文件</span>'}
-          ${a.requires_confirmation?'<span class="skill-tag" style="color:var(--amber)">需二次确认</span>':''}
-          ${cleanupExcludedActions.has(a.id)?'<span class="skill-tag">已排除</span>':''}
-          <span style="flex:1"></span>
-          <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
-        </div>
-        <div style="font-size:12px;font-weight:600;color:var(--text);margin-top:6px">${escapeHtml(title)}</div>
-        <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">原因：${escapeHtml(a.why||'')}</div>
-        <div style="font-size:11px;color:var(--text-muted);line-height:1.5">回滚：${escapeHtml(a.rollback||'')}</div>
-        ${renderIssuePath(a.path)}
-        ${a.duplicate_of?`<div style="font-size:10px;color:var(--text-dim);margin-top:5px">保留副本</div>${renderIssuePath(a.duplicate_of)}`:''}
-        ${a.evidence?.length?`<div style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:5px">证据：${a.evidence.map(escapeHtml).join(' / ')}</div>`:''}
-        ${a.sample_skills?.length?`<div class="skill-tags" style="margin-top:6px">${a.sample_skills.slice(0,5).map(n=>`<span class="skill-tag">${escapeHtml(n)}</span>`).join('')}</div>`:''}
-      </div>
-    </div>`;
-  };
-
-  const renderPhaseCard=(phase,limit=12)=>{
-    const all=phase.actions||[];
-    const actions=_execShowAll?all:all.slice(0,limit);
-    const showToggle=all.length>limit;
-    return `<div class="card" style="min-width:320px;flex:1;border-left:3px solid ${phaseTone[phase.key]||'var(--border)'}">
-      <div class="card-head" style="align-items:flex-start">
-        <div>
-          <h3>${phaseIcon[phase.key]||'▶'} ${escapeHtml(phase.label)}</h3>
-          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${escapeHtml(phase.intent||'')}</div>
-        </div>
-        <span class="sub">${phase.action_count} 动作 · ${phase.skill_count} skills</span>
-      </div>
-      <div style="display:grid;gap:8px">
-        ${actions.map(renderActionCard).join('')}
-        ${showToggle?(_execShowAll
-          ?`<div class="notice-line"><span>显示全部 ${all.length} 个目录</span><button class="btn btn-sm" onclick="_execShowAll=false;renderIssues()">只看前 ${limit}</button></div>`
-          :`<div class="notice-line"><span>显示前 ${limit} / 共 ${all.length} 个目录</span><button class="btn btn-sm btn-primary" onclick="_execShowAll=true;renderIssues()">显示全部 ${all.length}</button></div>`):''}
-      </div>
-    </div>`;
-  };
-  const candidatePhases=sortedPhases.filter(p=>['candidate','deploy'].includes(p.key));
-  const evidencePhases=sortedPhases.filter(p=>!['candidate','deploy'].includes(p.key));
-  const candidateHtml=candidatePhases.length
-    ? candidatePhases.map(p=>renderPhaseCard(p,16)).join('')
-    : '<div class="empty" style="padding:18px 0">当前没有推荐移入垃圾站的候选。</div>';
-  const evidenceCount=evidencePhases.reduce((sum,p)=>sum+(p.action_count||0),0);
-  const evidenceHtml=evidencePhases.length
-    ? `<details open style="margin-top:10px"><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">🛡️ 未列入清理的目录（${evidenceCount} 个 · 按 layer 安全边界保留，已展开查看每个目录层级，可点击收起）</summary><div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start;margin-top:8px">${evidencePhases.map(p=>renderPhaseCard(p,12)).join('')}</div></details>`
-    : '';
-  const rules=(executionPlan.rules||[]).map(r=>`<div style="font-size:11px;color:var(--text-muted);line-height:1.5;padding:3px 0">${escapeHtml(r)}</div>`).join('');
-  return `<div style="margin-bottom:16px">
-    <div class="card" style="border-left:3px solid var(--red)">
-      <div class="card-head">
-        <div>
-          <h3>人工处理区</h3>
-          <div style="font-size:11px;color:var(--text-muted);line-height:1.5">${strategyLabel} · 线索先给推荐，人再勾选；只移入垃圾站，可恢复 · 预案生成 ${fmtScanTime(executionPlan.generated_at)}</div>
-        </div>
-        <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="查看本机记录的运行状态，不随 Git 提交">本地决策</button>
-        <button class="btn btn-sm" onclick="executionPlan=null;renderIssues()">收起推荐</button>
-        ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()">恢复全部推荐</button>`:''}
-        <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'} title="只把推荐候选移入垃圾站，不永久删除。数字前半是动作项，后半是实际 skill 数。">移入垃圾站 ${executableActions.length} 项 / ${executableSkillCount} skills</button>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px;margin-bottom:10px">
-        <div class="scope-card primary"><div class="scope-name"><span>可勾选处理</span><b>${executableActions.length}</b></div><div class="scope-desc">${directoryCandidateCount} 目录 · ${exactDuplicateCount} 重复 skill</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>涉及内容</span><b>${executableSkillCount}</b></div><div class="scope-desc">skills</div></div>
-        <div class="scope-card"><div class="scope-name"><span>多端部署</span><b>${deployCount}</b></div><div class="scope-desc">默认保留</div></div>
-        <div class="scope-card"><div class="scope-name"><span>已排除</span><b>${excludedCount}</b></div><div class="scope-desc">不会处理</div></div>
-      </div>
-      <details><summary style="font-size:12px;color:var(--text-muted);cursor:pointer">查看执行规则</summary><div style="margin-top:8px">${rules}</div></details>
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start">${candidateHtml}</div>
-    ${evidenceHtml}
+  return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 12px;margin-bottom:8px;background:var(--bg-card-alt);border-left:3px solid var(--red);border-radius:0 8px 8px 0">
+    <span style="font-size:12px;font-weight:700">🧹 处理建议</span>
+    <span style="font-size:11px;color:var(--text-muted)">点「🗑️ 可移垃圾站」勾选候选 → 点右侧按钮批量移入；只进可恢复垃圾站 · 预案 ${fmtScanTime(executionPlan.generated_at)}</span>
+    <span style="flex:1"></span>
+    ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()" title="恢复被排除的候选">恢复${excludedCount}项</button>`:''}
+    <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="本机运行状态，不随 Git 提交">本地决策</button>
+    <button class="btn btn-sm" onclick="executionPlan=null;_issueTypeTab='same-name';renderIssues()">收起</button>
+    <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'}>移入垃圾站 ${executableActions.length} 项 / ${executableSkillCount} skills</button>
   </div>`;
 }
 
@@ -701,12 +658,12 @@ function renderIssues(){
   const changes=health?.content_changes;
   const upstreams=health?.upstream_sources||[];
   const sameName=globalOverlap?.duplicates_same_name||[];
-  const executionHtml=renderExecutionPlan();
+  const execHeaderHtml=renderExecHeader();
   const planHtml=executionPlan?'':renderCleanupPlan();
 
   // No scan yet
   if(!scanResult&&(!health||(!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML=executionHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」扫描目录并生成处理建议。</div>';
+    $('issues-list').innerHTML=execHeaderHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」扫描目录并生成处理建议。</div>';
     return;
   }
 
@@ -716,24 +673,30 @@ function renderIssues(){
   const changedSkills=changes?.changed||[];
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
-  const TYPE_TABS=[
+  const issueTabs=[
     {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length},
     {key:'upstream',emoji:'🔗',label:'上游',count:upstreamAll.length},
     {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length},
     {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length},
   ];
-  // 当前 tab 无数据时落到第一个有数据的，避免空页
-  const curDef=TYPE_TABS.find(t=>t.key===_issueTypeTab);
+  const govBuckets=computeGovernBuckets();
+  const governTabs=executionPlan?[
+    {key:'trash',emoji:'🗑️',label:'可移垃圾站',count:govBuckets.trash.length},
+    {key:'review',emoji:'🔎',label:'待你看',count:govBuckets.review.length},
+    {key:'frozen',emoji:'🔒',label:'不动',count:govBuckets.frozen.length},
+  ]:[];
+  const allTabs=[...issueTabs,...governTabs];
+  // 当前 tab 无数据/不存在时落到第一个有数据的，避免空页
+  const curDef=allTabs.find(t=>t.key===_issueTypeTab);
   if(!curDef||curDef.count===0){
-    _issueTypeTab=TYPE_TABS.find(t=>t.count>0)?.key||'same-name';
+    _issueTypeTab=allTabs.find(t=>t.count>0)?.key||'same-name';
   }
 
-  let tabHtml='<div class="issue-tabs">';
-  TYPE_TABS.forEach(t=>{
-    const isActive=_issueTypeTab===t.key;
-    tabHtml+=`<button class="issue-tab ${isActive?'active':''}" onclick="_issueTypeTab='${t.key}';_issueShowAll=false;renderIssues()"><span>${t.emoji}</span><span>${t.label}</span>${t.count?`<b>${t.count}</b>`:''}</button>`;
-  });
-  tabHtml+='</div>';
+  const tabBtn=(t)=>`<button class="issue-tab ${_issueTypeTab===t.key?'active':''}" onclick="_issueTypeTab='${t.key}';_issueShowAll=false;renderIssues()"><span>${t.emoji}</span><span>${t.label}</span>${t.count?`<b>${t.count}</b>`:''}</button>`;
+  let tabHtml='<div class="issue-tabs">'+issueTabs.map(tabBtn).join('')+'</div>';
+  if(governTabs.length){
+    tabHtml+=`<div class="issue-tabs" style="margin-top:6px"><span style="font-size:10px;color:var(--text-muted);padding:0 6px;white-space:nowrap">建议处理</span>${governTabs.map(tabBtn).join('')}</div>`;
+  }
 
   // 截断：默认前 LIMIT 条，显式标注「显示前 N / 共 M」，消除隐性截断
   const LIMIT=12;
@@ -747,12 +710,34 @@ function renderIssues(){
   const planTime=executionPlan?.generated_at||'';
   const scanStale=lastScan&&planTime&&lastScan.slice(0,10)!==planTime.slice(0,10);
   const freshnessHtml=lastScan?`<div class="notice-line"><span>⏱ 扫描数据时间 ${fmtScanTime(lastScan)}${scanStale?' · ⚠️ 与本次预案不同日，扫描可能失败、用了旧缓存':''}（点「开始整理」刷新）</span></div>`:'';
-  let h=executionHtml+planHtml+freshnessHtml+tabHtml;
+  let h=freshnessHtml+execHeaderHtml+tabHtml;
 
-  const curTab=TYPE_TABS.find(t=>t.key===_issueTypeTab);
+  const curTab=allTabs.find(t=>t.key===_issueTypeTab);
   const totalForTab=curTab?.count||0;
+
+  // ── 治理 tab：渲染对应桶的目录卡片（多列并排）──
+  if(curTab&&governTabs.some(t=>t.key===curTab.key)){
+    const actions=govBuckets[curTab.key]||[];
+    if(!actions.length){
+      h+=`<div class="empty" style="padding:30px 0">✅ 这组没有目录</div>`;
+    }else{
+      const GLIMIT=12;
+      const shown=_issueShowAll?actions:actions.slice(0,GLIMIT);
+      h+=`<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:10px;align-items:start;margin-top:8px">${shown.map(renderGovernActionCard).join('')}</div>`;
+      if(actions.length>GLIMIT){
+        h+=_issueShowAll
+          ?`<div class="notice-line"><span>显示全部 ${actions.length} 个</span><button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">只看前 ${GLIMIT}</button></div>`
+          :`<div class="notice-line"><span>显示前 ${GLIMIT} / 共 ${actions.length} 个</span><button class="btn btn-sm btn-primary" onclick="_issueShowAll=true;renderIssues()">显示全部 ${actions.length}</button></div>`;
+      }
+    }
+    $('issues-list').innerHTML=h;
+    return;
+  }
+
+  // ── 分析 tab：原有 section 逻辑 ──
   if(totalForTab===0){
     h+=`<div class="empty" style="padding:30px 0">✅ 没有发现问题</div>`;
+    h+=planHtml;
     $('issues-list').innerHTML=h;return;
   }
   if(totalForTab>LIMIT){
@@ -889,6 +874,7 @@ function renderIssues(){
     h+=`</div></section>`;
   }
 
+  h+=planHtml;
   $('issues-list').innerHTML=h;
 }
 
