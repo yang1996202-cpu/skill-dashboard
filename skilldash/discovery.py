@@ -14,6 +14,38 @@ from .paths import CACHE_DIR, STATE_DIR
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "skill-dashboard" / "config.json"
 
+
+# ── Skill entry 判定(从 serve.py 移入:纯路径判定,跨域 handler 复用)──
+def _skill_marker_exists(skill_dir):
+    """True for a real SKILL.md or a broken SKILL.md symlink."""
+    marker = Path(skill_dir) / "SKILL.md"
+    return marker.exists() or marker.is_symlink()
+
+
+def _is_skill_entry(skill_dir, include_broken=False):
+    """Return whether a path is a skill entry the UI should manage.
+
+    Broken symlinks do not have readable SKILL.md, but they are still cleanup
+    residues in a skills directory and should be removable through the UI.
+    """
+    p = Path(skill_dir)
+    if p.is_symlink():
+        return include_broken or (p / "SKILL.md").exists()
+    if not p.is_dir():
+        return False
+    return (p / "SKILL.md").exists() or (include_broken and (p / "SKILL.md").is_symlink())
+
+
+def _skill_entry_kind(skill_dir):
+    p = Path(skill_dir)
+    marker = p / "SKILL.md"
+    if p.is_symlink():
+        return "symlink" if p.exists() else "broken_symlink"
+    if marker.is_symlink() and not marker.exists():
+        return "broken_skill_link"
+    return "entity"
+
+
 # Discovery is I/O heavy; cache results for a short TTL to avoid rescanning the
 # whole home directory on every API call. Callers like /api/targets already cache
 # at the HTTP layer, but lower-level functions (cleanup plan, execution plan,
