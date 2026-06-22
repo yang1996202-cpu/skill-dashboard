@@ -334,6 +334,11 @@ def _classify_skill_dir_detail(dir_path):
     if any(sig in padded_p for sig in ("/fixtures/", "/fixture/", "/examples/", "/test/", "/tests/")):
         mark("fixture-example", "hidden", "test fixture or example skills", "cache")
 
+    # Downloaded/extracted skill packages (e.g. ~/Downloads/<template>/.claude/skills)
+    # are reviewable cleanup candidates, not active project skills.
+    if "/downloads/" in padded_p:
+        mark("downloaded-package", "review", "downloaded/extracted skill package", "cache")
+
     # Known import buckets are reviewable cleanup candidates, not cache.
     if any(sig in p for sig in ("openclaw-imports", "/imports/")):
         mark("imported-copy", "review", "imported skills bucket", "cross-copy")
@@ -379,6 +384,7 @@ def _classify_skill_dir_detail(dir_path):
         "project-local": "项目内技能",
         "imported-copy": "导入/跨 Agent 副本",
         "backup-snapshot": "备份/快照",
+        "downloaded-package": "下载/解包目录",
         "package-cache": "包管理缓存",
         "plugin-cache": "插件缓存",
         "plugin-package": "已安装插件包",

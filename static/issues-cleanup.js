@@ -9,6 +9,7 @@ const LAYER_DOC={
   'project-local':{boundary:'复核'},
   'imported-copy':{boundary:'复核·可清理'},
   'backup-snapshot':{boundary:'复核·可清理'},
+  'downloaded-package':{boundary:'复核·可清理'},
   'package-cache':{boundary:'隐藏'},
   'plugin-cache':{boundary:'只观察'},
   'plugin-package':{boundary:'只观察'},
