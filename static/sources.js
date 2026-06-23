@@ -110,6 +110,97 @@ function sourceGroupProfileHint(g){
   return parts.join(' · ');
 }
 
+// ── Identity card helpers (task 2/3) ──
+// extension_type 中文 label,按任务要求的口径
+const EXTENSION_TYPE_LABELS={
+  builtin:'内置',
+  skill:'skill',
+  plugin:'插件',
+  connector:'连接器',
+  catalog:'货架',
+  cache:'缓存',
+  agent:'子智能体',
+  unknown:'其他',
+};
+// active = Agent 当前真能用的能力主体;inactive = 存在但不一定加载
+const ACTIVE_EXTENSION_TYPES=['skill','builtin','plugin','connector'];
+const INACTIVE_EXTENSION_TYPES=['catalog','cache','agent'];
+
+// 形态徽章:优先用后端 agent_form,否则从路径/profile 推断
+function inferAgentForm(g){
+  if(g?.agent_form)return g.agent_form;
+  const p=g?.profile_summary||{};
+  if(p.family){
+    const f=p.family.toLowerCase();
+    if(/cli|codex|claude code|cursor|augment/.test(f))return 'CLI';
+    if(/buddy|workbench|app|cursor ide|jetbrains|vscode/.test(f))return /ide|jetbrains|vscode|cursor ide/.test(f)?'IDE':'App';
+  }
+  // 从路径推断:.claude/.codex → CLI;Library/Application Support → App
+  const sample=(g?.dirs||[]).map(d=>d.path||'').join('\n').toLowerCase();
+  if(/library\/application support|\.app\/|workbuddy|codebuddy|windsurf\.app/.test(sample))return 'App';
+  if(/\.vscode|\.cursor\/extensions|jetbrains|\.idea/.test(sample))return 'IDE';
+  if(/\.claude|\.codex|\.augment|\.gemini|\/cli\//.test(sample))return 'CLI';
+  // Agent 名字启发
+  const name=(g?.agent||'').toLowerCase();
+  if(/cursor|jetbrains|vscode|ide/.test(name))return 'IDE';
+  if(/buddy|app|workbench|windsurf/.test(name))return 'App';
+  if(/codex|claude|augment|gemini|cli/.test(name))return 'CLI';
+  return '';
+}
+
+function sourceFormBadge(g){
+  const form=inferAgentForm(g);
+  if(!form)return '';
+  const cls=form.toLowerCase();
+  return `<span class="src-form-badge ${cls}" title="宿主形态 · ${esc(form)}">${esc(form)}</span>`;
+}
+
+function sourceFamilyBadge(g){
+  const family=g?.profile_summary?.family;
+  if(!family)return '';
+  return `<span class="src-family-badge" title="profile family">${esc(family)}</span>`;
+}
+
+// 构成行:优先用后端 extension_breakdown,否则前端从 dirs 聚合
+// 注意:commands 目录(type==='commands')没有 extension_type 概念,不纳入构成统计
+function aggregateExtensionBreakdown(dirs){
+  const counts={};
+  (dirs||[]).forEach(t=>{
+    if(t?.type==='commands')return;
+    const ext=t?.extension_type||'unknown';
+    counts[ext]=(counts[ext]||0)+1;
+  });
+  return counts;
+}
+
+function sourceCompositionLine(g){
+  const breakdown=g?.extension_breakdown||aggregateExtensionBreakdown(g?.dirs);
+  if(!breakdown)return '';
+  // 排序:builtin 优先,然后按 label 顺序
+  const order=['builtin','skill','plugin','connector','catalog','cache','agent','unknown'];
+  const parts=[];
+  order.forEach(ext=>{
+    const n=breakdown[ext];
+    if(!n)return;
+    const label=EXTENSION_TYPE_LABELS[ext]||ext;
+    parts.push(`<span class="comp-chip">${n} ${esc(label)}</span>`);
+  });
+  if(!parts.length)return '';
+  return `<span class="src-composition" title="目录构成 · 按 extension_type 聚合">${parts.join('<span class="comp-sep">·</span>')}</span>`;
+}
+
+// 两级重组:active 主体 vs inactive 扩展
+function splitDirsByTier(dirs){
+  const active=[],inactive=[],commands=[];
+  (dirs||[]).forEach(t=>{
+    if(t?.type==='commands'){commands.push(t);return}
+    const ext=t?.extension_type;
+    if(ACTIVE_EXTENSION_TYPES.includes(ext))active.push(t);
+    else inactive.push(t);  // catalog/cache/agent/unknown 都归入扩展
+  });
+  return {active,inactive,commands};
+}
+
 function sourceCategoryHint(catDirs,cat){
   const s=summarizeCapabilityDirs(catDirs);
   const roles=skillRoleSummaryText(s.roleCounts);
@@ -265,75 +356,123 @@ function renderSources(){
       const roleBits=skillRoleSummaryText(gCap.roleCounts);
       if(roleBits)gBits.push(roleBits);
       const profileHint=sourceGroupProfileHint(g);
+      const tiers=splitDirsByTier(g.dirs);
+      const activeCount=tiers.active.length;
+      const inactiveCount=tiers.inactive.length;
       const gSub=`${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}${gBits.length?` · ${gBits.join(' · ')}`:''}${profileHint?` · ${profileHint}`:''}`;
+      const formBadge=sourceFormBadge(g);
+      const familyBadge=sourceFamilyBadge(g);
+      const composition=sourceCompositionLine(g);
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
           <span class="drag-handle" draggable="true" title="拖拽排序">⋮⋮</span>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">
-            <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
+            <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
-              ${sourceReadinessBadge(g)}
+              <span class="src-identity-badges">
+                ${formBadge}
+                ${familyBadge}
+                ${sourceReadinessBadge(g)}
+              </span>
             </div>
             <div style="font-size:10px;color:var(--text-muted)">${esc(gSub)}</div>
+            ${composition}
           </div>
         </div>
         <div style="display:${isExpanded?'block':'none'};border-top:1px solid var(--border)">`;
       if(!isExpanded){
-        h+=`<div style="padding:10px 14px 10px 36px;font-size:11px;color:var(--text-muted);background:var(--bg-card-alt)">展开后加载 ${g.dirs.length} 个目录</div></div></div>`;
+        const expandHint=`主体 ${activeCount}${inactiveCount?` · 扩展 ${inactiveCount}`:''}`;
+        h+=`<div style="padding:10px 14px 10px 36px;font-size:11px;color:var(--text-muted);background:var(--bg-card-alt)">展开后加载 ${g.dirs.length} 个目录（${expandHint}）</div></div></div>`;
         return;
       }
-      // Group dirs by runtime capability bucket within this agent.
-      const catOrder=['active-user','active-system','active-plugin','active-connector','commands','installed-disabled','source-catalog','source-cache','review-copy','project-local','unknown'];
-      const dirsByCat={};
-      g.dirs.forEach(t=>{
+      // ── 两级重组:active 主体 vs inactive 扩展 ──
+      // Tier 1 = skill 主体(extension_type ∈ skill/builtin/plugin/connector + commands)
+      const activeCatOrder=['active-user','active-system','active-plugin','active-connector'];
+      const activeByCat={};
+      tiers.active.forEach(t=>{
         const c=sourceCapabilityBucket(t);
-        if(!dirsByCat[c]) dirsByCat[c]=[];
-        dirsByCat[c].push(t);
+        if(!activeByCat[c])activeByCat[c]=[];
+        activeByCat[c].push(t);
       });
-      // Render category sub-groups
-      const catKeys=catOrder.filter(c=>dirsByCat[c]);
-      if(catKeys.length<=1){
-        // Single or no category — show one collapsible category header + dirs
-        const cat=catKeys[0]||'unknown';
+      const activeCatKeys=activeCatOrder.filter(c=>activeByCat[c]);
+      const hasCommands=tiers.commands.length>0;
+      const needsTierSplit=inactiveCount>0;
+      // Tier 1 分级头(只有存在 inactive 且有 active 时才显示分级,否则单层避免噪音)
+      const showTier1Head=needsTierSplit&&activeCount>0;
+      if(showTier1Head){
+        const tier1FoldId='t1-'+Math.random().toString(36).slice(2,8);
+        const tier1Count=tiers.active.reduce((s,d)=>s+(d.count||0),0);
+        const tier1Hint=(activeCatKeys.length>1||hasCommands)?`${activeCount} 目录 · ${tier1Count} items`:'';
+        h+=`<div class="src-tier1-head" onclick="var b=document.getElementById('${tier1FoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.tier1-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+          <span class="tier1-arrow" style="transform:rotate(90deg)">▶</span>
+          <span>⚡ 能力主体</span>
+          <span style="font-weight:400">${tier1Hint?`(${esc(tier1Hint)})`:''}</span>
+        </div>
+        <div id="${tier1FoldId}">`;
+      }
+      const tier1Pad=showTier1Head?52:36;
+      // 渲染某个 capability bucket 的折叠子组(expanded 控制初始展开/收起)
+      const renderCatBlock=(cat,catDirs,pad,expanded)=>{
         const cm=capabilityMeta(cat);
-        const catCount=g.dirs.reduce((s,d)=>s+d.count,0);
         const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
-        const catHint=sourceCategoryHint(g.dirs,cat);
+        const catHint=sourceCategoryHint(catDirs,cat);
+        const arrowInit=expanded?'rotate(90deg)':'';
         h+=`<div style="border-top:1px solid var(--border-subtle)">
-          <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
-            <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:rotate(90deg)">▶</span>
-            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${g.dirs.length} 目录 · ${formatSourceCounts(g.dirs)})</span>
+          <div style="padding:5px 14px 5px ${pad}px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+            <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:${arrowInit}">▶</span>
+            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${formatSourceCounts(catDirs)})</span>
             ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
           </div>
-          <div id="${catFoldId}">`;
-        g.dirs.forEach((t,di)=>{
+          <div id="${catFoldId}" style="${expanded?'':'display:none'}">`;
+        catDirs.forEach(t=>{
           const safeId='sd-'+Math.random().toString(36).slice(2,8);
-          h+=renderSourceDirRow(t,safeId,36);
+          h+=renderSourceDirRow(t,safeId,pad+16);
         });
         h+=`</div></div>`;
-      }else{
-        // Multiple categories — render with category sub-headers
-        catKeys.forEach(cat=>{
-          const cm=capabilityMeta(cat);
-          const catDirs=dirsByCat[cat];
-          const catCount=catDirs.reduce((s,d)=>s+d.count,0);
-          const catFoldId='cf-'+Math.random().toString(36).slice(2,8);
-          const catHint=sourceCategoryHint(catDirs,cat);
-          h+=`<div style="border-top:1px solid var(--border-subtle)">
-            <div style="padding:5px 14px 5px 36px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
-              <span class="cat-arrow" style="font-size:8px;transition:transform .15s">▶</span>
-              <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${formatSourceCounts(catDirs)})</span>
-              ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
-            </div>
-            <div id="${catFoldId}">`;
-          catDirs.forEach(t=>{
-            const safeId='sd-'+Math.random().toString(36).slice(2,8);
-            h+=renderSourceDirRow(t,safeId,52);
-          });
-          h+=`</div></div>`;
+      };
+      if(activeCatKeys.length<=1&&!hasCommands&&!showTier1Head){
+        // 单类且无分级 — 直接平铺所有 active 目录(保留旧行为,最小噪音)
+        tiers.active.forEach(t=>{
+          const safeId='sd-'+Math.random().toString(36).slice(2,8);
+          h+=renderSourceDirRow(t,safeId,tier1Pad);
         });
+      }else{
+        // 按 bucket 分子组(active 默认展开)
+        activeCatKeys.forEach(cat=>{
+          renderCatBlock(cat,activeByCat[cat],tier1Pad,true);
+        });
+        if(hasCommands){
+          renderCatBlock('commands',tiers.commands,tier1Pad,true);
+        }
+      }
+      if(showTier1Head)h+=`</div>`;
+      // ── Tier 2: 扩展项(inactive)。默认折叠,灰显弱化。 ──
+      if(inactiveCount){
+        const tier2FoldId='t2-'+Math.random().toString(36).slice(2,8);
+        const inactiveCatOrder=['installed-disabled','source-catalog','source-cache','review-copy','project-local','unknown'];
+        const inactiveByCat={};
+        tiers.inactive.forEach(t=>{
+          const c=sourceCapabilityBucket(t);
+          if(!inactiveByCat[c])inactiveByCat[c]=[];
+          inactiveByCat[c].push(t);
+        });
+        const inactiveCatKeys=inactiveCatOrder.filter(c=>inactiveByCat[c]);
+        const inactiveItems=tiers.inactive.reduce((s,d)=>s+(d.count||0),0);
+        const tier2Summary=inactiveCatKeys.map(c=>`${capabilityMeta(c).label} ${inactiveByCat[c].length}`).join(' · ');
+        h+=`<div class="src-tier2-head" onclick="var b=document.getElementById('${tier2FoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.tier2-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+          <span class="tier2-arrow">▶</span>
+          <span>🗃 扩展项</span>
+          <span style="font-weight:400">${inactiveCount} 目录${inactiveItems?` · ${inactiveItems} items`:''}</span>
+          <span class="tier2-summary">${esc(tier2Summary)}</span>
+        </div>
+        <div id="${tier2FoldId}" style="display:none" class="src-tier2-body">`;
+        const t2Pad=52;
+        inactiveCatKeys.forEach(cat=>{
+          renderCatBlock(cat,inactiveByCat[cat],t2Pad,false);
+        });
+        h+=`</div>`;
       }
       h+=`</div></div>`;
     });
