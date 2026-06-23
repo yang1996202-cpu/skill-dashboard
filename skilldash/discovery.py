@@ -417,7 +417,7 @@ def _derive_extension_type(plugin_context, layer, category, path):
     if state == "builtin" or layer == "vendor-bundled":
         return "builtin"
     # 裸 skill:用户/项目直接管理
-    if layer in ("active-root", "user-installed", "project-local", "imported-copy"):
+    if layer in ("active-root", "user-installed", "project-local", "imported-copy", "app-embedded"):
         return "skill"
     if category == "cache":
         return "cache"
@@ -602,6 +602,18 @@ def _classify_skill_dir_detail(dir_path):
     if "/marketplaces/" in padded_p and ".bak/" in padded_p:
         mark("backup-snapshot", "review", "marketplace 备份货架(旧 clone 残留)", "marketplace")
 
+    # macOS app-embedded agents (Kimi/CherryStudio/...): skills shipped inside a
+    # desktop app's Application Support data dir. App-bundled but user-managed
+    # (the app treats this as its user-data skills root, not a vendor cache).
+    # 放在末尾覆盖 project-local fallback —— Application Support 路径会被
+    # 上面的 category=project 分支误判成 project-local。
+    try:
+        app_support = home.resolve() / "Library" / "Application Support"
+        if path.resolve().is_relative_to(app_support):
+            mark("app-embedded", "manage", "desktop app embedded skills root", "user")
+    except (AttributeError, ValueError, OSError):
+        pass
+
     # Suspicious paths: temp/download/trash/node_modules — high-risk cleanup candidates
     suspicious_signals = [".trash", "/downloads/", "/tmp/", "node_modules", "/.cache/"]
     is_suspicious = any(sig in p for sig in suspicious_signals)
@@ -617,6 +629,7 @@ def _classify_skill_dir_detail(dir_path):
         "user-installed": "用户技能库",
         "project-local": "项目内技能",
         "imported-copy": "导入/跨 Agent 副本",
+        "app-embedded": "桌面 App 内置技能",
         "backup-snapshot": "备份/快照",
         "downloaded-package": "下载/解包目录",
         "package-cache": "包管理缓存",

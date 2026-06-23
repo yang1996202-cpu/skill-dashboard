@@ -41,6 +41,47 @@ READINESS_META = {
 }
 
 
+def _derive_agent_form(agent: str, dirs: list[dict], profile_summary) -> str:
+    """Agent 形态:cli / app / ide。
+
+    主信号看路径(目录里带的路径前缀比 agent 名更稳):
+    - ~/Library/Application Support/* → app(桌面 App 内置的 skill 数据根)
+    - .workbuddy/.codebuddy(buddy family) → app(有 .app bundle,桌面 App)
+    - 其他 .xxx dotdir(含 .claude/.codex/.cursor 等)→ cli
+
+    没有目录信息时退回 profile_summary.family;都没有则 cli(默认形态,
+    绝大多数 dotdir agent 都是 CLI)。
+    """
+    summary = profile_summary or {}
+    for d in dirs:
+        rel = (d.get("rel") or "").lower()
+        if "/library/application support/" in rel:
+            return "app"
+        if "/.workbuddy/" in rel or "/.codebuddy/" in rel:
+            return "app"
+    family = (summary.get("family") or "").lower()
+    if family in ("app", "desktop", "electron"):
+        return "app"
+    if family in ("ide",):
+        return "ide"
+    return "cli"
+
+
+def _extension_breakdown(dirs: list[dict]) -> dict:
+    """按 extension_type 聚合每个 Agent 的构成(skill/builtin/plugin/...)。
+
+    只统计 type=='skills' 的目录(commands 目录无 extension_type)。
+    返回 dict,key 是已知的 extension_type 取值,value 是 skill 计数和。
+    """
+    breakdown = {}
+    for d in dirs:
+        if d.get("type") != "skills":
+            continue
+        ext = d.get("extension_type") or "unknown"
+        breakdown[ext] = breakdown.get(ext, 0) + d.get("count", 0)
+    return breakdown
+
+
 def _derive_group_readiness(dirs, total_skills, profile_summary):
     """Agent 级就绪度:uninitialized / configured-empty / builtin-only / light / heavy。
 
@@ -54,7 +95,7 @@ def _derive_group_readiness(dirs, total_skills, profile_summary):
     src_count = summary.get("source_root_count", 0)
     mcp_count = summary.get("mcp_server_count", 0)
     mcp_enabled = summary.get("mcp_enabled_count", 0)
-    has_user_root = any(d.get("layer") in ("active-root", "user-installed") for d in dirs)
+    has_user_root = any(d.get("layer") in ("active-root", "user-installed", "app-embedded") for d in dirs)
     has_builtin = any(d.get("extension_type") == "builtin" for d in dirs)
     runtime_extensions = sum(
         d.get("count", 0) for d in dirs
@@ -454,9 +495,16 @@ class SourceRoutes:
 
         # Derive per-agent readiness after aggregation (layer/extension_type now known)
         for _agent, _g in grouped.items():
-            _r = _derive_group_readiness(_g["dirs"], _g["total_skills"], _g.get("profile_summary"))
+            _summary = _g.get("profile_summary")
+            _r = _derive_group_readiness(_g["dirs"], _g["total_skills"], _summary)
             _g["readiness"] = _r
             _g["readiness_label"] = READINESS_META[_r]["label"]
+            # profile_family 单独挂顶层(便于前端不挖 profile_summary);profile_summary 已含
+            _g["profile_family"] = _summary.get("family") if _summary else None
+            # Agent 形态:cli / app / ide
+            _g["agent_form"] = _derive_agent_form(_agent, _g["dirs"], _summary)
+            # 按 extension_type 聚合构成
+            _g["extension_breakdown"] = _extension_breakdown(_g["dirs"])
 
         # Sort groups: current target's group first, then by total skills desc
         current_agent = next((t["name"] for t in targets if t["is_current"]), "")
