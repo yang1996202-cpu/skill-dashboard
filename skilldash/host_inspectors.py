@@ -9,6 +9,7 @@ the dashboard still runs on a stock Python install.
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -723,7 +724,7 @@ def buddy_family_skill_context(dir_path) -> dict:
                     spec,
                     root,
                     path,
-                    "buddy-marketplace",
+                    "buddy-skill-marketplace",
                     "catalog",
                     "Skill 市场",
                     f"~/{spec['dotdir']}/skills-marketplace 是 {spec['host']} skill 货架目录，不等于当前上下文已加载。",
@@ -742,7 +743,7 @@ def buddy_family_skill_context(dir_path) -> dict:
                     spec,
                     root,
                     path,
-                    "buddy-marketplace",
+                    "buddy-plugin-marketplace",
                     "catalog",
                     "插件市场 Skill",
                     f"~/{spec['dotdir']}/plugins/marketplaces 下的 {spec['host']} 插件市场目录，不等于当前已加载。",
@@ -1078,8 +1079,50 @@ def host_profile_summaries_by_agent(home: Path | None = None) -> dict[str, dict]
     return summaries
 
 
+# macOS app-embedded agents that install standard SKILL.md skills under
+# ~/Library/Application Support/<app>/. discovery.py skips ~/Library in its main
+# scan (to avoid traversing huge app data dirs like Chrome), so these are picked
+# up here by app name + dynamic skills/ lookup + SKILL.md check.
+# Add new app-embedded agents to this tuple.
+_APP_EMBEDDED_AGENTS = ("CherryStudio", "kimi-desktop")
+
+
+def _app_embedded_skill_roots(home: Path) -> list[Path]:
+    """Find standard SKILL.md roots inside known macOS app-embedded agents.
+
+    Scans ~/Library/Application Support/<app>/ to depth 3 for any `skills/`
+    subdir containing SKILL.md entries. App names are pinned (stable); the
+    skills/ path is discovered dynamically to tolerate layout changes between
+    versions (e.g. kimi-desktop moved skills under daimon-share/daimon/).
+    """
+    app_support = home / "Library" / "Application Support"
+    if not app_support.is_dir():
+        return []
+    roots: list[Path] = []
+    for app_name in _APP_EMBEDDED_AGENTS:
+        app_dir = app_support / app_name
+        if not app_dir.is_dir():
+            continue
+        base = len(app_dir.parts)
+        try:
+            for root, dirs, _files in os.walk(app_dir):
+                if len(Path(root).parts) - base >= 3:
+                    dirs[:] = []
+                    continue
+                # 大小写不敏感:CherryStudio 用 "Skills"(大写 S),Kimi 用 "skills"
+                skills_name = next((d for d in dirs if d.lower() == "skills"), None)
+                if skills_name:
+                    sd = Path(root) / skills_name
+                    if _count_skill_entries(sd) > 0:
+                        roots.append(sd)
+        except (PermissionError, OSError):
+            pass
+    return roots
+
+
 def known_host_app_skill_roots() -> list[Path]:
     """Return known host app skill roots discovered from host-specific profiles."""
+    home = Path.home()
     roots: list[Path] = []
     for spec in BUDDY_FAMILY_SPECS:
         for app_resources in spec.get("app_resource_dirs", ()):
@@ -1096,6 +1139,7 @@ def known_host_app_skill_roots() -> list[Path]:
                         roots.append(skills_dir)
             except (PermissionError, OSError):
                 pass
+    roots.extend(_app_embedded_skill_roots(home))
     return roots
 
 

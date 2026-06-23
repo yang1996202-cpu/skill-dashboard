@@ -250,6 +250,15 @@ def _summarize_skill_roles(skills_dir):
 def _agent_from_path(dir_path):
     """Infer agent name from directory path."""
     p = str(dir_path)
+    # macOS app-embedded agents: ~/Library/Application Support/<app>/...
+    # 取 app 名首段美化(kimi-desktop→Kimi, CherryStudio→CherryStudio),
+    # 否则会 fallback 到路径末段 skills/Skills。
+    if "/Library/Application Support/" in p:
+        rel = p.split("/Library/Application Support/", 1)[1]
+        app = rel.split("/", 1)[0]
+        first = app.split("-")[0]
+        if first:
+            return first[:1].upper() + first[1:]
     if "WorkBuddy.app" in p or "/.workbuddy/" in p or p.endswith("/.workbuddy/skills"):
         return "WorkBuddy"
     if "CodeBuddy" in p or "/.codebuddy/" in p or p.endswith("/.codebuddy/skills"):
@@ -569,7 +578,7 @@ def _classify_skill_dir_detail(dir_path):
             mark("vendor-bundled", "observe", f"{plugin_context.get('host', 'Buddy')} app builtin skills", "marketplace")
         elif role in ("workbuddy-connector", "buddy-connector"):
             mark("plugin-package", "observe", f"{plugin_context.get('host', 'Buddy')} connector skill package", "marketplace")
-        elif role in ("workbuddy-marketplace", "workbuddy-connector-marketplace", "buddy-marketplace", "buddy-connector-marketplace"):
+        elif role in ("workbuddy-marketplace", "workbuddy-connector-marketplace", "buddy-marketplace", "buddy-connector-marketplace", "buddy-skill-marketplace", "buddy-plugin-marketplace"):
             mark("plugin-marketplace", "observe", f"{plugin_context.get('host', 'Buddy')} marketplace catalogue", "marketplace")
         elif role in ("workbuddy-cache", "workbuddy-artifact", "buddy-cache", "buddy-artifact"):
             mark("plugin-cache", "observe", f"{plugin_context.get('host', 'Buddy')} cache/artifact", "cache")

@@ -8,6 +8,14 @@ function setSourceSortMode(mode){
   renderSources();
 }
 
+function catalogLabel(t){
+  const r=t?.package_role||'';
+  if(/connector/.test(r))return '连接器市场';
+  if(/plugin/.test(r))return '插件市场';
+  if(/skill/.test(r))return 'Skill 市场';
+  return t?.loaded_elsewhere?'市场目录 · 同名已启用':'市场目录';
+}
+
 function sourceRuntimeBadge(t){
   const state=t?.runtime_state;
   if(!state)return '';
@@ -18,7 +26,7 @@ function sourceRuntimeBadge(t){
     connector:{label:'连接器包',cls:'catalog',desc:'由宿主 app/connector 运行时提供，可能按需暴露技能或工具。'},
     loaded:{label:'已加载',cls:'loaded',desc:'当前宿主 enabledPlugins 已启用，且匹配 installed_plugins 安装路径。'},
     installed:{label:'已安装未启用',cls:'installed',desc:'installed_plugins 里有记录，但当前没有启用。'},
-    catalog:{label:t?.loaded_elsewhere?'市场目录 · 同名已启用':'市场目录',cls:'catalog',desc:'marketplace 货架目录，不等于当前上下文已加载。'},
+    catalog:{label:catalogLabel(t),cls:'catalog',desc:'marketplace 货架目录，不等于当前上下文已加载。'},
     orphaned:{label:'旧包缓存',cls:'orphaned',desc:'同一插件的旧版本缓存，通常不是当前加载对象。'},
     stale:{label:'非当前安装包',cls:'orphaned',desc:'同名插件另有当前安装路径，此目录只是遗留副本。'},
     cache:{label:'插件包缓存',cls:'cache',desc:'位于插件缓存区，未匹配到当前安装记录。'},
