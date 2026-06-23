@@ -148,6 +148,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - `cache`：只有本地插件缓存存在，没有启用证据
 - `stale`：同名插件在别处启用，此目录只是非当前副本
 
+**App-embedded agent**(CherryStudio / Kimi 等 macOS 桌面 App):skill 在 `~/Library/Application Support/<app>/` 下,由 `host_inspectors.py::_app_embedded_skill_roots` 发现(`_APP_EMBEDDED_AGENTS` 白名单 + 大小写不敏感找 `skills/`,depth-3 限性能),`discovery.py::_classify_skill_dir_detail` 给 `layer=app-embedded / policy=manage`;`_agent_from_path` 有 Application Support 分支取 app 名(`kimi-desktop→Kimi`)。
+
 原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
 
 ### Host Profile：通用扫描与 Agent 范儿的结合层
@@ -186,6 +188,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 `extension_type` 前端暂不单占目录行(与 runtime_state/layer 重叠,防噪音);`readiness` 徽章已上 group 卡片头。
 
+group 还挂三个身份/构成层字段(`/api/targets` group 级,前端卡片头显示):`agent_form`(cli/app/ide,`source.py::_derive_agent_form`,路径 + profile_summary 推断)、`profile_family`(buddy-family/claude-code/codex,从 host_profile 提到 group 顶层)、`extension_breakdown`(按 extension_type 聚合的目录构成 dict,`source.py::_extension_breakdown`)。app-embedded agent(CherryStudio/Kimi)无 host profile factory,`profile_family` 为 None,形态徽章靠前端 fallback 推断。
+
 ### 前端数据流
 
 - `loadData()` 只跑轻量 API（fast-scan、targets、global-stats）
@@ -215,6 +219,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（当前可用 / 来源库存 / 待复核 / 全部）使用 `.segmented-control` 组件
 - **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
 - **运行态折叠**：每个 Agent 卡片内，按能力桶（用户自建、系统内置、已启用插件、连接器包、命令、已安装未启用、市场目录、仅缓存、导入/副本、项目级、未知）分组显示，标题点击展开/收起（`toggleSrcCard`）
+- **两级重组**(卡片内目录):`splitDirsByTier()` 按 `extension_type` 分两级——一级「能力主体」(skill/builtin/plugin/connector,默认展开)、二级「扩展项」(catalog/cache/agent,默认折叠灰显)。CodeBuddy/WorkBuddy 上千货架默认收起,卡片清爽
+- **身份卡 + 构成行**(卡片头):形态徽章 `sourceFormBadge`(`agent_form`)、family 标签 `sourceFamilyBadge`、构成摘要 `sourceCompositionLine`(`extension_breakdown`,形如「142 skill · 101 货架」)
 - **目录级操作**：目录行「切换为当前目录」（`switchTarget`）+ 单 skill「🗑」（`deleteSrcSkill`）
 - **批量操作**：勾选 skill 后批量删除（`batchDeleteSrcSkills`）或同步到目标库（`batchSyncSrcSkills`）
 - **拖拽排序**：仅从 `⋮⋮` 手柄触发拖拽（`draggable` 在 handle 上），不干扰文字选择/复制

@@ -6,6 +6,18 @@
 
 ## 前端渲染
 
+### 某类 Agent 卡片撑满视口 / 比别的卡片高几倍
+
+**现象**:能力来源页里某些 Agent(CodeBuddy / WorkBuddy / Kimi 等 **app 形态**)的卡片头异常高、撑满视口,而 Claude / Codex(cli 形态)正常。
+
+**根因**:前端给元素起了裸通用 class 名(如 `src-form-badge app`),`.app` 命中了页面根容器规则 `.app{display:flex;min-height:100vh}`(skill-dashboard.css),元素被 `min-height:100vh` 撑到视口高度。cli/ide 形态的 class 名没冲突故正常——症状因此按形态分裂。
+
+**修复**:class 用项目命名空间前缀(`is-app` / `is-cli` / `is-ide` 等 BEM 状态命名),不用裸通用名(`.app` / `.item` / `.card` / `.container`)。新增 class 前 `grep` 项目里同名规则。
+
+**排查**:`getComputedStyle(el).height` 看异常高度元素;或 headless 测 `offsetHeight`(文本短但元素几百 px 高即此病)。
+
+---
+
 ### 页面显示乱码 / 内容截断 / 奇怪字符重叠
 
 **现象**：切到某些技能库（如 WorkBuddy 268 skills）后，仪表盘或技能列表显示截断、重叠、或不可读内容。

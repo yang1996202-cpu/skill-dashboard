@@ -149,6 +149,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - `cache`：只有本地插件缓存存在，没有启用证据
 - `stale`：同名插件在别处启用，此目录只是非当前副本
 
+**App-embedded agent**(CherryStudio / Kimi 等 macOS 桌面 App):skill 在 `~/Library/Application Support/<app>/` 下,由 `host_inspectors.py::_app_embedded_skill_roots` 发现(`_APP_EMBEDDED_AGENTS` 白名单 + 大小写不敏感找 `skills/`,depth-3 限性能),`discovery.py::_classify_skill_dir_detail` 给 `layer=app-embedded / policy=manage`;`_agent_from_path` 有 Application Support 分支取 app 名(`kimi-desktop→Kimi`)。
+
 原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
 
 ### Host Profile：通用扫描与 Agent 范儿的结合层
@@ -176,6 +178,18 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - 保留副本仍存在，且执行前 hash 没有变化
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
+
+### skill 模型派生字段
+
+跨 Agent 收敛的三个正交派生字段(定义见 `docs/skill-model.md`),在现有四维(layer/policy/category/capability bucket)之上派生,不破坏前端契约:
+
+- `skill_role`(SKILL.md 角色):router/workflow/guide/focused/helper/automation → `discovery.py::_classify_skill_role`,focused 吃 connector 包内子 skill
+- `extension_type`(skill 载体形态):skill/builtin/plugin/connector/catalog/cache/agent → `discovery.py::_derive_extension_type`,从 layer + runtime_state + package_role 派生,挂 `_classify_skill_dir_detail` 返回
+- `readiness`(Agent 就绪度):uninitialized/configured-empty/builtin-only/light/heavy → `source.py::_derive_group_readiness`,挂 `/api/targets` group,前端卡片头徽章(`sourceReadinessBadge`)
+
+`extension_type` 前端暂不单占目录行(与 runtime_state/layer 重叠,防噪音);`readiness` 徽章已上 group 卡片头。
+
+group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(cli/app/ide)、`profile_family`(buddy-family/claude-code/codex)、`extension_breakdown`(按 extension_type 聚合的构成 dict)。app-embedded agent(CherryStudio/Kimi)`profile_family` 为 None,形态徽章靠前端 fallback 推断。
 
 ### 前端数据流
 
@@ -206,6 +220,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - **统一分段控件**：排序（默认排序 / 按 skills / 按目录）和视图切换（当前可用 / 来源库存 / 待复核 / 全部）使用 `.segmented-control` 组件
 - **两排头部**：第一排标题 + 统计 + 添加来源；第二排当前目录 + 排序 + 视图切换
 - **运行态折叠**：每个 Agent 卡片内，按能力桶（用户自建、系统内置、已启用插件、连接器包、命令、已安装未启用、市场目录、仅缓存、导入/副本、项目级、未知）分组显示，标题点击展开/收起（`toggleSrcCard`）
+- **两级重组**(卡片内目录):`splitDirsByTier()` 按 `extension_type` 分两级——一级「能力主体」(skill/builtin/plugin/connector,默认展开)、二级「扩展项」(catalog/cache/agent,默认折叠灰显)。CodeBuddy/WorkBuddy 上千货架默认收起,卡片清爽
+- **身份卡 + 构成行**(卡片头):形态徽章 `sourceFormBadge`(`agent_form`)、family 标签 `sourceFamilyBadge`、构成摘要 `sourceCompositionLine`(`extension_breakdown`,形如「142 skill · 101 货架」)
 - **目录级操作**：目录行「切换为当前目录」（`switchTarget`）+ 单 skill「🗑」（`deleteSrcSkill`）
 - **批量操作**：勾选 skill 后批量删除（`batchDeleteSrcSkills`）或同步到目标库（`batchSyncSrcSkills`）
 - **拖拽排序**：仅从 `⋮⋮` 手柄触发拖拽（`draggable` 在 handle 上），不干扰文字选择/复制
