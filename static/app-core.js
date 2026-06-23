@@ -96,6 +96,31 @@ const CAPABILITY_META={
   unknown:{emoji:'❓',label:'未知',desc:'只确认文件存在，未识别运行态。'},
 };
 
+const SKILL_ROLE_META={
+  router:{label:'路由',short:'router'},
+  workflow:{label:'工作流',short:'workflow'},
+  guide:{label:'指南',short:'guide'},
+  helper:{label:'辅助',short:'helper'},
+  automation:{label:'自动化',short:'automation'},
+  unknown:{label:'未分类',short:'unknown'},
+};
+
+function mergeSkillRoleCounts(into,counts){
+  Object.entries(counts||{}).forEach(([k,v])=>{into[k]=(into[k]||0)+(v||0)});
+}
+
+function skillRoleSummaryText(counts,opts={}){
+  counts=counts||{};
+  const parts=[];
+  if(counts.router)parts.push(`路由 ${counts.router}`);
+  if(counts.workflow)parts.push(`工作流 ${counts.workflow}`);
+  if(counts.automation)parts.push(`自动化 ${counts.automation}`);
+  if(counts.guide)parts.push(`指南 ${counts.guide}`);
+  if(counts.helper)parts.push(`辅助 ${counts.helper}`);
+  if(opts.includeUnknown&&counts.unknown)parts.push(`未分类 ${counts.unknown}`);
+  return parts.join(' · ');
+}
+
 function sourceCapabilityBucket(t){
   if(!t)return 'unknown';
   if(t.type==='commands')return 'commands';
@@ -140,11 +165,17 @@ function summarizeCapabilityDirs(dirs){
     catalogDirs:0,
     reviewSkills:0,
     reviewDirs:0,
+    roleCounts:{},
+    topLevelSkillCount:0,
+    supportSkillCount:0,
   };
   (dirs||[]).forEach(t=>{
     const count=t.count||0;
     const bucket=sourceCapabilityBucket(t);
     if(bucket==='commands'){s.commandCount+=count;return}
+    mergeSkillRoleCounts(s.roleCounts,t.skill_role_counts);
+    s.topLevelSkillCount+=(t.top_level_skill_count||0);
+    s.supportSkillCount+=(t.support_skill_count||0);
     const duplicateRuntime=!!t.loaded_elsewhere&&(bucket==='active-connector'||bucket==='active-plugin');
     s.inventorySkills+=count;
     if(duplicateRuntime){
@@ -192,6 +223,7 @@ function compactCapabilityParts(s){
   if(s.systemSkills)parts.push(`系统 ${s.systemSkills}`);
   if(s.pluginDirs)parts.push(`插件 ${s.pluginDirs}`);
   if(s.connectorDirs)parts.push(`连接器 ${s.connectorDirs}`);
+  if(s.supportSkillCount)parts.push(`支撑 ${s.supportSkillCount}`);
   if(s.commandCount)parts.push(`commands ${s.commandCount}`);
   return parts.join(' · ')||'暂无运行态解释';
 }
@@ -403,6 +435,7 @@ function renderWorkbench(){
   const current=targets.find(t=>t.is_current)||scan?.target;
   const currentName=current?.name||scan?.target?.label||'当前目录';
   const profileHint=formatHostProfileSummary(cap.profile);
+  const roleHint=skillRoleSummaryText(cap.roleCounts);
   const scanMeta=scanResult
     ? `${m.scannedDirs} 个目录 · ${(m.durationMs/1000).toFixed(1)}s · ${new Date(m.scannedAt).toLocaleString('zh-CN')}`
     : health
@@ -411,7 +444,7 @@ function renderWorkbench(){
   const queue=[
     {
       title:'确认当前可用能力',
-      desc:compactCapabilityParts(cap),
+      desc:`${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}`,
       count:cap.activeSkills||'--',
       action:'sources'
     },
@@ -434,7 +467,7 @@ function renderWorkbench(){
         <div>
           <div class="focus-kicker">Capability Map</div>
           <div class="focus-title">${cap.agent} 能力面</div>
-          <div class="focus-sub">${cap.inventorySkills||skills.length} skills 库存 · ${cap.activeDirs||0} 个当前可用来源 · ${scanMeta}${profileHint?` · ${profileHint}`:''}</div>
+          <div class="focus-sub">${cap.inventorySkills||skills.length} skills 库存 · ${cap.topLevelSkillCount||0} 顶层/工作流候选 · ${cap.supportSkillCount||0} 支撑型 · ${cap.activeDirs||0} 个当前可用来源 · ${scanMeta}${profileHint?` · ${profileHint}`:''}</div>
         </div>
         <div class="focus-score"><div class="num">${cap.activeSkills||'--'}</div><div class="lbl">当前能力</div></div>
       </div>
@@ -452,7 +485,7 @@ function renderWorkbench(){
     <div class="card">
       <div class="card-head"><h3>运行态摘要</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>✅ 当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>✅ 当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}</div></div>
         <div class="scope-card warn"><div class="scope-name"><span>📚 仅作来源</span><b>${cap.sourceOnlySkills||0}</b></div><div class="scope-desc">市场目录、缓存和旧包只解释来源，不等同上下文加载。</div></div>
         <div class="scope-card muted"><div class="scope-name"><span>🧹 整理队列</span><b>${m.actionable||0}</b></div><div class="scope-desc">${policyCounts.manage||0} 个可管理目录 · ${policyCounts.review||0} 个待复核目录 · ${policyCounts.observe||0} 个观察目录。</div></div>
       </div>
