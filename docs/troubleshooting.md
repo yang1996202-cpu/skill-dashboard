@@ -200,6 +200,18 @@ if(!scan?.sources?.length){
 
 ---
 
+### 能力来源页展开目录显示「空目录」(头部 count 有数字)
+
+**现象**:能力来源页展开某 Agent(WorkBuddy/CodeBuddy 等 app 形态)的 builtin 目录,目录头显示 count(如「6」),但展开内容是「空目录」;点 skill 名也无法预览内容。
+
+**根因**:`/api/source/skills`(穿透浏览)和 `/api/preview`(跨目录预览)的路径安全检查只许 home 目录下。macOS app 的 builtin skill 在 `/Applications/*.app/Contents/Resources/...`,被 403 拒绝(`path must be under home directory`)。discovery 能数到(fast-scan count 正确),但穿透 API 读不出来——count 来自扫描层,列表来自穿透层,两层路径策略不一致。
+
+**修复**:只读 API 放宽路径检查为「home 下 OR `/Applications/*.app/` 内」(`source.py::_list_source_skills`、`skill.py::_serve_preview`,用 `is_relative_to(/Applications) and '.app/' in path` 判定)。写操作(删除/复制的 target)保持 home 限制,避免往 app bundle 写。
+
+**排查**:`curl '/api/source/skills?path=<目录>'` 看是否返回 `{"error":"path must be under home directory"}`;`find <目录> -name SKILL.md | wc -l` 确认实际 skill 数与头部 count 是否对得上。
+
+---
+
 ## 适配性风险（跨用户环境）
 
 ### 路径中的特殊字符
