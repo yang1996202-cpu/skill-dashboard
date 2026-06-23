@@ -1,4 +1,4 @@
-"""system 域路由 handler:history、category-order、openapi。
+"""system 域路由 handler:history、openapi。
 
 从 serve.py 拆出,作为 DashboardHandler 的 mixin。handler 逻辑原样搬出,
 self 引用不变,仅物理分文件。STATE_DIR 从 skilldash.paths 导入;
@@ -11,7 +11,7 @@ from skilldash.paths import STATE_DIR
 
 
 class SystemRoutes:
-    """history / category-order / openapi 等 system 级路由 handler。"""
+    """history / openapi 等 system 级路由 handler。"""
 
     def _serve_history(self):
         hist_file = STATE_DIR / "history.jsonl"
@@ -28,26 +28,6 @@ class SystemRoutes:
             self._json_response(entries)
         except FileNotFoundError:
             self._json_response([])
-
-    def _get_category_order(self):
-        f = STATE_DIR / "category-order.json"
-        data = f.read_text(encoding="utf-8") if f.exists() else "[]"
-        self._json_response(json.loads(data))
-
-    def _set_category_order(self):
-        try:
-            length = int(self.headers.get('Content-Length', 0))
-            raw = self.rfile.read(length).decode('utf-8') if length else '[]'
-            data = json.loads(raw)
-            if isinstance(data, list):
-                (STATE_DIR / "category-order.json").write_text(
-                    json.dumps(data, ensure_ascii=False), encoding="utf-8"
-                )
-                self._json_response({"ok": True})
-            else:
-                self.send_error(400, "Expected JSON array")
-        except Exception as e:
-            self._json_response({"error": str(e)}, 400)
 
     def _openapi(self):
         """Return simple API documentation."""

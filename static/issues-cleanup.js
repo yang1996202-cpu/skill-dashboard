@@ -167,12 +167,12 @@ function filterGroupsByView(groups,viewMode){
   }).filter(g=>g.dirs.length);
   return filtered;
 }
-function sortGroupsByCurrentAndSize(groups){
+function sortGroupsByCurrentAndSize(groups, direction='desc'){
   return [...groups].sort((a,b)=>{
     const aCur=a.dirs.some(t=>t.is_current);
     const bCur=b.dirs.some(t=>t.is_current);
     if(aCur!==bCur)return aCur?-1:1;
-    return b.total_skills-a.total_skills;
+    return direction==='asc' ? a.total_skills-b.total_skills : b.total_skills-a.total_skills;
   });
 }
 function getVisibleSourceTargets(){

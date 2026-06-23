@@ -1,10 +1,12 @@
 
 /* ── Sources (穿透浏览 + 来源目录) ── */
 let sourceSkillsCache={};
-let _sourceSortMode=localStorage.getItem('sd-source-sort')||'default'; // default | skills | dirs
-function setSourceSortMode(mode){
-  _sourceSortMode=mode||'default';
-  localStorage.setItem('sd-source-sort',_sourceSortMode);
+let _sourceSortDir=localStorage.getItem('sd-source-sort-dir')||'desc'; // desc | asc
+// legacy key from removed drag-to-sort feature — clear once
+if(localStorage.getItem('sd-source-sort'))localStorage.removeItem('sd-source-sort');
+function setSourceSortDir(dir){
+  _sourceSortDir=dir==='asc'?'asc':'desc';
+  localStorage.setItem('sd-source-sort-dir',_sourceSortDir);
   renderSources();
 }
 
@@ -300,13 +302,13 @@ function renderSources(){
       <span style="font-size:11px;color:var(--text-muted)">当前: ${curTarget?curTarget.name:'-'}</span>
       <span style="flex:1"></span>
       <div class="segmented-control">
-        <button class="btn btn-sm ${_sourceSortMode==='default'?'btn-primary':''}" onclick="setSourceSortMode('default')" title="按拖拽自定义顺序">默认排序</button>
-        <button class="btn btn-sm ${_sourceSortMode==='skills'?'btn-primary':''}" onclick="setSourceSortMode('skills')" title="按 skill 数量降序">按 skills</button>
+        <button class="btn btn-sm ${_sourceSortDir==='desc'?'btn-primary':''}" onclick="setSourceSortDir('desc')" title="按 skill 数量降序(当前组始终置顶)">按 skill 倒序</button>
+        <button class="btn btn-sm ${_sourceSortDir==='asc'?'btn-primary':''}" onclick="setSourceSortDir('asc')" title="按 skill 数量升序(当前组始终置顶)">按 skill 正序</button>
       </div>
       <div class="segmented-control">
         <button class="btn btn-sm ${_sourceViewMode==='active'?'btn-primary':''}" onclick="setSourceViewMode('active')" title="用户自建、系统内置、已启用插件、连接器和命令">当前可用</button>
         <button class="btn btn-sm ${_sourceViewMode==='inventory'?'btn-primary':''}" onclick="setSourceViewMode('inventory')" title="marketplace、缓存、旧包和已安装未启用包">来源库存</button>
-        <button class="btn btn-sm ${_sourceViewMode==='review'?'btn-primary':''}" onclick="setSourceViewMode('review')" title="项目级、导入/副本和未知运行态目录">待复核</button>
+        <button class="btn btn-sm ${_sourceViewMode==='review'?'btn-primary':''}" onclick="setSourceViewMode('review')" title="项目级、导入/副本和未知运行态目录">导入/副本</button>
         <button class="btn btn-sm ${_sourceViewMode==='all'?'btn-primary':''}" onclick="setSourceViewMode('all')" title="显示全部目录">全部</button>
       </div>
     </div>
@@ -318,23 +320,9 @@ function renderSources(){
   }
   const visibleGroups=getVisibleSourceGroups();
   if(visibleGroups.length){
-    // Apply sort: default uses saved drag order; skills/dirs override it
-    if(_sourceSortMode==='skills'){
-      visibleGroups.sort((a,b)=>b.total_skills-a.total_skills);
-    }else if(_sourceSortMode==='dirs'){
-      visibleGroups.sort((a,b)=>b.dirs.length-a.dirs.length);
-    }else if(categoryOrder.length){
-      const ordered=[...visibleGroups];
-      ordered.sort((a,b)=>{
-        const ia=categoryOrder.indexOf(a.agent);
-        const ib=categoryOrder.indexOf(b.agent);
-        if(ia===-1&&ib===-1)return 0;
-        if(ia===-1)return 1;
-        if(ib===-1)return -1;
-        return ia-ib;
-      });
-      visibleGroups.splice(0,visibleGroups.length,...ordered);
-    }
+    // Sort: current group pinned first, rest by skill count. Same root as
+    // sidebar dropdown (updateTargetSelector) so the two stay visually consistent.
+    visibleGroups.splice(0,visibleGroups.length,...sortGroupsByCurrentAndSize(visibleGroups,_sourceSortDir));
     let groupsToRender=visibleGroups;
     if(!_sourcesShowAll&&visibleGroups.length>12){
       const priority=visibleGroups.filter(g=>g.dirs.some(t=>t.is_current));
@@ -366,7 +354,6 @@ function renderSources(){
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
-          <span class="drag-handle" draggable="true" title="拖拽排序">⋮⋮</span>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">
             <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px;flex-wrap:wrap">
               ${g.agent}
@@ -484,7 +471,6 @@ function renderSources(){
     });
   }
   $('sources-list').innerHTML=h;
-  initSourceDrag();
   }catch(e){$('sources-list').innerHTML='<div class="empty">渲染出错: '+e.message+'</div>'}
 }
 
@@ -570,13 +556,7 @@ function renderGlobalSearchResultsHtml(){
   return h;
 }
 
-// --- Source card toggle + drag-and-drop ---
-let categoryOrder=[];
-async function loadCategoryOrder(){
-  try{categoryOrder=await fetch('/api/category-order').then(r=>r.json())}catch{categoryOrder=[]}
-  if(!Array.isArray(categoryOrder))categoryOrder=[];
-}
-loadCategoryOrder();
+// --- Source card toggle ---
 
 // Smart folding: hide extra dirs per agent card, show top N + current + favorites
 function applySmartFolding(){
@@ -632,62 +612,6 @@ function toggleSrcCard(card){
   const agent=card.dataset.agent;
   _expandedSourceAgent=_expandedSourceAgent===agent?null:agent;
   renderSources();
-}
-
-function initSourceDrag(){
-  const container=$('sources-list');
-  if(!container)return;
-  container.querySelectorAll('.src-card').forEach(card=>{
-    // Drag only from handle, not from card body (fixes text selection conflict)
-    const handle=card.querySelector('.drag-handle');
-    if(handle){
-      handle.addEventListener('dragstart',e=>{
-      e.dataTransfer.effectAllowed='move';
-      e.dataTransfer.setData('text/plain',card.dataset.agent||'');
-      card.classList.add('dragging');
-      requestAnimationFrame(()=>card.style.opacity='0.4');
-    });
-    }
-    card.addEventListener('dragover',e=>{
-      e.preventDefault();
-      e.dataTransfer.dropEffect='move';
-      if(!card.classList.contains('dragging'))card.classList.add('drag-over');
-    });
-    card.addEventListener('dragleave',()=>{
-      card.classList.remove('drag-over');
-    });
-    card.addEventListener('drop',e=>{
-      e.preventDefault();
-      const dragging=document.querySelector('.src-card.dragging');
-      if(dragging&&card!==dragging){
-        // Determine position: insert before or after based on mouse Y
-        const rect=card.getBoundingClientRect();
-        const midY=rect.top+rect.height/2;
-        if(e.clientY<midY){
-          card.parentNode.insertBefore(dragging,card);
-        }else{
-          card.parentNode.insertBefore(dragging,card.nextSibling);
-        }
-        saveCategoryOrder();
-      }
-      card.classList.remove('drag-over');
-    });
-    card.addEventListener('dragend',()=>{
-      card.classList.remove('dragging');
-      card.style.opacity='';
-      document.querySelectorAll('.src-card.drag-over').forEach(c=>c.classList.remove('drag-over'));
-    });
-  });
-}
-
-function saveCategoryOrder(){
-  const cards=document.querySelectorAll('#sources-list .src-card');
-  categoryOrder=Array.from(cards).map(c=>c.dataset.agent);
-  fetch('/api/category-order',{
-    method:'POST',
-    headers:{'Content-Type':'application/json'},
-    body:JSON.stringify(categoryOrder)
-  });
 }
 
 async function browseSourceDir(safeId,path,head){

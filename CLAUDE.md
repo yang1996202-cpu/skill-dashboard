@@ -100,7 +100,6 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/preview` | GET | 跨目录预览 skill 内容（?dir=xxx&name=xxx） |
 | `/api/understand` | GET | 单 skill 规则理解（?name=，可选 ?dir=） |
 | `/api/search-skills` | GET | 关键词搜索来源 skills |
-| `/api/category-order` | GET/POST | 分类显示顺序（读取/保存） |
 | `/api/cleanup-plan` | GET | 生成目录治理计划（dry-run） |
 | `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
 | `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |

@@ -10,7 +10,7 @@ self 引用不变;搬动是纯机械重构,行为零变化。
 - skilldash.source_ops 提供 GitHub 业务(install_skill/check_upstream_status/...),
   各 domain 顶层 import 调用,顶层 import 不依赖 serve,无循环。
 
-- system.py  : history / category-order / openapi
+- system.py  : history / openapi
 - source.py  : 目标库列表/切换、来源 skill 列表/搜索、自定义来源、GitHub 安装、本机插件
 - skill.py   : 单 skill 内容/预览、上游检查/更新、修复、删除、复制、rehash
 - cleanup.py : 目录治理计划/执行、重复决策、垃圾站、批量删除(含跨域 _trash_dir)
