@@ -152,7 +152,7 @@ function sourceFormBadge(g){
   const form=inferAgentForm(g);
   if(!form)return '';
   const cls=form.toLowerCase();
-  return `<span class="src-form-badge ${cls}" title="宿主形态 · ${esc(form)}">${esc(form)}</span>`;
+  return `<span class="src-form-badge is-${cls}" title="宿主形态 · ${esc(form)}">${esc(form)}</span>`;
 }
 
 function sourceFamilyBadge(g){
