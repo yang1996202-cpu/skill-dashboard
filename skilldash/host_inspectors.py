@@ -407,7 +407,73 @@ def codex_plugin_context(dir_path) -> dict:
         rel_parts = path.relative_to(home).parts
     except Exception:
         return {}
-    if len(rel_parts) < 7 or rel_parts[0] != ".codex" or rel_parts[1] != "plugins" or rel_parts[2] != "cache":
+    if len(rel_parts) < 2 or rel_parts[0] != ".codex":
+        return {}
+    codex_root = home / ".codex"
+
+    def _pkg(role, state, label, reason, **extra):
+        return {
+            "package_role": role,
+            "runtime_state": state,
+            "runtime_label": label,
+            "runtime_reason": reason,
+            "plugin_id": extra.get("plugin_id", ""),
+            "plugin_name": extra.get("plugin_name", ""),
+            "plugin_marketplace": extra.get("plugin_marketplace", ""),
+            "plugin_version": "",
+            "plugin_scope": "codex",
+            "package_root": extra.get("package_root", str(path)),
+            "loaded_elsewhere": False,
+            "enabled_by_host": state in ("enabled", "connector", "builtin"),
+            "host": "Codex",
+            "host_config_path": str(codex_root / "config.toml"),
+        }
+
+    # ~/.codex/skills/.system/* — Codex 注入的系统/元技能(skill-creator 等),非用户自建
+    if len(rel_parts) >= 3 and rel_parts[1] == "skills" and rel_parts[2] == ".system":
+        skill = rel_parts[3] if len(rel_parts) > 3 else ""
+        return _pkg("codex-system-skill", "builtin", "Codex 系统技能",
+                    "~/.codex/skills/.system 是 Codex 注入的系统/元技能(如 skill-creator),非用户自建;删除会影响 Codex 技能创建功能。",
+                    plugin_name=skill,
+                    package_root=str(codex_root / "skills" / ".system" / skill) if skill else str(codex_root / "skills" / ".system"))
+
+    # ~/.codex/vendor_imports/skills/**/.curated/* — vendor 导入的精选技能包
+    if rel_parts[1] == "vendor_imports" and "skills" in rel_parts:
+        skill = rel_parts[-1] if rel_parts[-1] != "skills" else ""
+        return _pkg("codex-vendor-curated", "catalog", "vendor 精选目录",
+                    "~/.codex/vendor_imports/skills 是 Codex 从上游 vendor 导入的精选技能目录,非用户安装,作为来源库存参考,不等于当前已启用。",
+                    plugin_name=skill, package_root=str(path))
+
+    # ~/.codex/.tmp/plugins/plugins/*/skills/* — 插件市场全量暂存镜像(非用户技能库)
+    if len(rel_parts) >= 3 and rel_parts[1] == ".tmp" and rel_parts[2] == "plugins":
+        plugin = rel_parts[4] if len(rel_parts) > 4 and rel_parts[3] == "plugins" else ""
+        return _pkg("codex-plugin-staging", "cache", "插件市场暂存",
+                    "~/.codex/.tmp/plugins 是 Codex 拉取的插件市场全量暂存镜像,非用户安装的技能库,默认隐藏。",
+                    plugin_name=plugin, package_root=str(path))
+
+    # ~/.codex/.tmp/bundled-marketplaces/<marketplace>/plugins/*/skills/* — 打包市场货架
+    if len(rel_parts) >= 3 and rel_parts[1] == ".tmp" and rel_parts[2] == "bundled-marketplaces":
+        marketplace = rel_parts[3] if len(rel_parts) > 3 else ""
+        plugin = rel_parts[5] if len(rel_parts) > 5 and rel_parts[4] == "plugins" else ""
+        return _pkg("codex-bundled-marketplace", "catalog", "打包市场货架",
+                    f"~/.codex/.tmp/bundled-marketplaces 是 Codex 打包内置的市场货架({marketplace or '未知'}),与 config.toml [marketplaces.{marketplace}] 对应,不等于当前已加载。",
+                    plugin_id=f"{plugin}@{marketplace}" if plugin else marketplace,
+                    plugin_name=plugin, plugin_marketplace=marketplace, package_root=str(path))
+
+    # ~/.codex/.tmp/legacy-primary-runtime-skills/*-<hash> — 旧版运行时历史遗留
+    if len(rel_parts) >= 3 and rel_parts[1] == ".tmp" and rel_parts[2] == "legacy-primary-runtime-skills":
+        return _pkg("codex-legacy-runtime", "cache", "旧版运行时遗留",
+                    "~/.codex/.tmp/legacy-primary-runtime-skills 是 Codex 旧版 primary runtime 的历史遗留(带时间戳 hash),已被新版替代。",
+                    plugin_name=rel_parts[-1] if rel_parts[-1] != "legacy-primary-runtime-skills" else "",
+                    package_root=str(path))
+
+    # ~/.codex/.tmp/plugins-backup-* — 插件备份(随机后缀,自动生成)
+    if len(rel_parts) >= 3 and rel_parts[1] == ".tmp" and rel_parts[2].startswith("plugins-backup"):
+        return _pkg("codex-plugin-backup", "cache", "插件备份",
+                    "~/.codex/.tmp/plugins-backup-* 是 Codex 自动生成的插件备份(随机后缀),历史快照,默认隐藏。",
+                    plugin_name=rel_parts[2], package_root=str(path))
+
+    if len(rel_parts) < 7 or rel_parts[1] != "plugins" or rel_parts[2] != "cache":
         return {}
 
     marketplace = rel_parts[3]

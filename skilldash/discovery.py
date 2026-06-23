@@ -364,6 +364,18 @@ def _classify_skill_dir_detail(dir_path):
             mark("plugin-marketplace", "observe", f"{plugin_context.get('host', 'Buddy')} marketplace catalogue", "marketplace")
         elif role in ("workbuddy-cache", "workbuddy-artifact", "buddy-cache", "buddy-artifact"):
             mark("plugin-cache", "observe", f"{plugin_context.get('host', 'Buddy')} cache/artifact", "cache")
+        elif role == "codex-system-skill":
+            mark("vendor-bundled", "observe", "Codex 注入的系统技能", "marketplace")
+        elif role == "codex-vendor-curated":
+            mark("vendor-bundled", "observe", "vendor 导入精选技能", "marketplace")
+        elif role == "codex-plugin-staging":
+            mark("plugin-cache", "hidden", "Codex 插件市场暂存", "cache")
+        elif role == "codex-bundled-marketplace":
+            mark("plugin-marketplace", "observe", "Codex 打包市场货架", "marketplace")
+        elif role == "codex-legacy-runtime":
+            mark("plugin-cache", "hidden", "Codex 旧版运行时遗留", "cache")
+        elif role == "codex-plugin-backup":
+            mark("plugin-cache", "hidden", "Codex 插件备份", "cache")
         runtime_label = plugin_context.get("runtime_label")
         if runtime_label:
             evidence.append(runtime_label)
