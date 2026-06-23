@@ -176,6 +176,16 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
 
+### skill 模型派生字段
+
+跨 Agent 收敛的三个正交派生字段(定义见 `docs/skill-model.md`),在现有四维(layer/policy/category/capability bucket)之上派生,不破坏前端契约:
+
+- `skill_role`(SKILL.md 角色):router/workflow/guide/focused/helper/automation → `discovery.py::_classify_skill_role`,focused 吃 connector 包内子 skill
+- `extension_type`(skill 载体形态):skill/builtin/plugin/connector/catalog/cache/agent → `discovery.py::_derive_extension_type`,从 layer + runtime_state + package_role 派生,挂 `_classify_skill_dir_detail` 返回
+- `readiness`(Agent 就绪度):uninitialized/configured-empty/builtin-only/light/heavy → `source.py::_derive_group_readiness`,用 active_skills(排货架/缓存的真实活跃数)+ host_profile 的 mcp_enabled,挂 `/api/targets` group,前端 group 卡片头显示徽章(`sourceReadinessBadge`)
+
+`extension_type` 前端暂不单占目录行(与 runtime_state/layer 重叠,防噪音);`readiness` 徽章已上 group 卡片头。
+
 ### 前端数据流
 
 - `loadData()` 只跑轻量 API（fast-scan、targets、global-stats）

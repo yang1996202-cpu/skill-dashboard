@@ -27,6 +27,20 @@ function sourceRuntimeBadge(t){
   return `<span class="source-status ${meta.cls}" title="${esc(t.runtime_reason||meta.desc)}">${escapeHtml(t.runtime_label||meta.label)}</span>`;
 }
 
+function sourceReadinessBadge(g){
+  const r=g?.readiness;
+  if(!r)return '';
+  const label=g?.readiness_label||r;
+  const meta={
+    'heavy':{cls:'loaded',icon:'🔥',desc:'10+ skill,或连接器/插件/已启用 MCP 较多'},
+    'light':{cls:'catalog',icon:'🌱',desc:'1-9 个 skill,轻度使用'},
+    'builtin-only':{cls:'installed',icon:'📦',desc:'只有宿主自带 skill'},
+    'configured-empty':{cls:'orphaned',icon:'⚙️',desc:'有 skills/ 或 mcp.json,但 0 skill'},
+    'uninitialized':{cls:'cache',icon:'∅',desc:'Agent 目录不存在或完全空'},
+  }[r]||{cls:'cache',icon:'',desc:label};
+  return `<span class="source-status ${meta.cls}" style="font-size:9px" title="就绪度 · ${esc(meta.desc)}">${meta.icon?meta.icon+' ':''}${esc(label)}</span>`;
+}
+
 function sourceMiniChip(label,title){
   if(!label)return '';
   return `<span class="source-mini-chip" title="${esc(title||label)}">${label}</span>`;
@@ -66,9 +80,13 @@ function formatSourceCounts(dirs){
   const total=dirs.reduce((s,d)=>s+(d.count||0),0);
   const cmdCount=dirs.filter(d=>d.type==='commands').reduce((s,d)=>s+(d.count||0),0);
   const skillCount=total-cmdCount;
+  const roleCounts={};
+  dirs.forEach(d=>mergeSkillRoleCounts(roleCounts,d.skill_role_counts));
+  const roleText=skillRoleSummaryText(roleCounts);
   const parts=[];
   if(skillCount)parts.push(`${skillCount} skills`);
   if(cmdCount)parts.push(`${cmdCount} commands`);
+  if(roleText)parts.push(roleText);
   return parts.join(' · ')||'0 项';
 }
 
@@ -86,12 +104,13 @@ function sourceGroupProfileHint(g){
 
 function sourceCategoryHint(catDirs,cat){
   const s=summarizeCapabilityDirs(catDirs);
-  if(cat==='active-user')return `${s.userSkills} skills`;
-  if(cat==='active-system')return `${s.systemSkills} skills`;
-  if(cat==='active-plugin')return `${s.pluginDirs} 插件 · ${s.pluginSkills} skills`;
-  if(cat==='active-connector')return `${s.connectorDirs} 连接器 · ${s.connectorSkills} skills${s.duplicateRuntimeSkills?` · ${s.duplicateRuntimeSkills} 同名已启用`:''}`;
-  if(cat==='source-cache')return `${s.cacheSkills} skills · 不等于上下文`;
-  if(cat==='source-catalog')return `${s.catalogSkills} skills · 只作来源`;
+  const roles=skillRoleSummaryText(s.roleCounts);
+  if(cat==='active-user')return `${s.userSkills} skills${roles?` · ${roles}`:''}`;
+  if(cat==='active-system')return `${s.systemSkills} skills${roles?` · ${roles}`:''}`;
+  if(cat==='active-plugin')return `${s.pluginDirs} 插件 · ${s.pluginSkills} skills${roles?` · ${roles}`:''}`;
+  if(cat==='active-connector')return `${s.connectorDirs} 连接器 · ${s.connectorSkills} skills${s.duplicateRuntimeSkills?` · ${s.duplicateRuntimeSkills} 同名已启用`:''}${roles?` · ${roles}`:''}`;
+  if(cat==='source-cache')return `${s.cacheSkills} skills · 不等于上下文${roles?` · ${roles}`:''}`;
+  if(cat==='source-catalog')return `${s.catalogSkills} skills · 只作来源${roles?` · ${roles}`:''}`;
   if(cat==='installed-disabled')return '已安装但未启用';
   if(cat==='commands')return `${s.commandCount} commands`;
   return '';
@@ -101,12 +120,14 @@ function renderSourceDirRow(t,safeId,padLeft){
   const subLabel=sourceSubLabel(t);
   const layerLabel=sourceLayerLabel(t);
   const runtime=sourceRuntimeBadge(t);
+  const roleText=skillRoleSummaryText(t.skill_role_counts);
   const title=sourceDisplayTitle(t);
   const sub=sourceDisplaySub(t);
   const isCommands=t.type==='commands';
   const statusBits=[
     runtime,
     runtime?sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel):sourceMiniChip(layerLabel,(t.evidence||[]).join(' · ')||layerLabel),
+    roleText?sourceMiniChip(roleText,'静态解析该目录下 SKILL.md 的角色：路由、工作流、指南、辅助等。'):'',
     t.loaded_elsewhere?sourceMiniChip('同名已启用','这份目录是市场目录，实际启用来自 installed plugin cache。'):'',
     subLabel?sourceMiniChip(subLabel):'',
   ].filter(Boolean).join('');
@@ -233,6 +254,8 @@ function renderSources(){
       const gBits=[];
       if(gCap.activeSkills)gBits.push(`当前能力 ${gCap.activeSkills}`);
       if(gCap.sourceOnlySkills)gBits.push(`仅库存 ${gCap.sourceOnlySkills}`);
+      const roleBits=skillRoleSummaryText(gCap.roleCounts);
+      if(roleBits)gBits.push(roleBits);
       const profileHint=sourceGroupProfileHint(g);
       const gSub=`${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}${gBits.length?` · ${gBits.join(' · ')}`:''}${profileHint?` · ${profileHint}`:''}`;
       h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
@@ -243,6 +266,7 @@ function renderSources(){
             <div style="font-size:13px;font-weight:600;display:flex;align-items:center;gap:6px">
               ${g.agent}
               ${isCurGroup?'<span class="to-scope to-global" style="font-size:9px">当前</span>':''}
+              ${sourceReadinessBadge(g)}
             </div>
             <div style="font-size:10px;color:var(--text-muted)">${esc(gSub)}</div>
           </div>
@@ -386,9 +410,11 @@ function renderGlobalSearchResultsHtml(){
     g.skills.forEach(s=>{
       const dirPath=s.dir;
       const skillName=s.name;
+      const role=s.skill_role_label?`<span class="source-mini-chip" title="${esc((s.skill_role_evidence||[]).join(' · ')||'静态角色识别')}">${esc(s.skill_role_label)}</span>`:'';
       h+=`<div style="display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border-subtle);cursor:pointer" onclick="showSkill('${esc(skillName)}','${esc(dirPath)}')" title="${esc(s.rel+'/'+s.name)}">
         <span style="font-size:12px;font-weight:500;color:var(--accent);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.name)}</span>
         <span style="font-size:10px;color:var(--text-muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.rel)}</span>
+        ${role}
         <span style="font-size:9px;color:var(--text-dim);text-transform:uppercase">${esc(s.category||'')}</span>
       </div>`;
     });
@@ -576,10 +602,12 @@ function renderBrowseDir(path,itemList,container){
     const selKey=path+'::'+s.name;
     const isBroken=s.kind==='broken_symlink'||s.kind==='broken_skill_link';
     const kindLabel=s.kind==='broken_symlink'?'断链':(s.kind==='broken_skill_link'?'目录壳':'');
+    const roleLabel=!isCommands&&s.skill_role_label?sourceMiniChip(s.skill_role_label,(s.skill_role_evidence||[]).join(' · ')||'静态角色识别'):'';
     const itemDesc=s.description?`<div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.description)}</div>`:'';
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
       <span style="flex:1;min-width:0;overflow:hidden;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>${itemDesc}</span>
+      ${roleLabel}
       ${kindLabel?`<span style="font-size:9px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);border-radius:999px;padding:1px 5px">${kindLabel}</span>`:''}
       ${!isCurrentTarget&&!isInstalled&&!isCommands?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" title="以 ${copyMode==='symlink'?'链接':'复制'} 方式同步到当前目录" style="font-size:9px;padding:2px 6px">同步到当前目录</button>`:''}
       ${isInstalled&&!isCommands?'<span style="font-size:9px;color:var(--text-muted)">已安装</span>':''}
@@ -729,6 +757,7 @@ function renderSourceSkillList(path,sourceSkills,container){
     const isInstalled=installedNames.has(sk.name);
     const summary=safeDesc(sk.understanding?.summary_zh||sk.description||'暂无中文理解');
     const tags=[...understandingLabels(sk.understanding?.scenarios,2),...understandingLabels(sk.understanding?.capabilities,2)].slice(0,3);
+    const roleLabel=sk.skill_role_label?`<span class="source-mini-chip" title="${esc((sk.skill_role_evidence||[]).join(' · ')||'静态角色识别')}">${esc(sk.skill_role_label)}</span>`:'';
     h+=`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid color-mix(in srgb,var(--border) 30%,transparent)">
       <span style="font-size:11px;${isInstalled?'color:var(--green)':'color:var(--text-muted)'};min-width:60px">${isInstalled?'✓ 已安装':'○ 未安装'}</span>
       <div style="flex:1;min-width:0">
@@ -736,6 +765,7 @@ function renderSourceSkillList(path,sourceSkills,container){
         <div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(summary)}">${escapeHtml(summary)}</div>
         ${tags.length?`<div class="skill-tags">${tags.map(t=>`<span class="skill-tag">${escapeHtml(t)}</span>`).join('')}</div>`:''}
       </div>
+      ${roleLabel}
     </div>`;
   });
   h+='</div>';

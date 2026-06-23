@@ -53,6 +53,31 @@ def _skill_entry_kind(skill_dir):
 _DISCOVER_SKILL_DIRS_CACHE = None
 _DISCOVER_SKILL_DIRS_CACHE_TS = 0
 _DISCOVER_SKILL_DIRS_TTL = 60  # seconds
+_SKILL_ROLE_CACHE = {}
+_SKILL_ROLE_SUMMARY_CACHE = {}
+
+
+SKILL_ROLE_META = {
+    "router": {"label": "路由入口", "short": "router"},
+    "workflow": {"label": "工作流", "short": "workflow"},
+    "guide": {"label": "指南", "short": "guide"},
+    "focused": {"label": "子能力(focused)", "short": "focused"},
+    "helper": {"label": "辅助", "short": "helper"},
+    "automation": {"label": "自动化", "short": "automation"},
+    "unknown": {"label": "未分类", "short": "unknown"},
+}
+
+
+EXTENSION_TYPE_META = {
+    "skill": {"label": "裸技能", "short": "skill"},
+    "builtin": {"label": "宿主内置", "short": "builtin"},
+    "plugin": {"label": "插件包内", "short": "plugin"},
+    "connector": {"label": "连接器内", "short": "connector"},
+    "catalog": {"label": "市场货架", "short": "catalog"},
+    "cache": {"label": "缓存/备份", "short": "cache"},
+    "agent": {"label": "子智能体", "short": "agent"},
+    "unknown": {"label": "未知载体", "short": "unknown"},
+}
 
 
 def _read_skill_dashboard_config():
@@ -77,6 +102,150 @@ def _env_roots(var_name):
     """Parse colon-separated path list from environment variable."""
     value = os.environ.get(var_name, "")
     return [p.strip() for p in value.split(os.pathsep) if p.strip()]
+
+
+def _is_focused_subskill(skill_dir):
+    """判定 SKILL.md 是否是 connector 包内的子能力(focused,非顶层 skill)。
+
+    buddy lexiang/skill/search、cloudbase/<sub> 等子能力超发:一个 connector 包下塞
+    多个 SKILL.md,只有顶层算真 skill,其余是 focused 子能力。Agent 根
+    skills/<name>/SKILL.md 不算(那是顶层)。Codex plugin 内的子 skill 需要包上下文,
+    本启发只可靠吃 buddy connector 内的子 skill。详见 docs/skill-model.md 第 3 节。
+    """
+    p = str(skill_dir).replace("\\", "/").lower().rstrip("/")
+    if not any(anchor in p for anchor in ("connectors-marketplace", "/connectors/", "/connector/")):
+        return False
+    for pat in ("/skill/", "/skills/"):
+        idx = p.rfind(pat)
+        if idx >= 0:
+            # skill_dir 不含 SKILL.md 文件名,所以 /skill/ 之后是末尾目录段:
+            # ".../skill" → after=""(顶层);".../skill/search" → after="search"(子能力)
+            after = p[idx + len(pat):]
+            if after:  # skill/ 后还有目录段 = 子能力
+                return True
+    return False
+
+
+def _classify_skill_role(skill_dir):
+    """Classify one SKILL.md as a runtime role, not just a category.
+
+    This is a static heuristic.  It answers "what kind of skill package is this
+    on disk?", not "was it injected into the current model request?"  The latter
+    is host runtime state and can only be observed through a live context probe.
+    """
+    skill_dir = Path(skill_dir)
+    skill_md = skill_dir / "SKILL.md"
+    try:
+        st = skill_md.stat()
+        cache_key = (str(skill_md), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return {
+            "skill_role": "unknown",
+            "skill_role_label": SKILL_ROLE_META["unknown"]["label"],
+            "skill_role_evidence": ["missing SKILL.md"],
+        }
+    cached = _SKILL_ROLE_CACHE.get(cache_key)
+    if cached:
+        return dict(cached)
+
+    name = skill_dir.name
+    description = _read_skill_description(skill_dir)
+    try:
+        sample = skill_md.read_text("utf-8", errors="ignore")[:6000]
+    except Exception:
+        sample = ""
+    desc_low = f"{name}\n{description}".lower()
+    low = f"{desc_low}\n{sample[:3000]}".lower()
+    evidence = []
+    role = "workflow"
+
+    def has_any(*needles):
+        return any(n in low for n in needles)
+
+    if name == "index" or has_any("mandatory router", "router for", "route here", "route requests", "always route", "always use this", "index skill first"):
+        role = "router"
+        evidence.append("index/router wording")
+    elif has_any("connector guide", "crm connector guide", "user guide whenever", "provider-specific", "specific guide whenever") or any(n in desc_low for n in ("reference guide", "reference for")):
+        role = "guide"
+        evidence.append("guide/reference wording")
+    elif name in ("user-context", "shared", "common", "preflight") or has_any(
+        "mandatory pre-answer gate",
+        "preflight",
+        "durable user context",
+        "saved preferences",
+        "shared foundation",
+        "setup progress",
+        "context maintenance",
+    ):
+        role = "helper"
+        evidence.append("helper/preflight/context wording")
+    elif has_any("scheduled", "automation", "monitor", "watchlist", "check-in automation", "heartbeat"):
+        role = "automation"
+        evidence.append("scheduled/automation wording")
+    elif _is_focused_subskill(skill_dir):
+        role = "focused"
+        evidence.append("connector 包内子 skill(语定义:非顶层)")
+    else:
+        evidence.append("default workflow")
+
+    # Some focused workflow skills mention mandatory preflight because they call
+    # a helper.  Do not let that demote an already workflow-like description
+    # unless the package itself is clearly the helper.
+    if role == "helper" and name not in ("user-context", "shared", "common", "preflight"):
+        if has_any("build ", "create ", "generate ", "review ", "prepare ", "prioritize ", "analyze ", "find ", "turn "):
+            role = "workflow"
+            evidence = ["workflow with helper/preflight dependency"]
+
+    result = {
+        "skill_role": role,
+        "skill_role_label": SKILL_ROLE_META.get(role, SKILL_ROLE_META["unknown"])["label"],
+        "skill_role_evidence": evidence[:3],
+    }
+    _SKILL_ROLE_CACHE[cache_key] = dict(result)
+    return result
+
+
+def _summarize_skill_roles(skills_dir):
+    """Return role counts for direct child skills in a skills directory."""
+    skills_dir = Path(skills_dir)
+    try:
+        child_stats = []
+        for child in sorted(skills_dir.iterdir(), key=lambda p: p.name.lower()):
+            if not _is_skill_entry(child, include_broken=True):
+                continue
+            marker = child / "SKILL.md"
+            try:
+                st = marker.stat()
+                child_stats.append((child.name, st.st_mtime_ns, st.st_size))
+            except OSError:
+                child_stats.append((child.name, 0, 0))
+        sig = (str(skills_dir), tuple(child_stats))
+    except (PermissionError, OSError):
+        return {
+            "skill_role_counts": {},
+            "skill_role_labels": {},
+            "top_level_skill_count": 0,
+            "support_skill_count": 0,
+        }
+    cached = _SKILL_ROLE_SUMMARY_CACHE.get(sig)
+    if cached:
+        return json.loads(json.dumps(cached))
+
+    counts = {key: 0 for key in SKILL_ROLE_META}
+    for name, _mtime, _size in child_stats:
+        role = _classify_skill_role(skills_dir / name).get("skill_role", "unknown")
+        counts[role] = counts.get(role, 0) + 1
+    counts = {k: v for k, v in counts.items() if v}
+    top_level = counts.get("router", 0) + counts.get("workflow", 0) + counts.get("automation", 0)
+    support = counts.get("guide", 0) + counts.get("helper", 0)
+    result = {
+        "skill_role_counts": counts,
+        "skill_role_labels": {k: SKILL_ROLE_META.get(k, SKILL_ROLE_META["unknown"])["label"] for k in counts},
+        "top_level_skill_count": top_level,
+        "support_skill_count": support,
+    }
+    _SKILL_ROLE_SUMMARY_CACHE[sig] = json.loads(json.dumps(result))
+    return result
 
 def _agent_from_path(dir_path):
     """Infer agent name from directory path."""
@@ -204,6 +373,46 @@ def _is_project_agent_skill(dir_path):
         pass
     
     return False
+
+
+def _derive_extension_type(plugin_context, layer, category, path):
+    """判定 skill 目录属于哪类扩展项装载(目录级,与 skill_role 正交)。
+
+    skill_role 说 SKILL.md 扮演什么角色;extension_type 说这个 skill 被什么载体装载。
+    主信号用 layer(已在 _classify_skill_dir_detail 归一),runtime_state / package_role
+    作补充。优先级:agent > catalog > connector > cache > plugin > builtin > skill。
+    详见 docs/skill-model.md 第 3、4 节。
+    """
+    state = (plugin_context or {}).get("runtime_state", "")
+    role = (plugin_context or {}).get("package_role", "")
+    p = str(path).replace("\\", "/").lower()
+    # agent/subagent 目录(路径特征最强)
+    if "/agents/" in p or "/subagent" in p:
+        return "agent"
+    # 市场货架:未安装的 catalogue,优先于 connector(buddy-connector-marketplace 归此类)
+    if layer == "plugin-marketplace" or "marketplace" in role or state == "catalog":
+        return "catalog"
+    # connector:buddy 业务封装(MCP+认证+skill guide),运行包非货架
+    if state == "connector" or "connector" in role:
+        return "connector"
+    # 缓存/快照/备份/下载包/测试样例
+    if layer in ("plugin-cache", "package-cache", "backup-snapshot",
+                 "downloaded-package", "fixture-example"):
+        return "cache"
+    if state in ("cache", "stale", "orphaned"):
+        return "cache"
+    # plugin 包内(已安装/已启用)
+    if state in ("enabled", "loaded", "installed") or layer == "plugin-package":
+        return "plugin"
+    # 宿主内置 / vendor 精选
+    if state == "builtin" or layer == "vendor-bundled":
+        return "builtin"
+    # 裸 skill:用户/项目直接管理
+    if layer in ("active-root", "user-installed", "project-local", "imported-copy"):
+        return "skill"
+    if category == "cache":
+        return "cache"
+    return "unknown"
 
 
 def _classify_skill_dir_detail(dir_path):
@@ -380,6 +589,10 @@ def _classify_skill_dir_detail(dir_path):
         if runtime_label:
             evidence.append(runtime_label)
 
+    # marketplace 下的 .bak 是旧 clone 备份残留:最后覆盖,展示为可清理备份(用户要可见,不 hidden)
+    if "/marketplaces/" in padded_p and ".bak/" in padded_p:
+        mark("backup-snapshot", "review", "marketplace 备份货架(旧 clone 残留)", "marketplace")
+
     # Suspicious paths: temp/download/trash/node_modules — high-risk cleanup candidates
     suspicious_signals = [".trash", "/downloads/", "/tmp/", "node_modules", "/.cache/"]
     is_suspicious = any(sig in p for sig in suspicious_signals)
@@ -404,8 +617,11 @@ def _classify_skill_dir_detail(dir_path):
         "vendor-bundled": "宿主内置包",
         "fixture-example": "测试样例",
     }
+    ext_type = _derive_extension_type(plugin_context, layer, category, path)
     detail = {
         "category": category,
+        "extension_type": ext_type,
+        "extension_type_label": EXTENSION_TYPE_META.get(ext_type, EXTENSION_TYPE_META["unknown"])["label"],
         "layer": layer,
         "layer_label": layer_labels.get(layer, layer),
         "policy": policy,

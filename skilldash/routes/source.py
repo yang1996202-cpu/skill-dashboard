@@ -17,17 +17,62 @@ from urllib.parse import urlparse, parse_qs
 from skilldash.content_hash import check_content_changes
 from skilldash.discovery import (
     _agent_from_path,
+    _classify_skill_role,
     _classify_skill_dir_detail,
     _discover_command_dirs,
     _discover_skill_dirs,
     _is_skill_entry,
     _scan_commands,
+    _summarize_skill_roles,
     _skill_entry_kind,
 )
 from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state
 from skilldash.paths import CACHE_DIR, STATE_DIR
 from skilldash.source_ops import install_skill
 from skilldash.understanding import compact_understanding, understand_skill
+
+
+READINESS_META = {
+    "uninitialized": {"label": "未初始化", "desc": "Agent 目录不存在或完全空"},
+    "configured-empty": {"label": "已配置/空", "desc": "有 skills/ 或 mcp.json,但 0 skill"},
+    "builtin-only": {"label": "仅内置", "desc": "只有宿主自带 skill"},
+    "light": {"label": "轻度使用", "desc": "少量 skill(1-9)"},
+    "heavy": {"label": "重度使用", "desc": "10+ skill,或连接器/插件/已启用 MCP 较多"},
+}
+
+
+def _derive_group_readiness(dirs, total_skills, profile_summary):
+    """Agent 级就绪度:uninitialized / configured-empty / builtin-only / light / heavy。
+
+    用 active_skills(只算 skill/builtin/plugin/connector,排除市场货架 catalog 和缓存)
+    反映真实使用程度——total_skills 含库存会把有大 marketplace 的 Agent 全判成 heavy。
+    uninitialized 用 total_skills==0(连货架都没有才算真空);configured-empty 是有货架
+    但 0 活跃 skill。heavy 条件:10+ 活跃 skill,或连接器/插件运行包多,或已启用 MCP 多。
+    详见 docs/skill-model.md 第 7 节。
+    """
+    summary = profile_summary or {}
+    src_count = summary.get("source_root_count", 0)
+    mcp_count = summary.get("mcp_server_count", 0)
+    mcp_enabled = summary.get("mcp_enabled_count", 0)
+    has_user_root = any(d.get("layer") in ("active-root", "user-installed") for d in dirs)
+    has_builtin = any(d.get("extension_type") == "builtin" for d in dirs)
+    runtime_extensions = sum(
+        d.get("count", 0) for d in dirs
+        if d.get("extension_type") in ("connector", "plugin")
+    )
+    active_skills = sum(
+        d.get("count", 0) for d in dirs
+        if d.get("extension_type") in ("skill", "builtin", "plugin", "connector")
+    )
+    if total_skills == 0 and src_count == 0 and mcp_count == 0:
+        return "uninitialized"
+    if active_skills == 0:
+        return "configured-empty"
+    if not has_user_root and has_builtin and runtime_extensions == 0:
+        return "builtin-only"
+    if active_skills >= 10 or runtime_extensions >= 6 or mcp_enabled >= 5:
+        return "heavy"
+    return "light"
 
 
 class SourceRoutes:
@@ -139,6 +184,7 @@ class SourceRoutes:
                     "name": name,
                     "description": description,
                     "kind": kind,
+                    **_classify_skill_role(d),
                     "understanding": understanding,
                 })
         self._json_response({
@@ -190,6 +236,7 @@ class SourceRoutes:
                         "category": _classify_skill_dir_detail(skills_dir).get("category", "unknown"),
                         "scope": "project" if "/projects/" in rel else "global",
                         "kind": _skill_entry_kind(entry),
+                        **_classify_skill_role(entry),
                     })
             except (PermissionError, OSError):
                 continue
@@ -352,6 +399,7 @@ class SourceRoutes:
             agent = _agent_from_path(str(skills_dir))
             scope = "project" if "projects/" in rel else "global"
             governance = _classify_skill_dir_detail(skills_dir)
+            role_summary = _summarize_skill_roles(skills_dir)
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,
@@ -360,6 +408,7 @@ class SourceRoutes:
                 "count": count,
                 "type": "skills",
                 "is_current": str(skills_dir) == current,
+                **role_summary,
                 **governance,
             })
 
@@ -402,6 +451,12 @@ class SourceRoutes:
                 }
             grouped[agent]["dirs"].append(t)
             grouped[agent]["total_skills"] += t["count"]
+
+        # Derive per-agent readiness after aggregation (layer/extension_type now known)
+        for _agent, _g in grouped.items():
+            _r = _derive_group_readiness(_g["dirs"], _g["total_skills"], _g.get("profile_summary"))
+            _g["readiness"] = _r
+            _g["readiness_label"] = READINESS_META[_r]["label"]
 
         # Sort groups: current target's group first, then by total skills desc
         current_agent = next((t["name"] for t in targets if t["is_current"]), "")
