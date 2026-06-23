@@ -44,8 +44,9 @@ class SkillRoutes:
         """Preview SKILL.md from any directory (no target switch needed).
         Query param ?full=1 returns full content instead of 500-char preview."""
         resolved = Path(dir_path).resolve()
-        if not resolved.is_relative_to(Path.home()):
-            self._json_response({"error": "dir must be under home directory"}, status=403)
+        is_app_builtin = resolved.is_relative_to(Path("/Applications")) and ".app/" in str(resolved)
+        if not (resolved.is_relative_to(Path.home()) or is_app_builtin):
+            self._json_response({"error": "dir must be under home directory or a discovered app bundle"}, status=403)
             return
         skill_md = resolved / name / "SKILL.md"
         if not skill_md.exists():

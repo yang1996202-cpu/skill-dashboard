@@ -154,8 +154,10 @@ class SourceRoutes:
         if source_path.startswith("~"):
             source_path = str(Path.home() / source_path[2:])
         source_dir = Path(source_path).resolve()
-        if not source_dir.is_relative_to(Path.home()):
-            self._json_response({"error": "path must be under home directory"}, status=403)
+        # 允许 home 下,或 discovery 发现的 macOS app bundle builtin skill(/Applications/*.app/...)
+        is_app_builtin = source_dir.is_relative_to(Path("/Applications")) and ".app/" in str(source_dir)
+        if not (source_dir.is_relative_to(Path.home()) or is_app_builtin):
+            self._json_response({"error": "path must be under home directory or a discovered app bundle"}, status=403)
             return
         if not source_dir.is_dir():
             self._json_response({"error": f"not a dir: {source_path}"}, status=400)
