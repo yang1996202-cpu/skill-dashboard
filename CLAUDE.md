@@ -150,6 +150,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 **App-embedded agent**(CherryStudio / Kimi 等 macOS 桌面 App):skill 在 `~/Library/Application Support/<app>/` 下,由 `host_inspectors.py::_app_embedded_skill_roots` 发现(`_APP_EMBEDDED_AGENTS` 白名单 + 大小写不敏感找 `skills/`,depth-3 限性能),`discovery.py::_classify_skill_dir_detail` 给 `layer=app-embedded / policy=manage`;`_agent_from_path` 有 Application Support 分支取 app 名(`kimi-desktop→Kimi`)。
 
+**两类 app 宿主,两条 discovery 路**(接新 app 宿主必看):WorkBuddy/CodeBuddy 的 builtin 在 `/Applications/*.app/Contents/Resources/...`,由 `host_inspectors.py::BUDDY_FAMILY_SPECS` 硬编码 source root 发现;CherryStudio/Kimi 的 skill 在 `~/Library/Application Support/<app>/`(home 内),由 `_app_embedded_skill_roots` 白名单发现。**路径落在 `/Applications` 下的宿主,穿透浏览 API(`/api/source/skills`、`/api/preview`)的默认 home-only 白名单会 403,必须补 `is_app_builtin` 放行(`source.py::_list_source_skills`、`skill.py::_serve_preview`),否则 discovery 数得到、展开是空目录**;写操作(删/复制 target)保持 home-only,不往 app bundle 写。
+
 原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
 
 ### Host Profile：通用扫描与 Agent 范儿的结合层
