@@ -1,29 +1,3 @@
-/* ── Refresh ── */
-async function refreshData(){
-  $('refresh-btn').disabled=true;
-  try{
-    // Quick refresh: reload fast-scan only
-    const sr=await fetch('/api/fast-scan').then(r=>r.json()).catch(()=>null);
-    if(sr){
-      scan=sr;skills=sr?.installed||[];
-      skills.forEach(s=>{if(s.description)s.description=safeDesc(s.description)});
-      loadCategoryOverrides();
-      skills.forEach(s=>{
-        if(categoryOverrides[s.name]){s.category=categoryOverrides[s.name];s.categorySource='user'}
-        else if(!s.category||s.category===''||!CAT_NAMES[s.category]){
-          s.category=classifySkillJS(s.name,s.description);s.categorySource='keyword'
-        }else{s.categorySource='frontmatter'}
-      });
-      render();
-    }
-    // Force refresh targets so newly installed skills appear immediately
-    await updateTargetSelector(true);
-    await loadSourcesFallback();
-    toast('已刷新');
-  }catch(e){toast('刷新失败','error')}
-  finally{$('refresh-btn').disabled=false}
-}
-
 /* ── Target selector (custom dropdown) ── */
 let targets=[];
 function toggleTargetDropdown(){
@@ -96,7 +70,6 @@ async function switchTarget(path){
   $('target-dropdown').classList.remove('open');
   if(!path)return;
   selectedSkills.clear();_issueSelected.clear();srcSelectedSkills.clear();
-  $('refresh-btn').disabled=true;
   try{
     const r=await fetch('/api/target',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({target:path})});
     const d=await r.json();
@@ -123,7 +96,6 @@ async function switchTarget(path){
       if(gs){globalStats=gs;renderStats();renderWorkbench();renderCategories()}
     });
   }catch(e){toast('切换失败: '+e.message,'error')}
-  finally{$('refresh-btn').disabled=false}
 }
 
 /* ── Diagnosis ── */
