@@ -482,6 +482,39 @@ class SourceRoutes:
                 "policy_label": "复核",
             })
 
+        # Claude 已安装插件 → 能力来源条目（enabled→当前可用 active-plugin，disabled→来源库存 installed-disabled）
+        # discovery 排除了 plugins/cache（防灌水），这里把 load_claude_plugin_state 读到的 plugin 单独注入
+        plugin_state = load_claude_plugin_state(home)
+        _enabled_plugins = plugin_state.get("enabled") or set()
+        for plugin_id, records in (plugin_state.get("installed") or {}).items():
+            for record in records:
+                install_path = record.get("install_path")
+                if not install_path:
+                    continue
+                ip = Path(install_path).expanduser()
+                if not ip.exists():
+                    continue
+                skills_root = ip / "skills"
+                if skills_root.exists():
+                    count = sum(1 for d in skills_root.iterdir() if d.is_dir() and (d / "SKILL.md").exists())
+                else:
+                    count = 0
+                is_enabled = plugin_id in _enabled_plugins
+                targets.append({
+                    "path": install_path,
+                    "rel": plugin_id,
+                    "name": "Claude Code",
+                    "scope": "global",
+                    "count": count,
+                    "type": "plugin",
+                    "extension_type": "plugin",
+                    "is_current": install_path == current,
+                    "runtime_state": "enabled" if is_enabled else "installed",
+                    "layer": "claude-plugin",
+                    "layer_label": "已启用插件" if is_enabled else "已安装未启用",
+                    "policy": "observe",
+                })
+
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 
         # Group by agent name

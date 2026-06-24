@@ -411,7 +411,7 @@ function renderSources(){
       }
       // ── 两级重组:active 主体 vs inactive 扩展 ──
       // Tier 1 = skill 主体(extension_type ∈ skill/builtin/plugin/connector + commands)
-      const activeCatOrder=['active-user','active-system','active-plugin','active-connector'];
+      const activeCatOrder=['active-user','active-system','active-plugin','active-connector','installed-disabled'];
       const activeByCat={};
       tiers.active.forEach(t=>{
         const c=sourceCapabilityBucket(t);
