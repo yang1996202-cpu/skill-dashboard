@@ -123,7 +123,16 @@ function skillRoleSummaryText(counts,opts={}){
 
 function sourceCapabilityBucket(t){
   if(!t)return 'unknown';
-  if(t.type==='commands')return 'commands';
+  if(t.type==='commands'){
+    // 只留跟当前 target 同根的 commands(全局主)进 active,其他项目级归 review
+    const cur=targets.find(x=>x.is_current);
+    if(cur){
+      const cmdRoot=(t.path||'').replace(/\/commands$/,'');
+      const curRoot=(cur.path||'').replace(/\/(skills|commands)$/,'');
+      if(cmdRoot===curRoot) return 'commands';
+    }
+    return 'project-local';
+  }
   const state=t.runtime_state||'';
   if(state==='user-root')return 'active-user';
   if(state==='builtin')return 'active-system';
