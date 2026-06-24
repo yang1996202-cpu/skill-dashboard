@@ -11,7 +11,7 @@ import os
 import shutil
 import time
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, unquote
 
 from skilldash.cleanup import (
     _duplicate_skill_execute_allowed,
@@ -130,7 +130,8 @@ class CleanupRoutes:
         )
 
     def _cleanup_execute(self):
-        """Execute selected cleanup candidate actions by moving skills to trash."""
+        """Execute selected cleanup candidate actions. Skills collected from the
+        whole request; >=2 pack into one trash package (kind:package), 1 stays single."""
         body = self._read_json() or {}
         actions = body.get("actions", [])
         if not isinstance(actions, list) or not actions:
@@ -140,6 +141,7 @@ class CleanupRoutes:
         ok, fail, skipped = 0, 0, 0
         changed_paths = []
         details = []
+        all_skill_dirs = []
         max_skills = 500
         for action in actions[:100]:
             if not isinstance(action, dict):
@@ -158,33 +160,24 @@ class CleanupRoutes:
                     details.append({"path": path, "status": "blocked", "reason": reason})
                     continue
                 skills_dir = Path(path).expanduser().resolve()
-                moved = 0
-                failed_names = []
                 try:
                     skill_dirs = [d for d in sorted(skills_dir.iterdir(), key=lambda x: x.name.lower())
                                   if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists()]
-                    for skill_dir in skill_dirs:
-                        if ok >= max_skills:
-                            skipped += 1
-                            failed_names.append(f"{skill_dir.name}: safety cap reached")
-                            continue
-                        try:
-                            self._trash_dir(skill_dir)
-                            ok += 1
-                            moved += 1
-                        except Exception as e:
-                            fail += 1
-                            failed_names.append(f"{skill_dir.name}: {e}")
-                    changed_paths.append(str(skills_dir))
-                    details.append({
-                        "path": str(skills_dir),
-                        "status": "moved",
-                        "moved": moved,
-                        "failed": failed_names[:10],
-                    })
                 except Exception as e:
                     fail += 1
                     details.append({"path": str(skills_dir), "status": "failed", "reason": str(e)})
+                    continue
+                collected = 0
+                cap_hit = False
+                for skill_dir in skill_dirs:
+                    if len(all_skill_dirs) >= max_skills:
+                        cap_hit = True
+                        skipped += 1
+                        continue
+                    all_skill_dirs.append(skill_dir)
+                    collected += 1
+                changed_paths.append(str(skills_dir))
+                details.append({"path": str(skills_dir), "status": "collected", "collected": collected, "cap_hit": cap_hit})
                 continue
 
             skill_name = self._validate_skill_name(action.get("skill_name", ""))
@@ -203,30 +196,42 @@ class CleanupRoutes:
                 fail += 1
                 details.append({"path": path, "name": skill_name, "status": "blocked", "reason": reason})
                 continue
-            if ok >= max_skills:
+            if len(all_skill_dirs) >= max_skills:
                 skipped += 1
                 details.append({"path": path, "name": skill_name, "status": "skipped", "reason": "safety cap reached"})
                 continue
+            skills_dir = Path(path).expanduser().resolve()
+            all_skill_dirs.append(skills_dir / skill_name)
+            changed_paths.append(str(skills_dir))
+            details.append({"path": str(skills_dir), "name": skill_name, "status": "collected"})
+
+        # Unified move: 1 skill -> single trash dir; >=2 -> one package
+        package_id = ""
+        if len(all_skill_dirs) == 1:
             try:
-                skills_dir = Path(path).expanduser().resolve()
-                self._trash_dir(skills_dir / skill_name)
-                ok += 1
-                changed_paths.append(str(skills_dir))
-                details.append({
-                    "path": str(skills_dir),
-                    "name": skill_name,
-                    "status": "moved",
-                    "moved": 1,
-                })
+                self._trash_dir(all_skill_dirs[0])
+                ok = 1
             except Exception as e:
                 fail += 1
-                details.append({"path": path, "name": skill_name, "status": "failed", "reason": str(e)})
+                details.append({"status": "failed", "reason": str(e)})
+        elif len(all_skill_dirs) > 1:
+            try:
+                dest, moved, pkg_failed = self._trash_package(all_skill_dirs, "cleanup_execute")
+                ok = moved
+                fail += len(pkg_failed)
+                package_id = dest.name
+                if pkg_failed:
+                    details.append({"package": package_id, "failed": pkg_failed[:10]})
+            except Exception as e:
+                fail += len(all_skill_dirs)
+                details.append({"status": "failed", "reason": str(e)})
 
         self._json_response({
             "ok": True,
             "moved": ok,
             "failed": fail,
             "skipped": skipped,
+            "package": package_id,
             "changed_paths": changed_paths,
             "details": details,
         })
@@ -236,7 +241,7 @@ class CleanupRoutes:
             count=ok,
             source="cleanup_execute",
             status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"),
-            detail={"failed": fail, "skipped": skipped, "actions": len(actions)},
+            detail={"failed": fail, "skipped": skipped, "actions": len(actions), "package": package_id},
         )
 
     def _list_trash(self):
@@ -253,9 +258,17 @@ class CleanupRoutes:
                 except Exception:
                     meta = {"name": d.name, "original_path": "", "trashed_at": ""}
                 kind = meta.get("kind", "skill")
+                skills_list = None
                 if kind == "symlink":
                     payload = d / meta.get("payload", meta.get("name", ""))
                     skill_count = 1 if payload.exists() or payload.is_symlink() else 0
+                elif kind == "package":
+                    skills_meta = meta.get("skills", []) or []
+                    skill_count = len(skills_meta)
+                    skills_list = [
+                        {"name": s.get("name", ""), "original_path": s.get("original_path", "")}
+                        for s in skills_meta if isinstance(s, dict)
+                    ]
                 elif (d / "SKILL.md").exists():
                     skill_count = 1
                     kind = "skill"
@@ -265,19 +278,67 @@ class CleanupRoutes:
                         if (c.is_dir() or c.is_symlink()) and (c / "SKILL.md").exists()
                     ) if d.is_dir() else 0
                     kind = kind or "collection"
-                items.append({
+                item = {
                     "id": d.name,
                     "name": meta.get("name", d.name),
                     "original_path": meta.get("original_path", ""),
                     "trashed_at": meta.get("trashed_at", ""),
                     "skill_count": skill_count,
                     "kind": kind,
-                })
+                }
+                if skills_list is not None:
+                    item["skills"] = skills_list
+                items.append(item)
         self._json_response({"items": items, "count": len(items)})
+
+    def _trash_stats(self):
+        """Aggregate deletion stats from full history.jsonl (not truncated by /api/history)."""
+        hist_file = STATE_DIR / "history.jsonl"
+        deleted_total = 0      # move_to_trash count: ever moved into trash
+        permanent_total = 0    # empty_trash + delete count: permanently gone
+        empty_count = 0
+        move_ops = 0
+        last_delete_ts = ""
+        if hist_file.is_file():
+            try:
+                with open(hist_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            rec = json.loads(line)
+                        except Exception:
+                            continue
+                        op = rec.get("op", "")
+                        cnt = rec.get("count", 0) or 0
+                        if op == "move_to_trash":
+                            deleted_total += cnt
+                            move_ops += 1
+                        elif op == "empty_trash":
+                            permanent_total += cnt
+                            empty_count += 1
+                            ts = rec.get("ts", "")
+                            if ts:
+                                last_delete_ts = ts
+                        elif op == "delete":
+                            permanent_total += cnt
+                            ts = rec.get("ts", "")
+                            if ts:
+                                last_delete_ts = ts
+            except Exception:
+                pass
+        self._json_response({
+            "deleted_total": deleted_total,
+            "permanent_total": permanent_total,
+            "empty_count": empty_count,
+            "move_ops": move_ops,
+            "last_delete_ts": last_delete_ts,
+        })
 
     def _restore_trash(self, path):
         """Restore a trashed skill to its original location (or current target)."""
-        trash_id = path.split("/api/trash/")[1].replace("/restore", "")
+        trash_id = unquote(path.split("/api/trash/")[1].replace("/restore", ""))
         if '..' in trash_id or '/' in trash_id or '\\' in trash_id:
             self._json_response({"error": "invalid trash id"}, status=400)
             return
@@ -293,6 +354,52 @@ class CleanupRoutes:
         except Exception:
             meta = {}
             original = ""
+        # Package: restore each skill to its own original_path, collect per-skill failures
+        if meta.get("kind") == "package":
+            restored_to, failed_list = [], []
+            current_target = self._current_target()
+            for s in meta.get("skills", []) or []:
+                if not isinstance(s, dict):
+                    continue
+                sname = s.get("name", "")
+                orig = s.get("original_path", "")
+                sub = s.get("sub", sname)
+                if orig and Path(orig).parent.is_dir():
+                    sdest = Path(orig)
+                else:
+                    sdest = Path(current_target) / sname
+                if sdest.exists() or sdest.is_symlink():
+                    failed_list.append(f"{sname}: 目标已存在")
+                    continue
+                src = trash_dir / sub
+                if not src.exists() and not src.is_symlink():
+                    failed_list.append(f"{sname}: 包内缺失")
+                    continue
+                try:
+                    shutil.move(str(src), str(sdest))
+                    restored_to.append(str(sdest))
+                except Exception as e:
+                    failed_list.append(f"{sname}: {e}")
+            # Clean up package shell (meta + empty dir)
+            try:
+                if meta_path.exists():
+                    meta_path.unlink()
+                if trash_dir.exists() and not any(trash_dir.iterdir()):
+                    shutil.rmtree(trash_dir)
+            except Exception:
+                pass
+            self._invalidate_runtime_caches()
+            self._log_history(
+                "restore", paths=restored_to, count=len(restored_to),
+                source="trash_restore",
+                status="ok" if not failed_list else "partial",
+                detail={"trash_id": trash_id, "kind": "package", "failed": failed_list},
+            )
+            self._json_response({
+                "ok": True, "kind": "package",
+                "restored_to": restored_to, "failed": failed_list,
+            })
+            return
         # Determine restore destination
         if original and Path(original).parent.is_dir():
             dest = Path(original)
@@ -327,7 +434,7 @@ class CleanupRoutes:
 
     def _delete_trash(self, path):
         """Permanently delete a trashed skill."""
-        trash_id = path.split("/api/trash/")[1]
+        trash_id = unquote(path.split("/api/trash/")[1])
         if '..' in trash_id or '/' in trash_id or '\\' in trash_id:
             self._json_response({"error": "invalid trash id"}, status=400)
             return
@@ -404,10 +511,66 @@ class CleanupRoutes:
         self._invalidate_runtime_caches()
         return dest
 
+    def _trash_package(self, skill_dirs, source_op=""):
+        """Move multiple skill dirs into one trash package (one operation = one package).
+
+        Same-name skills (e.g. multi-version cache) disambiguated via sub (name__<i>).
+        Returns (dest_path, moved_count, failed_list)."""
+        trash = STATE_DIR.parent / "trash"
+        trash.mkdir(parents=True, exist_ok=True)
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        first = skill_dirs[0].name if skill_dirs else "skill"
+        pkg_name = first if len(skill_dirs) <= 1 else f"{first}等{len(skill_dirs)}项"
+        dest = trash / f"{ts}_{pkg_name}"
+        if dest.exists():
+            for i in range(100):
+                candidate = trash / f"{ts}_{pkg_name}_{i}"
+                if not candidate.exists():
+                    dest = candidate
+                    break
+        dest.mkdir(parents=True, exist_ok=False)
+        skills_meta = []
+        failed = []
+        used_subs = set()
+        for skill_dir in skill_dirs:
+            try:
+                base = skill_dir.name
+                sub = base
+                i = 0
+                while sub in used_subs:
+                    i += 1
+                    sub = f"{base}__{i}"
+                used_subs.add(sub)
+                target_sub = dest / sub
+                if skill_dir.is_symlink():
+                    target_sub.mkdir(parents=True, exist_ok=False)
+                    payload = target_sub / base
+                    shutil.move(str(skill_dir), str(payload))
+                    skills_meta.append({
+                        "name": base, "original_path": str(skill_dir),
+                        "sub": sub, "kind": "symlink",
+                        "link_target": os.readlink(payload) if payload.is_symlink() else "",
+                    })
+                else:
+                    shutil.move(str(skill_dir), str(target_sub))
+                    skills_meta.append({
+                        "name": base, "original_path": str(skill_dir),
+                        "sub": sub, "kind": "skill",
+                    })
+            except Exception as e:
+                failed.append(f"{skill_dir.name}: {e}")
+        meta = {
+            "kind": "package", "name": pkg_name, "trashed_at": ts,
+            "source_op": source_op, "skills": skills_meta, "failed": failed,
+        }
+        (dest / ".trash-meta.json").write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+        self._invalidate_runtime_caches()
+        return dest, len(skills_meta), failed
+
     def _batch_delete(self):
         """Batch-delete skills from specified directories.
         Body: {"items": [{"target": "/path/to/dir", "name": "skill-name"}, ...]}
-        """
+        >=2 valid skills pack into one trash package."""
         try:
             length = int(self.headers.get('Content-Length', 0))
             raw = self.rfile.read(length).decode('utf-8') if length else '{}'
@@ -421,8 +584,9 @@ class CleanupRoutes:
             self._json_response({"error": "items is empty"}, 400)
             return
 
-        ok, fail, details = 0, 0, []
+        fail, details = 0, []
         home = Path.home()
+        skill_dirs = []
         for item in items[:500]:  # safety cap
             name = item.get("name", "")
             target = item.get("target", "")
@@ -440,18 +604,34 @@ class CleanupRoutes:
                 fail += 1
                 details.append({"name": name, "error": "invalid skill name"})
                 continue
-            skill_dir = target_path / safe_name
-            if not _is_skill_entry(skill_dir, include_broken=True):
+            sd = target_path / safe_name
+            if not _is_skill_entry(sd, include_broken=True):
                 fail += 1
                 details.append({"name": safe_name, "error": "not a skill directory"})
                 continue
+            skill_dirs.append(sd)
+
+        # >=2 -> one package; 1 -> single trash dir
+        ok, package_id = 0, ""
+        if len(skill_dirs) == 1:
             try:
-                dest = self._trash_dir(skill_dir)
-                ok += 1
+                self._trash_dir(skill_dirs[0])
+                ok = 1
             except Exception as e:
                 fail += 1
-                details.append({"name": name, "error": str(e)})
+                details.append({"name": skill_dirs[0].name, "error": str(e)})
+        elif len(skill_dirs) > 1:
+            try:
+                dest, moved, pkg_failed = self._trash_package(skill_dirs, "batch_delete")
+                ok = moved
+                fail += len(pkg_failed)
+                package_id = dest.name
+                if pkg_failed:
+                    details.append({"package": package_id, "failed": pkg_failed[:10]})
+            except Exception as e:
+                fail += len(skill_dirs)
+                details.append({"error": str(e)})
 
-        self._json_response({"ok": True, "deleted": ok, "failed": fail, "details": details})
-        moved_paths = [str(Path(item.get("target", "")).expanduser().resolve() / item.get("name", "")) for item in items[:500] if item.get("target") and item.get("name")]
-        self._log_history("move_to_trash", paths=moved_paths, count=ok, source="batch_delete", status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"), detail={"failed": fail, "total": len(items)})
+        self._json_response({"ok": True, "deleted": ok, "failed": fail, "package": package_id, "details": details})
+        moved_paths = [str(sd) for sd in skill_dirs]
+        self._log_history("move_to_trash", paths=moved_paths, count=ok, source="batch_delete", status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"), detail={"failed": fail, "total": len(items), "package": package_id})

@@ -984,26 +984,59 @@ function renderTrash(){
   if(!trashItems.length){h+='<div class="empty">垃圾站为空</div>';$('trash-list').innerHTML=h;return}
   trashItems.forEach(t=>{
     const dateStr=t.trashed_at?t.trashed_at.replace(/(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{2})/,'$1-$2-$3 $4:$5:$6'):'';
-    const countLabel=t.kind==='symlink'?'链接入口':`${t.skill_count||1} skill${(t.skill_count||1)>1?'s':''}`;
-    h+=`<div class="card" style="margin-bottom:8px">
-      <div style="display:flex;align-items:center;gap:10px">
-        <div style="flex:1;min-width:0">
-          <div style="font-weight:600;font-size:13px">${t.name}</div>
-          <div style="font-size:11px;color:var(--text-muted)">原路径: ${t.original_path||'未知'} · ${countLabel} · ${dateStr}</div>
+    const cnt=t.skill_count||1;
+    const countLabel=t.kind==='symlink'?'链接入口':`${cnt} skill${cnt>1?'s':''}`;
+    if(t.kind==='package'){
+      const skills=(t.skills||[]).map(s=>`<div style="font-size:11px;padding:4px 0;border-bottom:1px solid var(--border-subtle)"><strong style="color:var(--text)">${escapeHtml(s.name||'')}</strong><div style="color:var(--text-muted);font-family:var(--mono);font-size:10px;word-break:break-all;margin-top:2px">${escapeHtml(s.original_path||'')}</div></div>`).join('');
+      h+=`<div class="card" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span onclick="togglePkgCard(this)" style="cursor:pointer;display:inline-block;transition:transform .15s;font-size:10px;color:var(--text-muted);width:12px;text-align:center">▶</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${escapeHtml(t.name)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">${countLabel} · ${dateStr}</div>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();restoreTrash('${t.id}')" style="font-size:10px">恢复包</button>
+          <button class="btn btn-sm btn-danger" onclick="event.stopPropagation();permanentDeleteTrash('${t.id}','${esc(t.name)}')" style="font-size:10px">删除</button>
         </div>
-        <button class="btn btn-sm btn-primary" onclick="restoreTrash('${t.id}')" style="font-size:10px">恢复</button>
-        <button class="btn btn-sm btn-danger" onclick="permanentDeleteTrash('${t.id}','${esc(t.name)}')" style="font-size:10px">永久删除</button>
-      </div>
-    </div>`;
+        <div class="pkg-body" style="display:none;margin-top:10px;padding:6px 0 6px 16px;border-left:2px solid var(--accent-bg)">${skills||'<div style="font-size:11px;color:var(--text-muted)">空</div>'}</div>
+      </div>`;
+    }else{
+      h+=`<div class="card" style="margin-bottom:8px">
+        <div style="display:flex;align-items:center;gap:10px">
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px">${escapeHtml(t.name)}</div>
+            <div style="font-size:11px;color:var(--text-muted)">原路径: ${escapeHtml(t.original_path||'未知')} · ${countLabel} · ${dateStr}</div>
+          </div>
+          <button class="btn btn-sm btn-primary" onclick="restoreTrash('${t.id}')" style="font-size:10px">恢复</button>
+          <button class="btn btn-sm btn-danger" onclick="permanentDeleteTrash('${t.id}','${esc(t.name)}')" style="font-size:10px">永久删除</button>
+        </div>
+      </div>`;
+    }
   });
   $('trash-list').innerHTML=h;
+}
+function togglePkgCard(arrow){
+  const card=arrow.closest('.card');
+  const body=card&&card.querySelector('.pkg-body');
+  if(!body)return;
+  const open=body.style.display!=='none';
+  body.style.display=open?'none':'block';
+  arrow.style.transform=open?'rotate(0deg)':'rotate(90deg)';
 }
 async function restoreTrash(id){
   try{
     const r=await fetch(`/api/trash/${encodeURIComponent(id)}/restore`,{method:'POST',headers:{'Content-Type':'application/json'}});
     const d=await r.json();
-    if(d.ok){toast(`已恢复: ${d.restored_to}`);await loadTrash();invalidateTargetsCache();clearGlobalSearchCache();await loadData()}
-    else{toast(d.error||'恢复失败','error')}
+    if(d.ok){
+      if(d.kind==='package'){
+        const okN=d.restored_to?d.restored_to.length:0;
+        const failN=d.failed?d.failed.length:0;
+        toast(`已恢复 ${okN} 个 skill${failN?`，${failN} 个失败`:''}`);
+      }else{
+        toast(`已恢复: ${d.restored_to}`);
+      }
+      await loadTrash();invalidateTargetsCache();clearGlobalSearchCache();await loadData()
+    }else{toast(d.error||'恢复失败','error')}
   }catch{toast('恢复失败','error')}
 }
 async function permanentDeleteTrash(id,name){

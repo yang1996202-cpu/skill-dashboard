@@ -55,6 +55,7 @@ function goView(v){
 /* ── Data ── */
 let globalStats=null;
 let globalOverlap=null;
+let deletedStats=null;
 let _targetsCache=null;
 let _targetsCacheTs=0;
 function invalidateTargetsCache(){_targetsCache=null;_targetsCacheTs=0;}
@@ -360,6 +361,7 @@ async function loadData(){
   // Load cached scan results (if user previously ran a scan)
   loadCachedScanResult();
   loadTrash();
+  fetch('/api/trash/stats').then(r=>r.json()).catch(()=>null).then(d=>{if(d){deletedStats=d;renderStats();}});
   // Load installed plugins
   fetch('/api/installed-plugins').then(r=>r.json()).catch(()=>null).then(d=>{
     if(d){installedPlugins=d.plugins||[];enabledPlugins=d.enabled||[];knownMarketplaces=d.marketplaces||[];renderStats();renderWorkbench();}
@@ -544,7 +546,8 @@ function renderStats(){
     <div class="stat" style="cursor:pointer" onclick="goView('sources')" title="当前 Agent 配置的 MCP server 数（点击查看清单）"><div class="val">${cap.mcpCount||0}</div><div class="lbl">MCP</div></div>
     <div class="stat" title="市场目录、缓存、旧包等只作为来源库存的 skill 数"><div class="val">${cap.sourceOnlySkills||0}</div><div class="lbl">仅库存</div></div>
     <div class="stat s-libraries" title="已发现的 Agent/应用分组数"><div class="val">${gTargets}</div><div class="lbl">应用</div></div>
-    <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;
+    <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>
+    <div class="stat" style="cursor:pointer" onclick="goView('trash')" title="累计移入垃圾站的 skill 总数（点击查看垃圾站）"><div class="val" style="color:var(--accent)">${deletedStats?.deleted_total??0}</div><div class="lbl">累计删除</div></div>`;
 }
 
 /* ── Categories ── */

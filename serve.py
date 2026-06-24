@@ -103,6 +103,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/mcp-inventory"):          ("_mcp_inventory_api", None),
         ("GET", "/api/scan-result"):            ("_scan_result", None),
         ("GET", "/api/trash"):                  ("_list_trash", None),
+        ("GET", "/api/trash/stats"):            ("_trash_stats", None),
         ("GET", "/api/preview"):                ("_preview_route", None),
         ("POST", "/api/target"):                ("_set_target", None),
         ("POST", "/api/diagnose"):              ("_diagnose", None),

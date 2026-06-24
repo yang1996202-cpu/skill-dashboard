@@ -107,6 +107,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/duplicate-decisions` | GET | 列出本地多端部署决策 |
 | `/api/duplicate-decision` | POST/DELETE | 记录 / 撤销多端部署决策 |
 | `/api/trash` | GET/DELETE | 列出垃圾站 / 清空 |
+| `/api/trash/stats` | GET | 累计删除/清空统计(读全量 history.jsonl 聚合,不受 /api/history 50 条限制) |
 | `/api/trash/{id}` | DELETE | 永久删除 |
 | `/api/trash/{id}/restore` | GET/POST | 恢复到原路径或当前目录 |
 | `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
@@ -179,6 +180,10 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - 保留副本仍存在，且执行前 hash 没有变化
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
+
+### 垃圾站按操作打包(kind:package)
+
+一次移入操作(`_cleanup_execute` 请求 / `batch_delete`)涉及 ≥2 个 skill 时聚成一个 trash 包(`kind:package`),`.trash-meta.json` 记 `skills:[{name,original_path,sub}]`;同名 skill(多版本快照)用 `sub`(`name__<i>`)区分。前端两级展示(包→展开 skill,`togglePkgCard`)。单 skill 删除保持单条(`kind:skill`,`_trash_dir` 保留给 `_delete_skill`)。包恢复 per-skill 回 `original_path` + failed 收集(200+failed,非整体 409)。`/api/trash/stats` 读全量 `history.jsonl` 聚合累计删除。实现都在 `routes/cleanup.py`。
 
 ### skill 模型派生字段
 

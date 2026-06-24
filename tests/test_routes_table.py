@@ -47,7 +47,7 @@ class TestRoutesTable(unittest.TestCase):
         keys = set(DashboardHandler._ROUTES_EXACT.keys())
         for key in [("GET", "/api/fast-scan"), ("GET", "/api/targets"),
                     ("GET", "/api/openapi"), ("POST", "/api/scan-run"),
-                    ("DELETE", "/api/trash")]:
+                    ("DELETE", "/api/trash"), ("GET", "/api/trash/stats")]:
             self.assertIn(key, keys, f"关键端点未在精确表注册: {key}")
         prefixes = {(m, p, s) for m, p, s, *_ in DashboardHandler._ROUTES_PREFIX}
         for rule in [("GET", "/static/", ""), ("GET", "/api/skill/", "/content"),
