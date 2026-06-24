@@ -1,4 +1,4 @@
-let scan=null,health=null,skills=[],diagState='idle',installedPlugins=[];
+let scan=null,health=null,skills=[],diagState='idle',installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null;
 const $=id=>document.getElementById(id);
 let diagPollTimer=null;
 let categoryOverrides={};
@@ -207,6 +207,28 @@ function currentAgentGroup(){
   return targetGroups.find(g=>g.agent===currentName)||null;
 }
 
+// 按 group.agent 关键词匹配 mcpInventory 条目(claude/codex/cursor)。
+// 仪表盘当前 Agent 计数 + 能力来源页各卡片内联 MCP 区块共用同一口径,
+// 避免两份关键词列表漂移。
+function findAgentMcpEntry(group){
+  if(!mcpInventory||!mcpInventory.agents)return null;
+  const cur=(group?.agent||'').toLowerCase();
+  if(!cur)return null;
+  let key='';
+  if(cur.includes('claude'))key='claude';
+  else if(cur.includes('codex'))key='codex';
+  else if(cur.includes('cursor'))key='cursor';
+  for(const b of mcpInventory.agents){
+    const ba=b.agent.toLowerCase();
+    if((key&&ba.includes(key))||ba===cur)return b;
+  }
+  return null;
+}
+function currentAgentMcpCount(){
+  const b=findAgentMcpEntry(currentAgentGroup());
+  if(!b)return 0;
+  return b.sources.reduce((n,s)=>n+((s.servers||[]).length),0);
+}
 function currentCapabilitySummary(){
   const group=currentAgentGroup();
   const dirs=group?.dirs||targets;
@@ -214,6 +236,7 @@ function currentCapabilitySummary(){
     ...summarizeCapabilityDirs(dirs),
     agent:group?.agent||targets.find(t=>t.is_current)?.name||scan?.target?.label||'当前 Agent',
     profile:group?.profile_summary||null,
+    mcpCount:currentAgentMcpCount(),
   };
 }
 
@@ -328,7 +351,10 @@ async function loadData(){
   loadTrash();
   // Load installed plugins
   fetch('/api/installed-plugins').then(r=>r.json()).catch(()=>null).then(d=>{
-    if(d){installedPlugins=d.plugins||[];renderStats();renderWorkbench();}
+    if(d){installedPlugins=d.plugins||[];enabledPlugins=d.enabled||[];knownMarketplaces=d.marketplaces||[];renderStats();renderWorkbench();}
+  });
+  fetch('/api/mcp-inventory').then(r=>r.json()).catch(()=>null).then(d=>{
+    if(d){mcpInventory=d;renderStats();if(typeof renderSources==='function')renderSources();}
   });
 }
 
@@ -504,6 +530,7 @@ function renderStats(){
     <div class="stat s-unique" title="当前 Agent 可解释为运行态能力的 skill 数"><div class="val">${cap.activeSkills||skills.length}</div><div class="lbl">当前能力</div></div>
     <div class="stat" title="当前 Agent 已启用插件目录数"><div class="val">${cap.pluginDirs||0}</div><div class="lbl">启用插件</div></div>
     <div class="stat" title="当前 Agent 连接器能力包数量"><div class="val">${cap.connectorDirs||0}</div><div class="lbl">连接器</div></div>
+    <div class="stat" style="cursor:pointer" onclick="goView('sources')" title="当前 Agent 配置的 MCP server 数（点击查看清单）"><div class="val">${cap.mcpCount||0}</div><div class="lbl">MCP</div></div>
     <div class="stat" title="市场目录、缓存、旧包等只作为来源库存的 skill 数"><div class="val">${cap.sourceOnlySkills||0}</div><div class="lbl">仅库存</div></div>
     <div class="stat s-libraries" title="已发现的 Agent/应用分组数"><div class="val">${gTargets}</div><div class="lbl">应用</div></div>
     <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>`;

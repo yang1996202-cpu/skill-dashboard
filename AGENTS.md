@@ -89,6 +89,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/target` | POST | 切换当前目标库 |
 | `/api/source/skills` | GET | 读取来源 skill/command 列表；默认不生成 understanding，加 `?understanding=1` 才计算 |
 | `/api/installed-plugins` | GET | 返回本机 Claude 插件状态（已启用 / 已安装 / 市场列表）|
+| `/api/mcp-inventory` | GET | 跨 Agent MCP server 清单（Claude `.claude.json` / Codex `config.toml` / Cursor `mcp.json` / 项目级 `.mcp.json`，只读 name/transport/disabled）|
 | `/api/custom-sources` | GET/POST/DELETE | 管理自定义来源 |
 | `/api/steal` | POST | 从 GitHub URL 安装 skill |
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
@@ -160,7 +161,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 2. **Host profile**：`discover_host_profiles()` 给每个宿主生成非敏感轮廓，包括 source roots、profile family、MCP 配置数量、runtime/catalog MCP server 数。MCP 只保留 server 名、transport、disabled 标记和计数；不返回 URL、headers、env、command args。
 3. **Host inspector**：`plugin_context_for_dir()` 把目录解释成统一 runtime metadata。Claude/Codex 保留独立逻辑；WorkBuddy 和 CodeBuddy 走同一个 `buddy-family` inspector，因为二者共享 `skills`、`skills-marketplace`、`plugins/marketplaces`、`connectors`、`connectors-marketplace`、`mcp.json` 目录范式。
 
-`/api/targets` 会把 compact `profile_summary` 挂到每个 Agent group 上（来自 `host_profile_summaries_by_agent`）。完整 profile 仅内部复用，无独立路由。新增 Agent 时，先看 generic profile 是否已发现 source roots/MCP，再决定是否补专属 inspector。
+`/api/targets` 会把 compact `profile_summary` 挂到每个 Agent group 上（来自 `host_profile_summaries_by_agent`），但 compact 丢弃了 MCP server 名清单（只留计数）。MCP server 清单走独立路由 `/api/mcp-inventory`（`host_inspectors.load_mcp_inventory`，三家统一读取：Claude `.claude.json` 顶层+projects、Codex `config.toml` 用 tomllib、Cursor/项目级 `.mcp.json` 复用 `_mcp_summary`）；裁剪边界同 host_profile（只 name/transport/disabled，不返回 url/command/args/env）。新增 Agent 时，先看 generic profile 是否已发现 source roots/MCP，再决定是否补专属 inspector。
 
 ### 扫描 API：用户选范围 + 选类型
 
@@ -226,6 +227,7 @@ group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(
 - **拖拽排序**：仅从 `⋮⋮` 手柄触发拖拽（`draggable` 在 handle 上），不干扰文字选择/复制
 - **删除后保留展开状态**：`refreshAfterDelete()` 重拉 targets 后恢复已展开卡片
 - **Skill 内容查看**：点击 skill 名或"查看"按钮，调 `showSkill(name, dir)` 通过 `/api/preview` 跨目录查看
+- **MCP servers 内联折叠**：每个 Agent 卡片展开后,底部 `🔌 MCP servers (N)` 折叠行(配置层,默认收起);MCP 归属各自 Agent,跨 Agent 全景靠"全部"视图。匹配口径 `findAgentMcpEntry`(app-core.js,关键词 claude/codex/cursor),数据走 `/api/mcp-inventory`
 
 ### 批量添加来源
 

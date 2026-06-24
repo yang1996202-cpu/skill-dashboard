@@ -280,6 +280,41 @@ async function refreshAfterDelete(changedPaths){
   });
 }
 
+// 各 Agent 卡片内联的 MCP 折叠区(配置层,默认折叠)。
+// 替代原顶部跨 Agent 清单——MCP 归属各自 Agent,口径跟"卡片=Agent"结构对齐;
+// 跨 Agent 全景靠切"全部"视图逐个卡片看。匹配口径见 app-core.js::findAgentMcpEntry。
+function renderAgentMcpBlock(g){
+  const b=findAgentMcpEntry(g);
+  if(!b)return '';
+  let totalServers=0,sourceCount=0;
+  for(const s of (b.sources||[])){
+    const sv=s.servers||[];
+    if(sv.length){totalServers+=sv.length;sourceCount++}
+  }
+  if(!totalServers)return '';
+  const foldId='mcp-'+Math.random().toString(36).slice(2,8);
+  let h=`<div class="src-tier2-head src-mcp-head" onclick="var e=document.getElementById('${foldId}');var s=e.style.display;e.style.display=s==='none'?'':'none';this.querySelector('.mcp-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+    <span class="tier2-arrow mcp-arrow">▶</span>
+    <span>🔌 MCP servers</span>
+    <span style="font-weight:400">${totalServers} server${sourceCount>1?` · ${sourceCount} 配置源`:''}</span>
+  </div>
+  <div id="${foldId}" style="display:none" class="src-tier2-body src-mcp-body">`;
+  for(const s of (b.sources||[])){
+    const sv=s.servers||[];
+    if(!sv.length)continue;
+    const pathShort=(s.path||'').replace('/Users/yang','~');
+    h+=`<div style="padding:5px 14px 5px 52px;border-top:1px solid var(--border-subtle)">
+      <div style="font-size:10px;color:var(--text-muted);margin-bottom:3px">[${esc(s.scope_label||s.scope||'')}] <span style="opacity:.7">${esc(pathShort)}</span></div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px">`;
+    for(const v of sv){
+      const off=v.disabled;
+      h+=`<span title="${esc(v.transport)}${off?' · 已禁用':''}" style="font-size:11px;padding:1px 7px;border-radius:4px;background:var(--bg);border:1px solid var(--border);color:${off?'var(--text-muted)':'var(--text)'};text-decoration:${off?'line-through':'none'}">${esc(v.name)}<span style="font-size:9px;color:var(--text-muted);margin-left:4px">${esc(v.transport)}</span></span>`;
+    }
+    h+=`</div></div>`;
+  }
+  h+=`</div>`;
+  return h;
+}
 function renderSources(){
   if(!targets.length){$('sources-list').innerHTML='';return}
   try{
@@ -461,6 +496,7 @@ function renderSources(){
         });
         h+=`</div>`;
       }
+      h+=renderAgentMcpBlock(g);
       h+=`</div></div>`;
     });
   }else{
@@ -731,8 +767,21 @@ function updateSrcBatchUI(){
   if(cnt)cnt.textContent=sel.length?`${sel.length} 个已选`:'';
 }
 
+function enabledMarketOf(path){
+  // path 落在 ~/.claude/plugins/marketplaces/<启用市场>/ 下 → 返回市场名;否则 null
+  const m=(path||'').match(/plugins[\/\\]marketplaces[\/\\]([^\/\\]+)/);
+  if(!m)return null;
+  const market=m[1];
+  return enabledPlugins.some(e=>e.endsWith('@'+market))?market:null;
+}
 async function deleteSrcSkill(path,name){
-  if(!confirm(`确认删除 ${name}？将移入垃圾站`))return;
+  const market=enabledMarketOf(path);
+  let msg=`确认删除 ${name}？将移入垃圾站`;
+  if(market){
+    const names=enabledPlugins.filter(e=>e.endsWith('@'+market)).map(e=>e.split('@')[0]).join('、');
+    msg=`⚠ ${name} 属于启用插件「${names}」的市场源(${market})。\n直接删:Claude 下次同步会从 GitHub 拉回。\n彻底卸载:Claude 里 /plugin 禁用该插件。\n\n仍要只删这个文件?`;
+  }
+  if(!confirm(msg))return;
   try{
     const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});
     const d=await r.json();
@@ -743,7 +792,13 @@ async function deleteSrcSkill(path,name){
 async function batchDeleteSrcSkills(){
   const sel=[...srcSelectedSkills].map(k=>({path:k.split('::')[0],name:k.split('::').slice(1).join('::')}));
   if(!sel.length)return;
-  if(!confirm(`确认删除 ${sel.length} 个 skill？将移入垃圾站`))return;
+  const marketHits=sel.filter(s=>enabledMarketOf(s.path));
+  let msg=`确认删除 ${sel.length} 个 skill？将移入垃圾站`;
+  if(marketHits.length){
+    const markets=[...new Set(marketHits.map(s=>enabledMarketOf(s.path)))];
+    msg=`⚠ 选中的 ${marketHits.length} 个属于启用插件的市场源(${markets.join('、')})。\n直接删:Claude 下次同步会从 GitHub 拉回。\n彻底卸载:Claude 里 /plugin 禁用。\n\n仍要只删这些文件?`;
+  }
+  if(!confirm(msg))return;
   let ok=0,fail=0;
   for(const{name,path}of sel){
     try{const r=await fetch(`/api/skill/${encodeURIComponent(name)}?target=${encodeURIComponent(path)}`,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++}

@@ -13,6 +13,11 @@ import os
 import re
 from pathlib import Path
 
+try:
+    import tomllib  # Python 3.11+ stdlib; <3.11 → Codex MCP 降级为空
+except ModuleNotFoundError:
+    tomllib = None
+
 
 _CODEX_PLUGIN_STATE = None
 _CODEX_PLUGIN_STATE_SIG = None
@@ -1077,6 +1082,147 @@ def host_profile_summaries_by_agent(home: Path | None = None) -> dict[str, dict]
             "mcp_disabled_count": profile["mcp_disabled_count"],
         }
     return summaries
+
+
+# ── MCP inventory (cross-agent, non-sensitive) ──────────────────────────────
+# Claude(~/.claude.json)/ Codex(config.toml)/ Cursor(mcp.json)/ 项目级(.mcp.json)
+# 只返回 server 名/transport/disabled;不返回 url/command/args/env/headers。
+
+
+def _mcp_server_list(servers_dict):
+    """{name: cfg} → [{name, transport, disabled}],strip sensitive fields。"""
+    if not isinstance(servers_dict, dict):
+        return []
+    out = []
+    for name, cfg in sorted(servers_dict.items(), key=lambda x: str(x[0]).lower()):
+        c = cfg if isinstance(cfg, dict) else {}
+        out.append({
+            "name": str(name),
+            "transport": _mcp_transport(c),
+            "disabled": bool(c.get("disabled")),
+        })
+    return out
+
+
+def _claude_mcp_sources(home):
+    """~/.claude.json:顶层 mcpServers(user)+ projects[path].mcpServers(local)。"""
+    path = home / ".claude.json"
+    if not path.is_file():
+        return []
+    data = _read_json_file(path, {})
+    sources = []
+    user = data.get("mcpServers") or {}
+    if isinstance(user, dict) and user:
+        sources.append({"scope": "user", "scope_label": "全局(user)",
+                        "path": str(path), "servers": _mcp_server_list(user)})
+    projects = data.get("projects") or {}
+    if isinstance(projects, dict):
+        for proj, pcfg in projects.items():
+            if not isinstance(pcfg, dict):
+                continue
+            ps = pcfg.get("mcpServers") or {}
+            if isinstance(ps, dict) and ps:
+                sources.append({"scope": "local", "scope_label": "项目私有(local)",
+                                "path": proj, "servers": _mcp_server_list(ps)})
+    return sources
+
+
+def _codex_mcp_sources(home):
+    """~/.codex/config.toml [mcp_servers.*] via tomllib。
+    子表(.env/.http_headers)tomllib 嵌成子 dict,不误判为独立 server。"""
+    if tomllib is None:
+        return []
+    path = home / ".codex" / "config.toml"
+    if not path.is_file():
+        return []
+    try:
+        with open(path, "rb") as f:
+            data = tomllib.load(f)
+    except Exception:
+        return []
+    servers = _mcp_server_list(data.get("mcp_servers") or {})
+    if not servers:
+        return []
+    return [{"scope": "global", "scope_label": "全局(config.toml)",
+             "path": str(path), "servers": servers}]
+
+
+def _cursor_mcp_sources(home):
+    """~/.cursor/mcp.json(复用 _mcp_summary 的字段裁剪)。"""
+    summary = _mcp_summary(home / ".cursor" / "mcp.json", "global")
+    if not summary or not summary.get("servers"):
+        return []
+    return [{"scope": "global", "scope_label": "全局(mcp.json)",
+             "path": summary["path"], "servers": summary["servers"]}]
+
+
+def _project_mcp_sources(home):
+    """~/projects/*/.mcp.json(team scope)。"""
+    sources = []
+    root = home / "projects"
+    if not root.is_dir():
+        return sources
+    for proj in sorted(root.iterdir()):
+        if not proj.is_dir():
+            continue
+        summary = _mcp_summary(proj / ".mcp.json", "project")
+        if summary and summary.get("servers"):
+            sources.append({"scope": "project", "scope_label": "团队共享(.mcp.json)",
+                            "path": summary["path"], "servers": summary["servers"]})
+    return sources
+
+
+_MCP_INVENTORY = None
+_MCP_INVENTORY_SIG = None
+
+
+def load_mcp_inventory(home=None):
+    """Aggregate MCP servers across Claude/Codex/Cursor/project configs.
+
+    照抄 load_claude_plugin_state 的 mtime 签名缓存。返回非敏感清单:
+    server 名/transport/disabled per agent;不含 url/command/args/env/headers。
+    """
+    global _MCP_INVENTORY, _MCP_INVENTORY_SIG
+    home = home or Path.home()
+    watched = [
+        home / ".claude.json",
+        home / ".codex" / "config.toml",
+        home / ".cursor" / "mcp.json",
+    ]
+    proot = home / "projects"
+    if proot.is_dir():
+        for proj in proot.iterdir():
+            if proj.is_dir():
+                watched.append(proj / ".mcp.json")
+    # per-file try:单个文件缺失/broken symlink 只给自己置 0,不影响其他文件的
+    # mtime 追踪。生成器+外层 try 会因任一失败把全部置 0、签名恒定、缓存锁死。
+    sig = []
+    for p in watched:
+        try:
+            sig.append((str(p), p.stat().st_mtime_ns))
+        except OSError:
+            sig.append((str(p), 0))
+    sig = tuple(sig)
+    if _MCP_INVENTORY is not None and _MCP_INVENTORY_SIG == sig:
+        return _MCP_INVENTORY
+
+    blocks = []
+    for agent, family, fn in (
+        ("Claude Code", "claude-code", _claude_mcp_sources),
+        ("Codex", "codex", _codex_mcp_sources),
+        ("Cursor", "cursor", _cursor_mcp_sources),
+    ):
+        sources = [s for s in fn(home) if s.get("servers")]
+        if sources:
+            blocks.append({"agent": agent, "family": family, "sources": sources})
+    proj_sources = [s for s in _project_mcp_sources(home) if s.get("servers")]
+    if proj_sources:
+        blocks.append({"agent": "项目级(.mcp.json)", "family": "project", "sources": proj_sources})
+
+    total = sum(len(s["servers"]) for b in blocks for s in b["sources"])
+    _MCP_INVENTORY = {"agents": blocks, "totals": {"agents": len(blocks), "servers": total}}
+    _MCP_INVENTORY_SIG = sig
+    return _MCP_INVENTORY
 
 
 # macOS app-embedded agents that install standard SKILL.md skills under

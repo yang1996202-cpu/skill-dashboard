@@ -100,6 +100,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/custom-sources"):         ("_get_custom_sources", None),
         ("GET", "/api/global-stats"):           ("_global_stats", None),
         ("GET", "/api/installed-plugins"):      ("_installed_plugins_api", None),
+        ("GET", "/api/mcp-inventory"):          ("_mcp_inventory_api", None),
         ("GET", "/api/scan-result"):            ("_scan_result", None),
         ("GET", "/api/trash"):                  ("_list_trash", None),
         ("GET", "/api/preview"):                ("_preview_route", None),

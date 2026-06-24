@@ -26,7 +26,7 @@ from skilldash.discovery import (
     _summarize_skill_roles,
     _skill_entry_kind,
 )
-from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state
+from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state, load_mcp_inventory
 from skilldash.paths import CACHE_DIR, STATE_DIR
 from skilldash.source_ops import install_skill
 from skilldash.understanding import compact_understanding, understand_skill
@@ -140,6 +140,10 @@ class SourceRoutes:
             "enabled": list(state.get("enabled", set())),
             "marketplaces": list(state.get("marketplaces", {}).keys()),
         }
+
+    def _mcp_inventory_api(self):
+        """Cross-agent MCP server inventory (non-sensitive)."""
+        self._json_response(load_mcp_inventory())
 
     def _list_source_skills(self):
         """Return skills or commands in a given source directory (for穿透 browsing)."""
