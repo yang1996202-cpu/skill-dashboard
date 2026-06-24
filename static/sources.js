@@ -444,7 +444,7 @@ function renderSources(){
         h+=`<div style="border-top:1px solid var(--border-subtle)">
           <div style="padding:5px 14px 5px ${pad}px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${catFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.cat-arrow').style.transform=s==='none'?'rotate(90deg)':''">
             <span class="cat-arrow" style="font-size:8px;transition:transform .15s;transform:${arrowInit}">▶</span>
-            <span>${cm.emoji}</span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${formatSourceCounts(catDirs)})</span>
+            <span class="cap-dot" style="--cap-c:${cm.color||'var(--text-muted)'}"></span><span>${cm.label}</span><span style="font-weight:400">(${catDirs.length} 目录 · ${formatSourceCounts(catDirs)})</span>
             ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
           </div>
           <div id="${catFoldId}" style="${expanded?'':'display:none'}">`;

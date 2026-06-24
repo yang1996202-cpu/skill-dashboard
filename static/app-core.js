@@ -15,11 +15,13 @@ function setCategory(name,cat){
 let selectedSkills=new Set();
 
 /* ── Theme ── */
+const ICON_SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4.2"/><path d="M12 2v2.5M12 19.5V22M4.2 4.2l1.8 1.8M18 18l1.8 1.8M2 12h2.5M19.5 12H22M4.2 19.8l1.8-1.8M18 6l1.8-1.8"/></svg>';
+const ICON_MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>';
 function getTheme(){return localStorage.getItem('sd-theme')||'light'}
 function applyTheme(t){
   document.documentElement.setAttribute('data-theme',t);
   localStorage.setItem('sd-theme',t);
-  $('theme-icon').textContent=t==='dark'?'🌙':'☀️';
+  $('theme-icon').innerHTML=t==='dark'?ICON_MOON:ICON_SUN;
 }
 function toggleTheme(){applyTheme(getTheme()==='light'?'dark':'light')}
 applyTheme(getTheme());
@@ -83,17 +85,17 @@ let _sourceViewMode=(()=>{
 let _expandedSourceAgent=null;
 
 const CAPABILITY_META={
-  'active-user':{emoji:'⭐',label:'用户自建',desc:'用户全局技能根，通常会进入该 Agent 的基础能力面。'},
-  'active-system':{emoji:'🧩',label:'系统内置',desc:'宿主内置技能，不是用户项目目录。'},
-  'active-plugin':{emoji:'🔌',label:'已启用插件',desc:'宿主配置明确启用的插件包。'},
-  'active-connector':{emoji:'🔗',label:'连接器包',desc:'由 app/connector 运行时按需暴露的能力包。'},
-  'installed-disabled':{emoji:'⏸',label:'已安装未启用',desc:'安装记录存在，但当前宿主未启用。'},
-  'source-cache':{emoji:'🗄',label:'仅缓存',desc:'本地缓存、旧包或备份，不等于当前上下文能力。'},
-  'source-catalog':{emoji:'📚',label:'市场目录',desc:'marketplace/catalog 货架目录，只作为来源材料。'},
-  'review-copy':{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 复制或导入目录，需要复核。'},
-  'project-local':{emoji:'📁',label:'项目级',desc:'项目内技能目录，是否加载取决于宿主和当前项目。'},
-  commands:{emoji:'⌨️',label:'命令',desc:'命令目录，和 skills 分开统计。'},
-  unknown:{emoji:'❓',label:'未知',desc:'只确认文件存在，未识别运行态。'},
+  'active-user':{color:'var(--accent)',label:'用户自建',desc:'用户全局技能根，通常会进入该 Agent 的基础能力面。'},
+  'active-system':{color:'var(--indigo)',label:'系统内置',desc:'宿主内置技能，不是用户项目目录。'},
+  'active-plugin':{color:'var(--green)',label:'已启用插件',desc:'宿主配置明确启用的插件包。'},
+  'active-connector':{color:'var(--cyan)',label:'连接器包',desc:'由 app/connector 运行时按需暴露的能力包。'},
+  'installed-disabled':{color:'var(--text-muted)',label:'已安装未启用',desc:'安装记录存在，但当前宿主未启用。'},
+  'source-cache':{color:'var(--text-muted)',label:'仅缓存',desc:'本地缓存、旧包或备份，不等于当前上下文能力。'},
+  'source-catalog':{color:'var(--amber)',label:'市场目录',desc:'marketplace/catalog 货架目录，只作为来源材料。'},
+  'review-copy':{color:'var(--purple)',label:'导入/副本',desc:'跨 Agent 复制或导入目录，需要复核。'},
+  'project-local':{color:'#4E7A8C',label:'项目级',desc:'项目内技能目录，是否加载取决于宿主和当前项目。'},
+  commands:{color:'#B89B3A',label:'命令',desc:'命令目录，和 skills 分开统计。'},
+  unknown:{color:'var(--text-muted)',label:'未知',desc:'只确认文件存在，未识别运行态。'},
 };
 
 const SKILL_ROLE_META={
@@ -520,9 +522,9 @@ function renderWorkbench(){
     <div class="card">
       <div class="card-head"><h3>运行态摘要</h3><span class="sub">${currentName}</span></div>
       <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>✅ 当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>📚 仅作来源</span><b>${cap.sourceOnlySkills||0}</b></div><div class="scope-desc">市场目录、缓存和旧包只解释来源，不等同上下文加载。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>🧹 整理队列</span><b>${m.actionable||0}</b></div><div class="scope-desc">${policyCounts.manage||0} 个可管理目录 · ${policyCounts.review||0} 个待复核目录 · ${policyCounts.observe||0} 个观察目录。</div></div>
+        <div class="scope-card primary"><div class="scope-name"><span>当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}</div></div>
+        <div class="scope-card warn"><div class="scope-name"><span>仅作来源</span><b>${cap.sourceOnlySkills||0}</b></div><div class="scope-desc">市场目录、缓存和旧包只解释来源，不等同上下文加载。</div></div>
+        <div class="scope-card muted"><div class="scope-name"><span>整理队列</span><b>${m.actionable||0}</b></div><div class="scope-desc">${policyCounts.manage||0} 个可管理目录 · ${policyCounts.review||0} 个待复核目录 · ${policyCounts.observe||0} 个观察目录。</div></div>
       </div>
     </div>
   </div>`;
@@ -548,8 +550,11 @@ function renderStats(){
 /* ── Categories ── */
 
 /* ── Categories ── */
-const CAT_NAMES={'code-dev':'💻 代码开发','content':'✍️ 内容创作','image-gen':'🎨 图片生成','video-audio':'🎬 视频/音频','data':'📊 数据分析','web-search':'🔍 搜索','social':'📱 社交','doc':'📄 文档','comms':'💬 通讯','design':'🖌️ 设计','translate':'🌐 翻译','sysadmin':'🖥️ 系统','persona':'🎭 人格','finance':'💰 财务','sales':'💼 销售/求职','other':'📦 其他','':'📦 未分类'};
-const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#f472b6','sales':'#f59e0b','other':'var(--text-muted)','':'var(--text-muted)'};
+const CAT_NAMES={'code-dev':'代码开发','content':'内容创作','image-gen':'图片生成','video-audio':'视频/音频','data':'数据分析','web-search':'搜索','social':'社交','doc':'文档','comms':'通讯','design':'设计','translate':'翻译','sysadmin':'系统','persona':'人格','finance':'财务','sales':'销售/求职','other':'其他','':'未分类'};
+const CAT_COLORS={'code-dev':'var(--indigo)','content':'var(--green)','image-gen':'var(--purple)','video-audio':'var(--red)','data':'var(--cyan)','web-search':'var(--amber)','social':'#C0658C','doc':'#8B7355','comms':'#5E8CA0','design':'#A67C52','translate':'#4E7A8C','sysadmin':'#7E6B8E','persona':'#9E6B7E','finance':'#B89B3A','sales':'#C08800','other':'var(--text-muted)','':'var(--text-muted)'};
+const CAT_ABBR={'code-dev':'CD','content':'CN','image-gen':'IG','video-audio':'AV','data':'DA','web-search':'SR','social':'SO','doc':'DC','comms':'CM','design':'DS','translate':'TR','sysadmin':'SY','persona':'PS','finance':'FN','sales':'SL','other':'OT','':'·'};
+function catLabel(c){return CAT_NAMES[c]||c}
+function catAbbr(c){return CAT_ABBR[c]||String(c||'?').replace(/[^a-z0-9]/gi,'').slice(0,2).toUpperCase()||'?'}
 
 function renderCategories(){
   // Build current-target distribution
@@ -564,24 +569,24 @@ function renderCategories(){
     const gd=globalStats.category_distribution||{};
     const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
     const total=globalStats.unique_skills||0;
-    let html=`<div class="card"><div class="card-head"><h3>📊 库存分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
+    let html=`<div class="card"><div class="card-head"><h3>库存分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
     <div class="cat-grid">${cats.map(([c,n])=>{
       const pct=(n/total*100).toFixed(1);
       const barW=(n/mx*100).toFixed(0);
-      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
+      return`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
     }).join('')}</div></div>`;
     // Current target distribution
-    html+=`<div class="card" style="margin-top:12px"><div class="card-head"><h3>📂 ${safeDesc(curLabel)}</h3><span class="sub">${localTotal} skills · ${localCats.length} 个分类</span></div>
+    html+=`<div class="card" style="margin-top:12px"><div class="card-head"><h3>${safeDesc(curLabel)}</h3><span class="sub">${localTotal} skills · ${localCats.length} 个分类</span></div>
     <div class="cat-grid">${localCats.map(([c,n])=>{
       const pct=(n/localTotal*100).toFixed(1);
       const barW=(n/localMx*100).toFixed(0);
-      return`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
+      return`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
     }).join('')}</div></div>`;
     $('cat-card').innerHTML=html;
   }else{
     // Fallback: current-target only
-    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>📂 ${curLabel}</h3><span class="sub">${localCats.length} 类</span></div>
-    <div class="cat-grid">${localCats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon">${(CAT_NAMES[c]||c).split(' ')[0]}</div><div class="cat-name">${(CAT_NAMES[c]||c).split(' ').slice(1).join(' ')||c}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/localMx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
+    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>${curLabel}</h3><span class="sub">${localCats.length} 类</span></div>
+    <div class="cat-grid">${localCats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/localMx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
   }
 }
 
@@ -632,7 +637,7 @@ function renderSkillMiniUnderstanding(s){
     ...understandingLabels(u.capabilities,3),
   ].slice(0,4);
   const tagHtml=tags.length?`<div class="skill-tags">${tags.map(t=>`<span class="skill-tag">${escapeHtml(t)}</span>`).join('')}</div>`:'';
-  return `<div class="skill-summary" title="${esc(summary)}">${escapeHtml(summary)}</div>${tagHtml}`;
+  return `<div class="skill-summary" title="${esc(summary)}"><span class="fm-key">description</span><span class="fm-val">${escapeHtml(summary)}</span></div>${tagHtml}`;
 }
 function renderUnderstandingPanel(u,opts={}){
   if(!u||u.error)return '';
@@ -693,12 +698,12 @@ function renderSkillsList(){
   else{sortedCats.forEach(([cat,sk])=>{
     const pct=(sk.length/total*100).toFixed(1);
     const barW=(sk.length/mx*100).toFixed(0);
-    const icon=(CAT_NAMES[cat]||cat).split(' ')[0];
-    const label=(CAT_NAMES[cat]||cat).split(' ').slice(1).join(' ')||cat;
+    const icon=catAbbr(cat);
+    const label=catLabel(cat);
     html+=`<div class="skill-group">
       <div class="skill-group-head" onclick="toggleGroup(this)" style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background .1s ease">
         <span class="arrow" style="font-size:9px;color:var(--text-muted);transition:transform .15s">▶</span>
-        <div class="cat-icon">${icon}</div>
+        <div class="cat-icon" style="--cat-c:${CAT_COLORS[cat]||'var(--indigo)'}">${icon}</div>
         <div class="cat-name" style="min-width:70px">${label}</div>
         <div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[cat]||'var(--indigo)'}"></div></div>
         <div class="cat-num">${sk.length} <span class="cat-pct">${pct}%</span></div>
