@@ -17,16 +17,14 @@ from urllib.parse import urlparse, parse_qs
 from skilldash.content_hash import check_content_changes
 from skilldash.discovery import (
     _agent_from_path,
-    _classify_skill_role,
     _classify_skill_dir_detail,
     _discover_command_dirs,
     _discover_skill_dirs,
     _is_skill_entry,
     _scan_commands,
-    _summarize_skill_roles,
     _skill_entry_kind,
 )
-from skilldash.host_inspectors import host_profile_summaries_by_agent, load_claude_plugin_state, load_mcp_inventory
+from skilldash.host_inspectors import host_profile_summaries_by_agent, load_mcp_inventory
 from skilldash.paths import CACHE_DIR, STATE_DIR
 from skilldash.source_ops import install_skill
 from skilldash.understanding import compact_understanding, understand_skill
@@ -231,7 +229,6 @@ class SourceRoutes:
                     "name": name,
                     "description": description,
                     "kind": kind,
-                    **_classify_skill_role(d),
                     "understanding": understanding,
                 })
         self._json_response({
@@ -283,7 +280,6 @@ class SourceRoutes:
                         "category": _classify_skill_dir_detail(skills_dir).get("category", "unknown"),
                         "scope": "project" if "/projects/" in rel else "global",
                         "kind": _skill_entry_kind(entry),
-                        **_classify_skill_role(entry),
                     })
             except (PermissionError, OSError):
                 continue
@@ -446,7 +442,6 @@ class SourceRoutes:
             agent = _agent_from_path(str(skills_dir))
             scope = "project" if "projects/" in rel else "global"
             governance = _classify_skill_dir_detail(skills_dir)
-            role_summary = _summarize_skill_roles(skills_dir)
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,
@@ -455,7 +450,6 @@ class SourceRoutes:
                 "count": count,
                 "type": "skills",
                 "is_current": str(skills_dir) == current,
-                **role_summary,
                 **governance,
             })
 
@@ -481,39 +475,6 @@ class SourceRoutes:
                 "layer_label": "命令",
                 "policy_label": "复核",
             })
-
-        # Claude 已安装插件 → 能力来源条目（enabled→当前可用 active-plugin，disabled→来源库存 installed-disabled）
-        # discovery 排除了 plugins/cache（防灌水），这里把 load_claude_plugin_state 读到的 plugin 单独注入
-        plugin_state = load_claude_plugin_state(home)
-        _enabled_plugins = plugin_state.get("enabled") or set()
-        for plugin_id, records in (plugin_state.get("installed") or {}).items():
-            for record in records:
-                install_path = record.get("install_path")
-                if not install_path:
-                    continue
-                ip = Path(install_path).expanduser()
-                if not ip.exists():
-                    continue
-                skills_root = ip / "skills"
-                if skills_root.exists():
-                    count = sum(1 for d in skills_root.iterdir() if d.is_dir() and (d / "SKILL.md").exists())
-                else:
-                    count = 0
-                is_enabled = plugin_id in _enabled_plugins
-                targets.append({
-                    "path": install_path,
-                    "rel": plugin_id,
-                    "name": "Claude Code",
-                    "scope": "global",
-                    "count": count,
-                    "type": "plugin",
-                    "extension_type": "plugin",
-                    "is_current": install_path == current,
-                    "runtime_state": "enabled" if is_enabled else "installed",
-                    "layer": "claude-plugin",
-                    "layer_label": "已启用插件" if is_enabled else "已安装未启用",
-                    "policy": "observe",
-                })
 
         targets.sort(key=lambda t: (0 if t["is_current"] else 1, -t["count"]))
 

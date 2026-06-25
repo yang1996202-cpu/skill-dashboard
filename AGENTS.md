@@ -181,9 +181,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 ### skill 模型派生字段
 
-跨 Agent 收敛的三个正交派生字段(定义见 `docs/skill-model.md`),在现有四维(layer/policy/category/capability bucket)之上派生,不破坏前端契约:
+跨 Agent 收敛的两个正交派生字段(定义见 `docs/skill-model.md`),在现有四维(layer/policy/category/capability bucket)之上派生,不破坏前端契约:
 
-- `skill_role`(SKILL.md 角色):router/workflow/guide/focused/helper/automation → `discovery.py::_classify_skill_role`,focused 吃 connector 包内子 skill
 - `extension_type`(skill 载体形态):skill/builtin/plugin/connector/catalog/cache/agent → `discovery.py::_derive_extension_type`,从 layer + runtime_state + package_role 派生,挂 `_classify_skill_dir_detail` 返回
 - `readiness`(Agent 就绪度):uninitialized/configured-empty/builtin-only/light/heavy → `source.py::_derive_group_readiness`,挂 `/api/targets` group,前端卡片头徽章(`sourceReadinessBadge`)
 

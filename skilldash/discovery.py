@@ -53,19 +53,6 @@ def _skill_entry_kind(skill_dir):
 _DISCOVER_SKILL_DIRS_CACHE = None
 _DISCOVER_SKILL_DIRS_CACHE_TS = 0
 _DISCOVER_SKILL_DIRS_TTL = 60  # seconds
-_SKILL_ROLE_CACHE = {}
-_SKILL_ROLE_SUMMARY_CACHE = {}
-
-
-SKILL_ROLE_META = {
-    "router": {"label": "路由入口", "short": "router"},
-    "workflow": {"label": "工作流", "short": "workflow"},
-    "guide": {"label": "指南", "short": "guide"},
-    "focused": {"label": "子能力(focused)", "short": "focused"},
-    "helper": {"label": "辅助", "short": "helper"},
-    "automation": {"label": "自动化", "short": "automation"},
-    "unknown": {"label": "未分类", "short": "unknown"},
-}
 
 
 EXTENSION_TYPE_META = {
@@ -104,148 +91,6 @@ def _env_roots(var_name):
     return [p.strip() for p in value.split(os.pathsep) if p.strip()]
 
 
-def _is_focused_subskill(skill_dir):
-    """判定 SKILL.md 是否是 connector 包内的子能力(focused,非顶层 skill)。
-
-    buddy lexiang/skill/search、cloudbase/<sub> 等子能力超发:一个 connector 包下塞
-    多个 SKILL.md,只有顶层算真 skill,其余是 focused 子能力。Agent 根
-    skills/<name>/SKILL.md 不算(那是顶层)。Codex plugin 内的子 skill 需要包上下文,
-    本启发只可靠吃 buddy connector 内的子 skill。详见 docs/skill-model.md 第 3 节。
-    """
-    p = str(skill_dir).replace("\\", "/").lower().rstrip("/")
-    if not any(anchor in p for anchor in ("connectors-marketplace", "/connectors/", "/connector/")):
-        return False
-    for pat in ("/skill/", "/skills/"):
-        idx = p.rfind(pat)
-        if idx >= 0:
-            # skill_dir 不含 SKILL.md 文件名,所以 /skill/ 之后是末尾目录段:
-            # ".../skill" → after=""(顶层);".../skill/search" → after="search"(子能力)
-            after = p[idx + len(pat):]
-            if after:  # skill/ 后还有目录段 = 子能力
-                return True
-    return False
-
-
-def _classify_skill_role(skill_dir):
-    """Classify one SKILL.md as a runtime role, not just a category.
-
-    This is a static heuristic.  It answers "what kind of skill package is this
-    on disk?", not "was it injected into the current model request?"  The latter
-    is host runtime state and can only be observed through a live context probe.
-    """
-    skill_dir = Path(skill_dir)
-    skill_md = skill_dir / "SKILL.md"
-    try:
-        st = skill_md.stat()
-        cache_key = (str(skill_md), st.st_mtime_ns, st.st_size)
-    except OSError:
-        return {
-            "skill_role": "unknown",
-            "skill_role_label": SKILL_ROLE_META["unknown"]["label"],
-            "skill_role_evidence": ["missing SKILL.md"],
-        }
-    cached = _SKILL_ROLE_CACHE.get(cache_key)
-    if cached:
-        return dict(cached)
-
-    name = skill_dir.name
-    description = _read_skill_description(skill_dir)
-    try:
-        sample = skill_md.read_text("utf-8", errors="ignore")[:6000]
-    except Exception:
-        sample = ""
-    desc_low = f"{name}\n{description}".lower()
-    low = f"{desc_low}\n{sample[:3000]}".lower()
-    evidence = []
-    role = "workflow"
-
-    def has_any(*needles):
-        return any(n in low for n in needles)
-
-    if name == "index" or has_any("mandatory router", "router for", "route here", "route requests", "always route", "always use this", "index skill first"):
-        role = "router"
-        evidence.append("index/router wording")
-    elif has_any("connector guide", "crm connector guide", "user guide whenever", "provider-specific", "specific guide whenever") or any(n in desc_low for n in ("reference guide", "reference for")):
-        role = "guide"
-        evidence.append("guide/reference wording")
-    elif name in ("user-context", "shared", "common", "preflight") or has_any(
-        "mandatory pre-answer gate",
-        "preflight",
-        "durable user context",
-        "saved preferences",
-        "shared foundation",
-        "setup progress",
-        "context maintenance",
-    ):
-        role = "helper"
-        evidence.append("helper/preflight/context wording")
-    elif has_any("scheduled", "automation", "monitor", "watchlist", "check-in automation", "heartbeat"):
-        role = "automation"
-        evidence.append("scheduled/automation wording")
-    elif _is_focused_subskill(skill_dir):
-        role = "focused"
-        evidence.append("connector 包内子 skill(语定义:非顶层)")
-    else:
-        evidence.append("default workflow")
-
-    # Some focused workflow skills mention mandatory preflight because they call
-    # a helper.  Do not let that demote an already workflow-like description
-    # unless the package itself is clearly the helper.
-    if role == "helper" and name not in ("user-context", "shared", "common", "preflight"):
-        if has_any("build ", "create ", "generate ", "review ", "prepare ", "prioritize ", "analyze ", "find ", "turn "):
-            role = "workflow"
-            evidence = ["workflow with helper/preflight dependency"]
-
-    result = {
-        "skill_role": role,
-        "skill_role_label": SKILL_ROLE_META.get(role, SKILL_ROLE_META["unknown"])["label"],
-        "skill_role_evidence": evidence[:3],
-    }
-    _SKILL_ROLE_CACHE[cache_key] = dict(result)
-    return result
-
-
-def _summarize_skill_roles(skills_dir):
-    """Return role counts for direct child skills in a skills directory."""
-    skills_dir = Path(skills_dir)
-    try:
-        child_stats = []
-        for child in sorted(skills_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not _is_skill_entry(child, include_broken=True):
-                continue
-            marker = child / "SKILL.md"
-            try:
-                st = marker.stat()
-                child_stats.append((child.name, st.st_mtime_ns, st.st_size))
-            except OSError:
-                child_stats.append((child.name, 0, 0))
-        sig = (str(skills_dir), tuple(child_stats))
-    except (PermissionError, OSError):
-        return {
-            "skill_role_counts": {},
-            "skill_role_labels": {},
-            "top_level_skill_count": 0,
-            "support_skill_count": 0,
-        }
-    cached = _SKILL_ROLE_SUMMARY_CACHE.get(sig)
-    if cached:
-        return json.loads(json.dumps(cached))
-
-    counts = {key: 0 for key in SKILL_ROLE_META}
-    for name, _mtime, _size in child_stats:
-        role = _classify_skill_role(skills_dir / name).get("skill_role", "unknown")
-        counts[role] = counts.get(role, 0) + 1
-    counts = {k: v for k, v in counts.items() if v}
-    top_level = counts.get("router", 0) + counts.get("workflow", 0) + counts.get("automation", 0)
-    support = counts.get("guide", 0) + counts.get("helper", 0)
-    result = {
-        "skill_role_counts": counts,
-        "skill_role_labels": {k: SKILL_ROLE_META.get(k, SKILL_ROLE_META["unknown"])["label"] for k in counts},
-        "top_level_skill_count": top_level,
-        "support_skill_count": support,
-    }
-    _SKILL_ROLE_SUMMARY_CACHE[sig] = json.loads(json.dumps(result))
-    return result
 
 def _agent_from_path(dir_path):
     """Infer agent name from directory path."""
@@ -385,12 +230,12 @@ def _is_project_agent_skill(dir_path):
 
 
 def _derive_extension_type(plugin_context, layer, category, path):
-    """判定 skill 目录属于哪类扩展项装载(目录级,与 skill_role 正交)。
+    """判定 skill 目录属于哪类扩展项装载(目录级)。
 
-    skill_role 说 SKILL.md 扮演什么角色;extension_type 说这个 skill 被什么载体装载。
-    主信号用 layer(已在 _classify_skill_dir_detail 归一),runtime_state / package_role
-    作补充。优先级:agent > catalog > connector > cache > plugin > builtin > skill。
-    详见 docs/skill-model.md 第 3、4 节。
+    extension_type 说这个 skill 被什么载体装载。主信号用 layer(已在
+    _classify_skill_dir_detail 归一),runtime_state / package_role 作补充。
+    优先级:agent > catalog > connector > cache > plugin > builtin > skill。
+    详见 docs/skill-model.md。
     """
     state = (plugin_context or {}).get("runtime_state", "")
     role = (plugin_context or {}).get("package_role", "")

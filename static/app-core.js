@@ -99,31 +99,6 @@ const CAPABILITY_META={
   unknown:{color:'var(--text-muted)',label:'未知',desc:'只确认文件存在，未识别运行态。'},
 };
 
-const SKILL_ROLE_META={
-  router:{label:'路由',short:'router'},
-  workflow:{label:'工作流',short:'workflow'},
-  guide:{label:'指南',short:'guide'},
-  helper:{label:'辅助',short:'helper'},
-  automation:{label:'自动化',short:'automation'},
-  unknown:{label:'未分类',short:'unknown'},
-};
-
-function mergeSkillRoleCounts(into,counts){
-  Object.entries(counts||{}).forEach(([k,v])=>{into[k]=(into[k]||0)+(v||0)});
-}
-
-function skillRoleSummaryText(counts,opts={}){
-  counts=counts||{};
-  const parts=[];
-  if(counts.router)parts.push(`路由 ${counts.router}`);
-  if(counts.workflow)parts.push(`工作流 ${counts.workflow}`);
-  if(counts.automation)parts.push(`自动化 ${counts.automation}`);
-  if(counts.guide)parts.push(`指南 ${counts.guide}`);
-  if(counts.helper)parts.push(`辅助 ${counts.helper}`);
-  if(opts.includeUnknown&&counts.unknown)parts.push(`未分类 ${counts.unknown}`);
-  return parts.join(' · ');
-}
-
 function sourceCapabilityBucket(t){
   if(!t)return 'unknown';
   if(t.type==='commands'){
@@ -177,17 +152,11 @@ function summarizeCapabilityDirs(dirs){
     catalogDirs:0,
     reviewSkills:0,
     reviewDirs:0,
-    roleCounts:{},
-    topLevelSkillCount:0,
-    supportSkillCount:0,
   };
   (dirs||[]).forEach(t=>{
     const count=t.count||0;
     const bucket=sourceCapabilityBucket(t);
     if(bucket==='commands'){s.commandCount+=count;return}
-    mergeSkillRoleCounts(s.roleCounts,t.skill_role_counts);
-    s.topLevelSkillCount+=(t.top_level_skill_count||0);
-    s.supportSkillCount+=(t.support_skill_count||0);
     const duplicateRuntime=!!t.loaded_elsewhere&&(bucket==='active-connector'||bucket==='active-plugin');
     s.inventorySkills+=count;
     if(duplicateRuntime){
