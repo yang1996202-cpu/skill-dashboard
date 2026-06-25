@@ -658,6 +658,23 @@ def _classify_skill_dir_detail(dir_path):
         detail.update(plugin_context)
     return detail
 
+def _target_is_active(detail):
+    """Whether a skill dir is a currently-available source (not inventory/cache/catalog).
+
+    Mirrors the frontend sourceCapabilityBucket active buckets (static/app-core.js):
+    runtime_state in user-root/builtin/enabled/loaded/connector, plus the user-category
+    and vendor-bundled fallbacks used when no plugin_context is attached. Keeps global
+    stats from being flooded by marketplace shelves, plugin caches, installed-disabled.
+    """
+    state = detail.get("runtime_state", "")
+    if state in ("user-root", "builtin", "enabled", "loaded", "connector"):
+        return True
+    if detail.get("category") == "user":
+        return True
+    if detail.get("layer") == "vendor-bundled":
+        return True
+    return False
+
 def _sample_skill_names(skills_dir, limit=6):
     """Return a small stable sample of skill names in a skills directory."""
     names = []
@@ -1091,6 +1108,12 @@ def _scan_global_categories():
     seen = {}       # name -> description (first seen wins)
 
     for tdir in skill_dirs:
+        # active-only: skip inventory/cache/catalog dirs (marketplace shelves,
+        # plugin caches, installed-disabled) so global stats reflect currently-
+        # available sources, not the full shelf inventory. Same truth table as
+        # the frontend sourceIsActive (static/app-core.js).
+        if not _target_is_active(_classify_skill_dir_detail(tdir)):
+            continue
         for d in sorted(tdir.iterdir()):
             if not d.is_dir():
                 continue

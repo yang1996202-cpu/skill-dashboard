@@ -82,15 +82,20 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .view-preview-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;color:var(--text-dim)}
 .view-preview-row b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:500;font-family:var(--mono)}
 
-/* ── Stats — Linear data grid ── */
-.stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;margin-bottom:24px;background:var(--border);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
-.stat{background:var(--bg-card);padding:18px 20px;transition:background .15s ease}
-.stat:hover{background:var(--bg-card-alt)}
-.stat .val{font-size:26px;font-weight:600;line-height:1;letter-spacing:-.03em;font-variant-numeric:tabular-nums}
-.stat .lbl{font-size:11px;color:var(--text-muted);margin-top:8px;text-transform:uppercase;letter-spacing:.06em;font-weight:500}
+/* ── Dashboard: current dir signature + global strip ── */
+.dash-current-card{margin-bottom:12px}
+.cap-strip{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0;cursor:pointer}
+.cap-chip{font-size:11px;font-family:var(--mono);color:var(--text-dim);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:6px;padding:3px 8px;font-variant-numeric:tabular-nums;transition:border-color .15s ease}
+.cap-strip:hover .cap-chip{border-color:color-mix(in srgb,var(--accent) 30%,var(--border-subtle))}
+.dash-global-strip{display:flex;align-items:center;gap:24px;flex-wrap:wrap;padding:14px 18px;margin-bottom:12px}
+.gstat-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600;padding-right:14px;border-right:1px solid var(--border-subtle)}
+.gstat{display:flex;align-items:baseline;gap:6px}
+.gstat.clickable{cursor:pointer}
+.gstat-val{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;transition:color .15s ease}
+.gstat-lbl{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+.gstat.clickable:hover .gstat-val{color:var(--accent)}
 
 /* ── Governance workbench ── */
-.workbench{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(280px,.75fr);gap:12px;margin-bottom:12px}
 .focus-panel{background:linear-gradient(135deg,var(--accent-bg),var(--bg-card));border-color:color-mix(in srgb,var(--accent) 22%,var(--border))}
 .focus-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:16px}
 .focus-kicker{font-size:11px;color:var(--accent);font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:4px}
@@ -99,13 +104,8 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .focus-score{min-width:88px;text-align:right}
 .focus-score .num{font-size:34px;font-weight:700;letter-spacing:-.04em;line-height:1;color:var(--accent);font-variant-numeric:tabular-nums}
 .focus-score .lbl{font-size:11px;color:var(--text-muted);margin-top:4px}
-.queue-list{display:grid;gap:8px}
-.queue-row{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:10px;align-items:center;padding:10px;border:1px solid var(--border-subtle);border-radius:8px;background:color-mix(in srgb,var(--bg-card) 78%,transparent)}
-.queue-rank{width:28px;height:28px;border-radius:8px;display:grid;place-items:center;background:var(--accent);color:#fff;font-size:12px;font-weight:700}
-.queue-title{font-size:13px;font-weight:650}
-.queue-desc{font-size:11px;color:var(--text-muted);margin-top:1px}
-.queue-count{font-size:12px;font-weight:650;color:var(--text-dim);font-variant-numeric:tabular-nums}
-.scope-grid{display:grid;gap:8px}
+.workbench-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+/* scope-card: shared by issues page scan-summary (issues-cleanup.js), not dashboard-only */
 .scope-card{padding:12px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt)}
 .scope-card.primary{border-color:color-mix(in srgb,var(--green) 40%,var(--border));background:var(--green-bg)}
 .scope-card.warn{border-color:color-mix(in srgb,var(--amber) 40%,var(--border));background:var(--amber-bg)}
@@ -113,7 +113,6 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .scope-name{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;font-weight:650;margin-bottom:4px}
 .scope-name b{font-size:16px;font-variant-numeric:tabular-nums}
 .scope-desc{font-size:11px;color:var(--text-muted);line-height:1.45}
-.workbench-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
 .notice-line{display:flex;align-items:center;justify-content:space-between;gap:10px;border:1px solid var(--border);border-radius:8px;background:var(--bg-card-alt);padding:10px 12px;margin-bottom:12px;font-size:12px;color:var(--text-dim)}
 
 /* ── Issues workspace ── */
@@ -327,7 +326,6 @@ tbody tr:hover{background:var(--bg-hover)}
 @media(max-width:768px){
   .sidebar{transform:translateX(-100%)}.sidebar.open{transform:translateX(0)}
   .main{margin-left:0}.menu-btn{display:block}
-  .stats-row{grid-template-columns:repeat(3,1fr)}
   .content{padding:16px}
   .issue-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
   .issue-card-grid{grid-template-columns:1fr}

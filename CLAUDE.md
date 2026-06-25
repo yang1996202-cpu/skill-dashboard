@@ -81,7 +81,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
-| `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
+| `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/history` | GET | 操作历史记录 |
@@ -170,6 +170,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 `POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 在 UI 上叫“重点扫描”，使用 `sourceIsDaily()` 的重点整理目标；`deep` 在 UI 上叫“全量扫描”，含全部目录）。
 
 辅助函数 `_find_same_name_duplicates(dirs)` 接受 Path 列表参数，被 cleanup 和扫描复用。
+
+`/api/global-stats` 的 `unique_skills`/`category_distribution` 是 **active-only 口径**：`_scan_global_categories`(discovery.py) 用 `_target_is_active(detail)` 按 `runtime_state`(user-root/builtin/enabled/loaded/connector) + `category=user` + `layer=vendor-bundled` 过滤 tdir，排除 marketplace/cache/installed-disabled，与前端 `sourceCapabilityBucket`(app-core.js) 同口径。改前是全域含库存灌水。
 
 ### 清理执行准则：hash 一致不是直接删除依据
 

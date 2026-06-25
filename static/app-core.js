@@ -258,7 +258,7 @@ function compactCapabilityParts(s){
   if(s.systemSkills)parts.push(`系统 ${s.systemSkills}`);
   if(s.pluginDirs)parts.push(`插件 ${s.pluginDirs}`);
   if(s.connectorDirs)parts.push(`连接器 ${s.connectorDirs}`);
-  if(s.supportSkillCount)parts.push(`支撑 ${s.supportSkillCount}`);
+  if(s.mcpCount)parts.push(`MCP ${s.mcpCount}`);
   if(s.commandCount)parts.push(`commands ${s.commandCount}`);
   return parts.join(' · ')||'暂无运行态解释';
 }
@@ -367,7 +367,7 @@ async function loadData(){
     if(d){installedPlugins=d.plugins||[];enabledPlugins=d.enabled||[];knownMarketplaces=d.marketplaces||[];renderStats();renderWorkbench();}
   });
   fetch('/api/mcp-inventory').then(r=>r.json()).catch(()=>null).then(d=>{
-    if(d){mcpInventory=d;renderStats();if(typeof renderSources==='function')renderSources();}
+    if(d){mcpInventory=d;renderStats();renderWorkbench();if(typeof renderSources==='function')renderSources();}
   });
 }
 
@@ -462,92 +462,55 @@ function renderTarget(){
 }
 
 function renderWorkbench(){
-  const el=$('workbench-card');
+  const el=$('dash-current');
   if(!el)return;
   const m=getTriageMetrics();
   const cap=currentCapabilitySummary();
-  const policyCounts={
-    manage:targets.filter(t=>sourcePolicy(t)==='manage').length,
-    review:targets.filter(t=>sourcePolicy(t)==='review').length,
-    observe:targets.filter(t=>sourcePolicy(t)==='observe'||sourcePolicy(t)==='hidden').length,
-  };
-  const current=targets.find(t=>t.is_current)||scan?.target;
-  const currentName=current?.name||scan?.target?.label||'当前目录';
   const profileHint=formatHostProfileSummary(cap.profile);
-  const roleHint=skillRoleSummaryText(cap.roleCounts);
   const scanMeta=scanResult
     ? `${m.scannedDirs} 个目录 · ${(m.durationMs/1000).toFixed(1)}s · ${new Date(m.scannedAt).toLocaleString('zh-CN')}`
     : health
     ? `最近诊断 · ${m.scannedDirs||'?'} 个目录 · ${m.scannedAt?new Date(m.scannedAt).toLocaleString('zh-CN'):''}`
     : `轻量模式 · ${globalStats?.targets_scanned||targetGroups.length||'?'} 个目录已发现`;
-  const queue=[
-    {
-      title:'确认当前可用能力',
-      desc:`${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}`,
-      count:cap.activeSkills||'--',
-      action:'sources'
-    },
-    {
-      title:'隔离仅库存来源',
-      desc:`缓存 ${cap.cacheSkills||0} skills · 市场目录 ${cap.catalogSkills||0} skills`,
-      count:cap.sourceOnlySkills||0,
-      action:'sources'
-    },
-    {
-      title:m.actionable?'处理整理线索':'建立整理基线',
-      desc:m.actionable?`同名、上游、内容变更等 ${m.actionable} 条待复核`:'从重点目录开始，不把 marketplace/cache 当删除对象',
-      count:m.actionable||'未扫描',
-      action:'issues'
-    }
-  ];
-  el.innerHTML=`<div class="workbench">
-    <div class="card focus-panel">
-      <div class="focus-head">
-        <div>
-          <div class="focus-kicker">Capability Map</div>
-          <div class="focus-title">${cap.agent} 能力面</div>
-          <div class="focus-sub">${cap.inventorySkills||skills.length} skills 库存 · ${cap.topLevelSkillCount||0} 顶层/工作流候选 · ${cap.supportSkillCount||0} 支撑型 · ${cap.activeDirs||0} 个当前可用来源 · ${scanMeta}${profileHint?` · ${profileHint}`:''}</div>
-        </div>
-        <div class="focus-score"><div class="num">${cap.activeSkills||'--'}</div><div class="lbl">当前能力</div></div>
+  const parts=compactCapabilityParts(cap);
+  const chipHtml=parts?`<div class="cap-strip" onclick="goView('sources')" title="点击查看能力来源构成">${parts.split(' · ').map(p=>`<span class="cap-chip">${p}</span>`).join('')}</div>`:'';
+  el.innerHTML=`<div class="card focus-panel dash-current-card">
+    <div class="focus-head">
+      <div>
+        <div class="focus-kicker">当前目录</div>
+        <div class="focus-title">${cap.agent}</div>
+        <div class="focus-sub">${scanMeta}${profileHint?` · ${profileHint}`:''}</div>
       </div>
-      <div class="queue-list">${queue.map((q,i)=>`<div class="queue-row">
-        <div class="queue-rank">${i+1}</div>
-        <div><div class="queue-title">${q.title}</div><div class="queue-desc">${q.desc}</div></div>
-        <div class="queue-count">${q.count}</div>
-      </div>`).join('')}</div>
-      <div class="workbench-actions">
-        <button class="btn btn-primary" onclick="goView('sources')">能力地图</button>
-        <button class="btn" onclick="goView('issues')">${scanResult?'查看重点':'去重点扫描'}</button>
-        <button class="btn" onclick="goView('skills')">当前目录</button>
-      </div>
+      <div class="focus-score"><div class="num">${cap.activeSkills??'--'}</div><div class="lbl">当前 skill</div></div>
     </div>
-    <div class="card">
-      <div class="card-head"><h3>运行态摘要</h3><span class="sub">${currentName}</span></div>
-      <div class="scope-grid">
-        <div class="scope-card primary"><div class="scope-name"><span>当前可用</span><b>${cap.activeSkills||0}</b></div><div class="scope-desc">${compactCapabilityParts(cap)}${roleHint?` · ${roleHint}`:''}</div></div>
-        <div class="scope-card warn"><div class="scope-name"><span>仅作来源</span><b>${cap.sourceOnlySkills||0}</b></div><div class="scope-desc">市场目录、缓存和旧包只解释来源，不等同上下文加载。</div></div>
-        <div class="scope-card muted"><div class="scope-name"><span>整理队列</span><b>${m.actionable||0}</b></div><div class="scope-desc">${policyCounts.manage||0} 个可管理目录 · ${policyCounts.review||0} 个待复核目录 · ${policyCounts.observe||0} 个观察目录。</div></div>
-      </div>
+    ${chipHtml}
+    <div class="workbench-actions">
+      <button class="btn btn-primary" onclick="goView('sources')">能力来源</button>
+      <button class="btn" onclick="goView('skills')">当前目录技能</button>
     </div>
   </div>`;
 }
 
-/* ── Stats ── */
+/* ── Stats (global strip) ── */
 function renderStats(){
-  const h=health;
+  const el=$('dash-global');
+  if(!el)return;
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
   const m=getTriageMetrics();
   const actionable=(scanResult||health)?m.actionable:0;
-  const cap=currentCapabilitySummary();
-  $('stats-row').innerHTML=`
-    <div class="stat s-unique" title="当前 Agent 可解释为运行态能力的 skill 数"><div class="val">${cap.activeSkills||skills.length}</div><div class="lbl">当前能力</div></div>
-    <div class="stat" title="当前 Agent 已启用插件目录数"><div class="val">${cap.pluginDirs||0}</div><div class="lbl">启用插件</div></div>
-    <div class="stat" title="当前 Agent 连接器能力包数量"><div class="val">${cap.connectorDirs||0}</div><div class="lbl">连接器</div></div>
-    <div class="stat" style="cursor:pointer" onclick="goView('sources')" title="当前 Agent 配置的 MCP server 数（点击查看清单）"><div class="val">${cap.mcpCount||0}</div><div class="lbl">MCP</div></div>
-    <div class="stat" title="市场目录、缓存、旧包等当前库存的 skill 数"><div class="val">${cap.sourceOnlySkills||0}</div><div class="lbl">仅库存</div></div>
-    <div class="stat s-libraries" title="已发现的 Agent/应用分组数"><div class="val">${gTargets}</div><div class="lbl">应用</div></div>
-    <div class="stat s-issues" title="同名、上游过时、内容变更等需要人工复核的线索"><div class="val" style="color:${actionable>0?'var(--red)':'var(--green)'}">${actionable}</div><div class="lbl">待复核</div></div>
-    <div class="stat" style="cursor:pointer" onclick="goView('trash')" title="累计移入垃圾站的 skill 总数（点击查看垃圾站）"><div class="val" style="color:var(--accent)">${deletedStats?.deleted_total??0}</div><div class="lbl">累计删除</div></div>`;
+  const globalSkills=globalStats?.unique_skills||0;
+  const deleted=deletedStats?.deleted_total??0;
+  const item=(val,lbl,opts={})=>`<div class="gstat${opts.click?' clickable':''}"${opts.click?` onclick="${opts.click}"`:''} title="${opts.title||''}">
+    <span class="gstat-val"${opts.danger&&val>0?' style="color:var(--red)"':''}${opts.accent?' style="color:var(--accent)"':''}>${val}</span>
+    <span class="gstat-lbl">${lbl}</span>
+  </div>`;
+  el.innerHTML=`<div class="card dash-global-strip">
+    <span class="gstat-label">全局</span>
+    ${item(gTargets,'应用',{click:"goView('sources')",title:'已发现的 Agent/应用分组数（点击查看能力来源）'})}
+    ${item(globalSkills,'skills',{title:'当前可用来源的去重 skill 数（active-only，不含市场/缓存）'})}
+    ${item(actionable,'待复核',{click:"goView('issues')",danger:true,title:'同名、上游过时、内容变更等待复核线索（点击查看）'})}
+    ${item(deleted,'累计删除',{click:"goView('trash')",accent:true,title:'累计移入垃圾站的 skill 总数（点击查看垃圾站）'})}
+  </div>`;
 }
 
 /* ── Categories ── */
@@ -566,31 +529,26 @@ function renderCategories(){
   const localCats=Object.entries(localCm).sort((a,b)=>b[1]-a[1]);
   const localMx=localCats[0]?.[1]||1;
   const curLabel=targets.find(t=>t.is_current)?.name||'当前目录技能';
+  const rowHtml=(cats,total,mx)=>cats.map(([c,n])=>{
+    const pct=(n/total*100).toFixed(1);
+    const barW=(n/mx*100).toFixed(0);
+    return`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
+  }).join('');
 
+  // Current target distribution (on top — what you're managing now)
+  let html=`<div class="card"><div class="card-head"><h3>当前目录 · ${safeDesc(curLabel)}</h3><span class="sub">${localTotal} skills · ${localCats.length} 个分类</span></div>
+  <div class="cat-grid">${rowHtml(localCats,localTotal,localMx)}</div></div>`;
+
+  // Global distribution (below — active-only, mirrors _target_is_active)
   if(globalStats){
-    // Global distribution
     const gd=globalStats.category_distribution||{};
-    const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);const mx=cats[0]?.[1]||1;
+    const cats=Object.entries(gd).sort((a,b)=>b[1]-a[1]);
+    const mx=cats[0]?.[1]||1;
     const total=globalStats.unique_skills||0;
-    let html=`<div class="card"><div class="card-head"><h3>库存分类分布</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类</span></div>
-    <div class="cat-grid">${cats.map(([c,n])=>{
-      const pct=(n/total*100).toFixed(1);
-      const barW=(n/mx*100).toFixed(0);
-      return`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
-    }).join('')}</div></div>`;
-    // Current target distribution
-    html+=`<div class="card" style="margin-top:12px"><div class="card-head"><h3>${safeDesc(curLabel)}</h3><span class="sub">${localTotal} skills · ${localCats.length} 个分类</span></div>
-    <div class="cat-grid">${localCats.map(([c,n])=>{
-      const pct=(n/localTotal*100).toFixed(1);
-      const barW=(n/localMx*100).toFixed(0);
-      return`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n} <span class="cat-pct">${pct}%</span></div></div>`;
-    }).join('')}</div></div>`;
-    $('cat-card').innerHTML=html;
-  }else{
-    // Fallback: current-target only
-    $('cat-card').innerHTML=`<div class="card"><div class="card-head"><h3>${curLabel}</h3><span class="sub">${localCats.length} 类</span></div>
-    <div class="cat-grid">${localCats.map(([c,n])=>`<div class="cat-row"><div class="cat-icon" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'}">${catAbbr(c)}</div><div class="cat-name">${catLabel(c)}</div><div class="cat-bar-wrap"><div class="cat-bar" style="width:${(n/localMx*100).toFixed(0)}%;background:${CAT_COLORS[c]||'var(--indigo)'}"></div></div><div class="cat-num">${n}</div></div>`).join('')}</div></div>`;
+    html+=`<div class="card" style="margin-top:12px"><div class="card-head"><h3>全部目录（当前可用）</h3><span class="sub">${total} skills · ${globalStats.targets_scanned||'?'} 个目录 · ${cats.length} 个分类 · 仅当前可用来源</span></div>
+    <div class="cat-grid">${rowHtml(cats,total,mx)}</div></div>`;
   }
+  $('cat-card').innerHTML=html;
 }
 
 /* ── Skill issue tags for list view ── */

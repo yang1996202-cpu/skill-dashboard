@@ -22,6 +22,7 @@ from skilldash.discovery import (
     _agent_from_path,
     _is_project_agent_skill,
     _is_user_level_skill,
+    _target_is_active,
 )
 
 HOME = str(Path.home())
@@ -75,6 +76,38 @@ class TestProjectAgentSkill(unittest.TestCase):
     def test_home_agent_root_is_not_project(self):
         # ~/.claude/skills is user-level, not project-level
         self.assertFalse(_is_project_agent_skill(f"{HOME}/.claude/skills"))
+
+
+class TestTargetIsActive(unittest.TestCase):
+    """_target_is_active mirrors the frontend sourceCapabilityBucket active
+    buckets. _scan_global_categories uses it to keep global stats from being
+    flooded by marketplace shelves / caches / installed-disabled."""
+
+    def test_active_runtime_states(self):
+        for state in ("user-root", "builtin", "enabled", "loaded", "connector"):
+            with self.subTest(state=state):
+                self.assertTrue(_target_is_active({"runtime_state": state}))
+
+    def test_inventory_runtime_states(self):
+        for state in ("installed", "catalog", "cache", "stale", "orphaned"):
+            with self.subTest(state=state):
+                self.assertFalse(_target_is_active({"runtime_state": state}))
+
+    def test_user_category_fallback(self):
+        # Path-only target (no plugin_context) with category=user is active.
+        self.assertTrue(_target_is_active({"category": "user"}))
+
+    def test_vendor_bundled_layer_fallback(self):
+        self.assertTrue(_target_is_active({"layer": "vendor-bundled"}))
+
+    def test_inventory_layers_not_active(self):
+        for layer in ("plugin-marketplace", "package-cache", "plugin-cache",
+                      "imported-copy", "backup-snapshot", "downloaded-package"):
+            with self.subTest(layer=layer):
+                self.assertFalse(_target_is_active({"layer": layer}))
+
+    def test_empty_detail_not_active(self):
+        self.assertFalse(_target_is_active({}))
 
 
 if __name__ == "__main__":
