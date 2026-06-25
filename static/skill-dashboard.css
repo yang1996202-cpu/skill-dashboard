@@ -297,7 +297,6 @@ tbody tr:hover{background:var(--bg-hover)}
 .target-label{font-size:11px;letter-spacing:.08em;color:var(--text-muted);font-weight:500;margin-bottom:6px;text-transform:uppercase}
 .target-current{display:flex;align-items:center;gap:7px;padding:7px 10px;border-radius:6px;background:var(--accent-bg);border:1px solid transparent;cursor:pointer;transition:all .15s ease}
 .target-current:hover{border-color:color-mix(in srgb,var(--accent) 20%,transparent)}
-.target-current .t-icon{font-size:14px}
 .target-current .t-info{flex:1;min-width:0}
 .target-current .t-name{font-size:12px;font-weight:600;color:var(--accent);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .target-current .t-meta{font-size:10px;color:var(--text-muted);display:flex;gap:5px;align-items:center}
@@ -308,8 +307,7 @@ tbody tr:hover{background:var(--bg-hover)}
 .target-opt:last-child{border-bottom:none}
 .target-opt:hover{background:var(--bg-hover)}
 .target-opt.active{background:var(--accent-bg);color:var(--accent);font-weight:600}
-.target-opt .to-scope{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:500}
-.to-global{background:var(--accent-bg);color:var(--accent)}.to-project{background:var(--amber-bg);color:var(--amber)}
+.to-global{background:var(--accent-bg);color:var(--accent)}
 .target-opt .to-count{margin-left:auto;color:var(--text-muted);font-size:11px;font-variant-numeric:tabular-nums}
 .to-agent{font-size:10px;background:var(--bg-card-alt);padding:1px 5px;border-radius:3px;color:var(--text-dim);white-space:nowrap}
 .to-path{font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}

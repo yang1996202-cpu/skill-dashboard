@@ -15,9 +15,7 @@ async function updateTargetSelector(force=false,scope='full'){
   targetGroups=data.groups||[];
   const cur=targets.find(t=>t.is_current)||targets[0];
   if(cur){
-    $('t-icon').textContent=cur.scope==='global'?'🌐':'📁';
     $('t-name').textContent=cur.name;
-    $('t-scope').textContent=cur.scope==='global'?'全局':'项目级';
     $('t-count').textContent=cur.count;
   }
   // Sidebar dropdown always shows all directories; view filtering lives on the Sources page.
@@ -42,8 +40,7 @@ async function updateTargetSelector(force=false,scope='full'){
       </div>
       <div id="${gId}" style="display:${isCurGroup?'block':'none'};background:var(--bg-card-alt)">
         ${visibleDirs.map(t=>{
-          return`<div class="target-opt${t.is_current?' active':''}" onclick="event.stopPropagation();switchTarget('${t.path}')" style="padding:6px 10px 6px 28px" title="${t.rel}">
-            <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}" style="font-size:9px">${t.scope==='global'?'🌐':'📁'}</span>
+          return`<div class="target-opt${t.is_current?' active':''}" onclick="event.stopPropagation();switchTarget('${t.path}')" style="padding:6px 10px 6px 14px" title="${t.rel}">
             <span style="flex:1;font-size:11px">${t.rel}</span>
             <span class="to-count" style="font-size:10px">${t.count}</span>
           </div>`;

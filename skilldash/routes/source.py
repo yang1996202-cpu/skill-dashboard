@@ -440,13 +440,11 @@ class SourceRoutes:
             rel = str(skills_dir).replace(str(home), "~")
             # Use shared agent detection
             agent = _agent_from_path(str(skills_dir))
-            scope = "project" if "projects/" in rel else "global"
             governance = _classify_skill_dir_detail(skills_dir)
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,
                 "name": agent,
-                "scope": scope,
                 "count": count,
                 "type": "skills",
                 "is_current": str(skills_dir) == current,
@@ -460,12 +458,10 @@ class SourceRoutes:
                 continue
             rel = str(commands_dir).replace(str(home), "~")
             agent = _agent_from_path(str(commands_dir))
-            scope = "project" if "projects/" in rel else "global"
             targets.append({
                 "path": str(commands_dir),
                 "rel": rel,
                 "name": agent,
-                "scope": scope,
                 "count": count,
                 "type": "commands",
                 "is_current": False,

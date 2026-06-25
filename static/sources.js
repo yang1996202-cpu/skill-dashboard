@@ -227,7 +227,6 @@ function renderSourceDirRow(t,safeId,padLeft){
   ].filter(Boolean).join('');
   return `<div style="border-top:1px solid var(--border-subtle)">
     <div class="target-opt source-dir-row${t.is_current?' active':''}" onclick="browseSourceDir('${safeId}','${esc(t.path)}',this)" style="padding:8px 14px 8px ${padLeft}px" title="${esc(t.path)}">
-      <span class="to-scope ${t.scope==='global'?'to-global':'to-project'}">${isCommands?'⌨️':(t.scope==='global'?'🌐':'📁')}</span>
       <div class="source-dir-main">
         <div class="source-dir-titleline">
           <span class="source-dir-title">${esc(title)}</span>
