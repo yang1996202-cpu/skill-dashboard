@@ -98,9 +98,9 @@ const CAT_META={
 };
 const POLICY_META={
   manage:{emoji:'⭐',label:'用户/项目',desc:'用户自建或项目级技能库，可作为日常整理对象'},
-  review:{emoji:'🔁',label:'导入/副本',desc:'跨 Agent 副本或导入目录，先看内容再处理'},
+  review:{emoji:'🔁',label:'待核查',desc:'项目级、跨 Agent 副本或未知运行态目录，先看内容再处理'},
   observe:{emoji:'📦',label:'生态目录',desc:'marketplace 或内置包，默认不做删除动作'},
-  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在来源库存或全部视图里看'},
+  hidden:{emoji:'🚫',label:'缓存/内置',desc:'缓存、备份或测试样例，只在库存或全部视图里看'},
 };
 const LAYER_FALLBACK={
   user:'用户技能库',

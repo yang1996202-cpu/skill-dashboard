@@ -315,6 +315,41 @@ function renderAgentMcpBlock(g){
   h+=`</div>`;
   return h;
 }
+const _VIEW_NAMES={active:'当前可用',inventory:'库存',review:'待核查',all:'全部'};
+function viewBreakdown(mode){
+  const counts={};let total=0;
+  for(const t of targets){
+    let inView;
+    if(mode==='all')inView=true;
+    else if(mode==='active')inView=sourceIsActive(t);
+    else if(mode==='inventory')inView=sourceIsInventory(t);
+    else if(mode==='review')inView=sourceIsReview(t);
+    if(!inView)continue;
+    const meta=capabilityMeta(sourceCapabilityBucket(t));
+    const label=(meta&&meta.label)||sourceCapabilityBucket(t);
+    counts[label]=(counts[label]||0)+1;total++;
+  }
+  return{rows:Object.entries(counts).map(([label,n])=>({label,n})).sort((a,b)=>b.n-a.n),total};
+}
+function ensureViewPreview(){
+  let c=document.getElementById('view-preview');
+  if(!c){c=document.createElement('div');c.id='view-preview';c.className='view-preview';document.body.appendChild(c);}
+  return c;
+}
+function showViewPreview(mode,btn){
+  const {rows,total}=viewBreakdown(mode);
+  if(!total)return;
+  const c=ensureViewPreview();
+  let h=`<div class="view-preview-head"><span>${_VIEW_NAMES[mode]||mode}</span><b>${total} 个目录</b></div>`;
+  for(const r of rows)h+=`<div class="view-preview-row"><span>${escapeHtml(r.label)}</span><b>${r.n}</b></div>`;
+  c.innerHTML=h;
+  const rect=btn.getBoundingClientRect();
+  c.style.top=(rect.bottom+6)+'px';
+  c.style.left=Math.min(rect.left,window.innerWidth-240)+'px';
+  c.classList.add('show');
+}
+function hideViewPreview(){const c=document.getElementById('view-preview');if(c)c.classList.remove('show');}
+
 function renderSources(){
   if(!targets.length){$('sources-list').innerHTML='';return}
   try{
@@ -325,7 +360,8 @@ function renderSources(){
       <h3 style="font-size:15px;font-weight:600">📚 能力来源地图</h3>
       <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录</span>
       <span style="flex:1"></span>
-      <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加来源</button>
+      <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加路径</button>
+      <a class="btn btn-sm" href="https://www.skills.sh/" target="_blank" rel="noopener" title="去 skills.sh 浏览技能市场 → 复制 skill 的 GitHub 仓库 URL → 回顶部点「＋ 安装」装入">技能市场 ↗</a>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
       <div class="search-wrap" style="flex:1;min-width:200px;display:flex;gap:6px">
@@ -341,10 +377,10 @@ function renderSources(){
         <button class="btn btn-sm ${_sourceSortDir==='asc'?'btn-primary':''}" onclick="setSourceSortDir('asc')" title="按 skill 数量升序(当前组始终置顶)">按 skill 正序</button>
       </div>
       <div class="segmented-control">
-        <button class="btn btn-sm ${_sourceViewMode==='active'?'btn-primary':''}" onclick="setSourceViewMode('active')" title="用户自建、系统内置、已启用插件、连接器和命令">当前可用</button>
-        <button class="btn btn-sm ${_sourceViewMode==='inventory'?'btn-primary':''}" onclick="setSourceViewMode('inventory')" title="marketplace、缓存、旧包和已安装未启用包">来源库存</button>
-        <button class="btn btn-sm ${_sourceViewMode==='review'?'btn-primary':''}" onclick="setSourceViewMode('review')" title="项目级、导入/副本和未知运行态目录">导入/副本</button>
-        <button class="btn btn-sm ${_sourceViewMode==='all'?'btn-primary':''}" onclick="setSourceViewMode('all')" title="显示全部目录">全部</button>
+        <button class="btn btn-sm ${_sourceViewMode==='active'?'btn-primary':''}" onclick="setSourceViewMode('active')" onmouseenter="showViewPreview('active',this)" onmouseleave="hideViewPreview()" title="用户自建、系统内置、已启用插件、连接器和命令">当前可用</button>
+        <button class="btn btn-sm ${_sourceViewMode==='inventory'?'btn-primary':''}" onclick="setSourceViewMode('inventory')" onmouseenter="showViewPreview('inventory',this)" onmouseleave="hideViewPreview()" title="marketplace、缓存、旧包和已安装未启用包">库存</button>
+        <button class="btn btn-sm ${_sourceViewMode==='review'?'btn-primary':''}" onclick="setSourceViewMode('review')" onmouseenter="showViewPreview('review',this)" onmouseleave="hideViewPreview()" title="项目级、导入/副本和未知运行态目录">待核查</button>
+        <button class="btn btn-sm ${_sourceViewMode==='all'?'btn-primary':''}" onclick="setSourceViewMode('all')" onmouseenter="showViewPreview('all',this)" onmouseleave="hideViewPreview()" title="显示全部目录">全部</button>
       </div>
     </div>
   </div>`;

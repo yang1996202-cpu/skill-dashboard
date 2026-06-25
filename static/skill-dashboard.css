@@ -75,6 +75,13 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .segmented-control .btn.btn-primary{background:var(--accent);color:#fff;border-radius:6px}
 .segmented-control .btn-sm{padding:3px 10px;font-size:11px}
 
+/* view 预览卡片(视图按钮 hover 显示分类计数) */
+.view-preview{position:fixed;z-index:50;min-width:200px;max-width:240px;background:var(--bg-card);border:1px solid var(--border);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.14);padding:8px 10px;font-size:12px;font-family:var(--font);opacity:0;pointer-events:none;transition:opacity .12s var(--ease);max-height:340px;overflow-y:auto}
+.view-preview.show{opacity:1}
+.view-preview-head{display:flex;justify-content:space-between;align-items:baseline;padding-bottom:6px;margin-bottom:4px;border-bottom:1px solid var(--border-subtle);color:var(--accent);font-weight:600;letter-spacing:-.01em}
+.view-preview-row{display:flex;justify-content:space-between;align-items:center;padding:3px 0;color:var(--text-dim)}
+.view-preview-row b{color:var(--text);font-variant-numeric:tabular-nums;font-weight:500;font-family:var(--mono)}
+
 /* ── Stats — Linear data grid ── */
 .stats-row{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;margin-bottom:24px;background:var(--border);border-radius:var(--radius);overflow:hidden;border:1px solid var(--border)}
 .stat{background:var(--bg-card);padding:18px 20px;transition:background .15s ease}

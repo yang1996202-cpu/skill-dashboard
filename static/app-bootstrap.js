@@ -257,8 +257,8 @@ const HISTORY_OP_LABELS={
   fix:'修复 skill',
   mark_duplicate_decision:'标记多端部署',
   remove_duplicate_decision:'撤销多端部署标记',
-  add_source:'添加来源',
-  remove_source:'移除来源',
+  add_source:'添加路径',
+  remove_source:'移除路径',
   rehash:'确认内容变更'
 };
 const HISTORY_STATUS_LABELS={
