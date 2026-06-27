@@ -31,15 +31,23 @@ from skilldash.paths import DUPLICATE_DECISIONS_FILE, STATE_DIR
 class CleanupRoutes:
 
     def _cleanup_plan(self):
-        """Return a conservative dry-run cleanup plan for discovered skill dirs."""
+        """Return a conservative dry-run cleanup plan for discovered skill dirs.
+
+        支持 ?dir=<path> 多个 query 参数限定目录范围(透传 restrict_dirs);
+        不带 ?dir 时维持原全量行为。scope 仍走 daily/deep 二档。
+        """
         query = parse_qs(urlparse(self.path).query)
         scope = query.get("scope", ["daily"])[0]
         if scope not in ("daily", "deep"):
             scope = "daily"
-        self._json_response(build_cleanup_plan(self._current_target(), scope))
+        restrict_dirs = [d for d in query.get("dir", []) if d]
+        self._json_response(build_cleanup_plan(self._current_target(), scope, restrict_dirs=restrict_dirs or None))
 
     def _cleanup_execution_plan(self):
-        """Return executable-shaped cleanup actions without applying them."""
+        """Return executable-shaped cleanup actions without applying them.
+
+        同 _cleanup_plan 支持 ?dir= 多个限定目录。
+        """
         query = parse_qs(urlparse(self.path).query)
         scope = query.get("scope", ["daily"])[0]
         strategy = query.get("strategy", ["conservative"])[0]
@@ -47,7 +55,8 @@ class CleanupRoutes:
             scope = "daily"
         if strategy not in ("conservative", "declutter"):
             strategy = "conservative"
-        self._json_response(build_cleanup_execution_plan(self._current_target(), scope, strategy))
+        restrict_dirs = [d for d in query.get("dir", []) if d]
+        self._json_response(build_cleanup_execution_plan(self._current_target(), scope, strategy, restrict_dirs=restrict_dirs or None))
 
     def _list_duplicate_decisions(self):
         """Return local exact-duplicate handling decisions."""

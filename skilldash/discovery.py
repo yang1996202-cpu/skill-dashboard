@@ -95,6 +95,7 @@ def _env_roots(var_name):
 def _agent_from_path(dir_path):
     """Infer agent name from directory path."""
     p = str(dir_path)
+    parts_tuple = Path(p).parts
     # macOS app-embedded agents: ~/Library/Application Support/<app>/...
     # 取 app 名首段美化(kimi-desktop→Kimi, CherryStudio→CherryStudio),
     # 否则会 fallback 到路径末段 skills/Skills。
@@ -108,15 +109,34 @@ def _agent_from_path(dir_path):
         return "WorkBuddy"
     if "CodeBuddy" in p or "/.codebuddy/" in p or p.endswith("/.codebuddy/skills"):
         return "CodeBuddy"
+    # Path-segment-exact dotdir → agent name mapping. 子串匹配会让
+    # `.openclaw-autoclaw` 也叫 OpenClaw,故必须用 parts 精确比对。
     agents = [
         (".claude", "Claude Code"), (".workbuddy", "WorkBuddy"), (".hermes", "Hermes"),
         (".agents", "通用 Agents"), (".codex", "Codex"), (".cursor", "Cursor"),
         (".alice", "Alice"), (".openclaw", "OpenClaw"), (".cc-switch", "CC-Switch"),
         (".qclaw", "QClaw"), (".cola", "Cola"), (".codebuddy", "CodeBuddy"),
     ]
-    for prefix, name in agents:
-        if prefix in p:
+    for dotdir, name in agents:
+        if dotdir in parts_tuple:
+            # .openclaw-autoclaw 是另一个产品,单独映射(它也含 .openclaw 子串但作为独立段)
+            if dotdir == ".openclaw":
+                # 检查是否其实是 .openclaw-autoclaw 段
+                for seg in parts_tuple:
+                    if seg == ".openclaw-autoclaw":
+                        return "OpenClaw Auto"
+                    if seg == ".openclaw":
+                        return "OpenClaw"
+                continue
             return name
+    # .openclaw-autoclaw 是 OpenClaw Auto(独立产品),单独映射,避免被当成
+    # 通用 dotdir fallback 显示成 "openclaw-autoclaw"。
+    if ".openclaw-autoclaw" in parts_tuple:
+        return "OpenClaw Auto"
+    # OpenClaw npm bundled:路径含 node_modules/openclaw/skills(可能在 npm-global、
+    # 项目 node_modules 或包内),统一归 OpenClaw agent。
+    if "node_modules" in parts_tuple and "openclaw" in parts_tuple:
+        return "OpenClaw"
     parts = Path(p).parts
     # For .config/<agent>/skills, the real agent name is the child of .config
     for i, part in enumerate(parts):
@@ -262,7 +282,8 @@ def _derive_extension_type(plugin_context, layer, category, path):
     if state == "builtin" or layer == "vendor-bundled":
         return "builtin"
     # 裸 skill:用户/项目直接管理
-    if layer in ("active-root", "user-installed", "project-local", "imported-copy", "app-embedded"):
+    if layer in ("active-root", "user-installed", "shared-link", "agent-installed",
+                 "project-local", "imported-copy", "app-embedded"):
         return "skill"
     if category == "cache":
         return "cache"
@@ -342,9 +363,49 @@ def _classify_skill_dir_detail(dir_path):
         rel_parts = path.parts
     top = rel_parts[0].lower() if rel_parts else ""
 
+    # ── OpenClaw 三源精确分类(必须在通用 active-root/marketplace 分支之前) ──
+    # 三源物理语义不同,不能用通用规则覆盖:
+    #   1. bundled:  ~/.npm-global/.../node_modules/openclaw/skills (vendor 内置,observe)
+    #   2. shared:   ~/.openclaw/skills (软链层,指向 ~/.agents/skills;observe 不可删)
+    #   3. workspace:~/.openclaw/workspace/skills (ClawHub 市场装的真实目录,manage)
+    try:
+        resolved_path = path.resolve()
+    except OSError:
+        resolved_path = path
+    rp_lower = str(resolved_path)
+    is_openclaw_shared = (
+        len(rel_parts) == 2
+        and rel_parts[0] == ".openclaw"
+        and rel_parts[1] == "skills"
+    )
+    is_openclaw_workspace = (
+        len(rel_parts) >= 3
+        and rel_parts[0] == ".openclaw"
+        and rel_parts[1] == "workspace"
+        and rel_parts[2] == "skills"
+    )
+    # npm bundled:任何路径段序列含 node_modules/openclaw/skills (覆盖 npm-global / 项目内 / 包内)
+    is_openclaw_bundled = (
+        "node_modules" in rel_parts
+        and "openclaw" in rel_parts
+        and rel_parts[-1] == "skills"
+    )
+    if is_openclaw_shared:
+        mark("shared-link", "observe",
+             "OpenClaw shared link layer (symlinks to ~/.agents/skills)", "user")
+        # shared-link 不可删 —— 删了破坏 ~/.agents/skills 共享池
+    elif is_openclaw_workspace:
+        mark("agent-installed", "manage",
+             "OpenClaw workspace market-installed skills", "user")
+    elif is_openclaw_bundled:
+        mark("vendor-bundled", "observe",
+             "OpenClaw npm bundled skills (vendor shipped)", "marketplace")
+
     # Exact agent root at home level: ~/.claude/skills or ~/.agents/skills
     if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
-        mark("active-root", "manage", "agent root skills directory", "user")
+        # OpenClaw shared-link 已在上面 mark 过,这里跳过(避免被 active-root 覆盖)
+        if layer != "shared-link":
+            mark("active-root", "manage", "agent root skills directory", "user")
 
     # User-level non-agent collections fall through to "project" in the inlined category logic.
     # No special handling needed here
@@ -391,7 +452,10 @@ def _classify_skill_dir_detail(dir_path):
         mark("vendor-bundled", "observe", "host/vendor bundled skills", category)
 
     if "/workspace/skills/" in padded_p or padded_p.endswith("/workspace/skills/"):
-        mark("project-local", "review", "workspace-local skills", "project")
+        # OpenClaw workspace 是市场装的真实目录,已被 agent-installed/manage 分类,
+        # 不覆盖(否则被通用 project-local/review 覆盖)。
+        if layer != "agent-installed":
+            mark("project-local", "review", "workspace-local skills", "project")
 
     # Test fixtures and examples are never daily management targets.
     if any(sig in padded_p for sig in ("/fixtures/", "/fixture/", "/examples/", "/test/", "/tests/")):
@@ -472,6 +536,8 @@ def _classify_skill_dir_detail(dir_path):
     layer_labels = {
         "active-root": "当前/Agent 根目录",
         "user-installed": "用户技能库",
+        "shared-link": "共享链接层",
+        "agent-installed": "Agent 安装目录",
         "project-local": "项目内技能",
         "imported-copy": "导入/跨 Agent 副本",
         "app-embedded": "桌面 App 内置技能",
@@ -485,6 +551,8 @@ def _classify_skill_dir_detail(dir_path):
         "fixture-example": "测试样例",
     }
     ext_type = _derive_extension_type(plugin_context, layer, category, path)
+    # shared-link 永远不可删(软链只是链接层,真身在 ~/.agents/skills 共享池)
+    force_not_deletable = layer == "shared-link"
     detail = {
         "category": category,
         "extension_type": ext_type,
@@ -495,7 +563,7 @@ def _classify_skill_dir_detail(dir_path):
         "policy_label": policy_labels.get(policy, policy),
         "confidence": confidence,
         "evidence": evidence[:4],
-        "is_deletable": policy == "manage" and not is_suspicious,
+        "is_deletable": (policy == "manage" and not is_suspicious) and not force_not_deletable,
         "is_daily": policy in ("manage", "review"),
         "is_suspicious": is_suspicious,
     }
@@ -560,6 +628,17 @@ def _discover_skill_dirs():
         d = d.resolve()
         if not d.is_dir() or str(d) in seen_paths:
             return
+        # OpenClaw container roots(~/.openclaw/workspace 和 ~/.openclaw/extensions)
+        # 本身不是 skills 库——它们的 */skills 子目录才是。deep scan 会因为
+        # workspace/skills 容器把 workspace/ 根也误抓成 skill 目录,这里过滤掉。
+        try:
+            rel_to_home = d.relative_to(home.resolve())
+            if (len(rel_to_home.parts) == 2
+                    and rel_to_home.parts[0] == ".openclaw"
+                    and rel_to_home.parts[1] in ("workspace", "extensions")):
+                return
+        except ValueError:
+            pass
         # Dedup by inode — catches macOS case-insensitive aliases (projects/ vs Projects/)
         try:
             st = d.stat()

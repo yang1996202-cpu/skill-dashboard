@@ -438,14 +438,39 @@ class SourceRoutes:
 
         targets = []
         for skills_dir in skill_dirs:
-            count = sum(1 for d in skills_dir.iterdir()
-                       if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists())
-            if count == 0:
-                continue
             rel = str(skills_dir).replace(str(home), "~")
             # Use shared agent detection
             agent = _agent_from_path(str(skills_dir))
             governance = _classify_skill_dir_detail(skills_dir)
+            layer = governance.get("layer", "")
+            # OpenClaw shared-link 层:软链指向 ~/.agents/skills,真实 skill 已在那里
+            # 计数。这里只是展示链接层,不重复计数(避免 qiaomu/vercel/weread 列两份)。
+            if layer == "shared-link":
+                count = 0
+                # 收集断链软链,供前端标"待修复"。有效软链不计入(归 ~/.agents/skills)。
+                broken_links = []
+                try:
+                    for d in skills_dir.iterdir():
+                        if d.is_symlink() and not d.exists():
+                            broken_links.append(d.name)
+                except (PermissionError, OSError):
+                    pass
+                governance["broken_symlinks"] = sorted(broken_links)
+                governance["broken_link_count"] = len(broken_links)
+                targets.append({
+                    "path": str(skills_dir),
+                    "rel": rel,
+                    "name": agent,
+                    "count": count,
+                    "type": "skills",
+                    "is_current": str(skills_dir) == current,
+                    **governance,
+                })
+                continue
+            count = sum(1 for d in skills_dir.iterdir()
+                       if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists())
+            if count == 0:
+                continue
             targets.append({
                 "path": str(skills_dir),
                 "rel": rel,

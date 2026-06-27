@@ -36,35 +36,35 @@ def _cleanup_plan_item(skills_dir, current_target):
         next_state = "继续作为当前技能库，只做单个 skill 级别整理"
         risk = "high"
         can_execute = False
-        reasons = ["current active target", *governance.get("evidence", [])]
+        reasons = ["当前正在使用的目标目录", *governance.get("evidence", [])]
     elif policy == "manage":
         group = "protect"
         decision = "保护用户技能库"
         next_state = "保留在日常管理；删除必须落到单个 skill 或明确目录"
         risk = "medium"
         can_execute = False
-        reasons = ["user-manageable directory", *governance.get("evidence", [])]
+        reasons = ["用户自建或项目级技能库", *governance.get("evidence", [])]
     elif policy == "review":
         group = "review"
         decision = "进入人工复核"
         next_state = "先对比来源、相似度和原文，再决定迁移/删除/保留"
         risk = "medium"
         can_execute = False
-        reasons = ["review before destructive cleanup", *governance.get("evidence", [])]
+        reasons = ["项目级、跨 Agent 副本或未知运行态目录，需先看内容", *governance.get("evidence", [])]
     elif policy == "observe":
         group = "observe"
         decision = "只观察不清理"
         next_state = "作为市场、插件或宿主来源证据保留，不进日常删除队列"
         risk = "low"
         can_execute = False
-        reasons = ["source catalogue or vendor-provided directory", *governance.get("evidence", [])]
+        reasons = ["marketplace、插件或宿主内置来源目录，只解释来源", *governance.get("evidence", [])]
     else:
         group = "hide"
         decision = "默认隐藏"
         next_state = "从日常视图排除；如需释放空间，应由对应包管理器或宿主工具处理"
         risk = "low"
         can_execute = False
-        reasons = ["cache/fixture/system artifact", *governance.get("evidence", [])]
+        reasons = ["缓存、测试样例或系统工件", *governance.get("evidence", [])]
 
     return {
         "path": str(skills_dir),
@@ -87,14 +87,25 @@ def _cleanup_plan_item(skills_dir, current_target):
         "reasons": list(dict.fromkeys([r for r in reasons if r]))[:5],
     }
 
-def build_cleanup_plan(current_target, scope="daily"):
+def build_cleanup_plan(current_target, scope="daily", restrict_dirs=None):
     """Build a conservative dry-run cleanup plan.
 
     The plan is deliberately non-destructive. It explains directory state and
     recommended next state, but it does not declare anything directly deletable.
+
+    restrict_dirs: 可选的目录路径集合(字符串)。命中时只看这些目录(再做 daily/deep
+    过滤),让"问题与整理"治理 tab 尊重用户选的扫描范围,不再全量 daily。
+    为空/None 时维持原行为(全量 _discover_skill_dirs)。
     """
     started = time.time()
-    all_dirs = _discover_skill_dirs()
+    if restrict_dirs:
+        restrict_norm = {str(Path(d).expanduser().resolve()) for d in restrict_dirs if d}
+        all_dirs = [
+            d for d in _discover_skill_dirs()
+            if str(Path(d).expanduser().resolve()) in restrict_norm
+        ]
+    else:
+        all_dirs = _discover_skill_dirs()
     items = []
     for skills_dir in all_dirs:
         try:
@@ -259,13 +270,15 @@ def _execution_action_for_item(item, strategy="conservative"):
         }
 
     if strategy == "declutter" and layer in ("backup-snapshot", "imported-copy", "downloaded-package"):
+        # 目录路径特征 → 大白话分类
+        layer_cn = {"backup-snapshot": "备份快照", "imported-copy": "导入副本", "downloaded-package": "下载包"}.get(layer, "副本目录")
         return {
             **base,
             "phase": "candidate",
             "operation": "move_skills_to_trash",
             "label": "候选移入垃圾站",
             "to_state": "垃圾站/快照后再物理删除",
-            "why": "该目录像备份、导入副本或下载包，有清理潜力，但必须逐项确认。",
+            "why": f"这个目录像是{layer_cn}（{item.get('rel') or item.get('path', '')}），里面的 skill 大多在别处有副本或不再用。可逐个确认移入垃圾站，能恢复。",
             "rollback": "先移入本工具垃圾站或保留快照，确认无误后再清空。",
             "ready": False,
             "destructive": True,
@@ -278,7 +291,7 @@ def _execution_action_for_item(item, strategy="conservative"):
         "operation": "manual_review",
         "label": "进入人工复核",
         "to_state": "待定：保留、迁移、合并或移入垃圾站",
-        "why": "这个目录有清理潜力，但当前证据不足以自动删除。",
+        "why": "这个目录看起来有清理潜力，但工具没法判断它现在还用不用——可能是项目级、跨 Agent 副本或未知运行态。建议先点开看看里面的 skill，再决定保留、移走还是删。",
         "rollback": "无文件变更；复核后再生成具体删除动作。",
         "ready": True,
         "destructive": False,
@@ -420,18 +433,17 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
                     "policy": governance.get("policy", ""),
                     "policy_label": governance.get("policy_label", ""),
                     "layer_label": governance.get("layer_label", "") or governance.get("layer", ""),
-                    "evidence": list(dict.fromkeys([
-                        "SKILL.md content hash matches current target copy",
-                        f"kept copy: {keeper_dir}",
-                        reason,
-                        *governance.get("evidence", []),
-                    ]))[:5],
+                    "evidence": list({e["text"]: e for e in [
+                        {"type": "dup", "text": f"{name} 的 SKILL.md 内容跟当前目录里那份完全一致（hash 匹配）"},
+                        {"type": "keeper", "text": f"保留的副本在：{str(Path(keeper_dir).expanduser()).replace(str(Path.home()), '~') if keeper_dir else '当前目录'}"},
+                        {"type": "policy", "text": "它在另一个 Agent 的根目录，更像多端部署副本，不是重复垃圾"},
+                    ]}.values())[:5],
                     "risk": "low",
                     "phase": "deploy",
                     "operation": "mark_multi_agent_deploy",
                     "label": "多端部署副本",
                     "to_state": "保留在对应 Agent 根目录",
-                    "why": f"{name} 和当前目录内容完全一致，但它位于另一个 Agent 的根目录，更像多端部署副本，不默认清理。",
+                    "why": f"{name} 的内容跟当前目录那份完全一样，但它装在另一个 Agent 的根目录里——更像是为了在多个 Agent 里都能用而部署的副本，不是垃圾。可以标记为「多端部署」，标记后同一内容的提醒不再出现。",
                     "rollback": "无文件变更；标记后仅隐藏同一内容 hash 的重复提醒。",
                     "ready": True,
                     "destructive": False,
@@ -450,17 +462,16 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
                 "content_hash": loc.get("hash", ""),
                 "sample_skills": [name],
                 "from_state": governance.get("layer_label") or governance.get("layer", ""),
-                "evidence": list(dict.fromkeys([
-                    "SKILL.md content hash matches another copy",
-                    f"kept copy: {keeper_dir}",
-                    *governance.get("evidence", []),
-                ]))[:5],
+                "evidence": list({e["text"]: e for e in [
+                    {"type": "dup", "text": f"{name} 的 SKILL.md 内容跟另一份完全一致（hash 匹配）"},
+                    {"type": "keeper", "text": f"保留的副本在：{str(Path(keeper_dir).expanduser()).replace(str(Path.home()), '~') if keeper_dir else '另一目录'}"},
+                ]}.values())[:5],
                 "risk": "medium",
                 "phase": "candidate",
                 "operation": "move_skill_to_trash",
                 "label": "完全重复移入垃圾站",
                 "to_state": "垃圾站/保留另一份完全相同副本",
-                "why": f"{name} 的 SKILL.md 内容完全一致；保留更可能正在使用的副本，只移动这个重复副本。",
+                "why": f"{name} 的内容跟另一份完全一样。保留你更可能在用的那份（{str(Path(keeper_dir).expanduser()).replace(str(Path.home()), '~') if keeper_dir else '另一目录'}），这个重复副本可以删——只移入垃圾站，需要时能恢复。",
                 "rollback": "从垃圾站恢复到原路径即可。",
                 "ready": False,
                 "destructive": True,
@@ -469,9 +480,12 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
     actions.sort(key=lambda a: (a.get("agent", ""), a.get("skill_name", ""), a.get("path", "")))
     return actions
 
-def build_cleanup_execution_plan(current_target, scope="daily", strategy="conservative"):
-    """Build an executable-shaped plan without executing filesystem changes."""
-    cleanup_plan = build_cleanup_plan(current_target, scope)
+def build_cleanup_execution_plan(current_target, scope="daily", strategy="conservative", restrict_dirs=None):
+    """Build an executable-shaped plan without executing filesystem changes.
+
+    restrict_dirs 透传给 build_cleanup_plan,限定目录范围。
+    """
+    cleanup_plan = build_cleanup_plan(current_target, scope, restrict_dirs=restrict_dirs)
     actions = []
     plan_dirs = []
     for group in cleanup_plan.get("groups", []):

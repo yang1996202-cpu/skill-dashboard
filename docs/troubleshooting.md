@@ -212,6 +212,35 @@ if(!scan?.sources?.length){
 
 ---
 
+## 扫描与清理流程
+
+### 「问题与整理」页 tab 点不动 / 整页卡死（上游 tab 正常）
+
+**现象**：「问题与整理」点「开始整理」扫描完成后，同名 / 变更 / 待补来源 tab 点不动、内容不渲染，但「上游」tab 正常。
+
+**根因**：`/api/cleanup-execution-plan` 后端 500（`cleanup.py` 两个崩溃），前端 `startCleanupFlow` fetch 失败，后续 tab 渲染依赖的 `executionPlan` 没拿到，整页卡住。两个崩溃点：
+
+1. **`Path.replace()` 陷阱**：`Path(keeper_dir).expanduser().replace(str(Path.home()), '~')` —— pathlib 的 `.replace(target)` 是**移动文件**（1 参数），不是字符串替换；误传 2 参数报错。应改成 `str(Path(keeper_dir).expanduser()).replace(str(Path.home()), '~')`（先 `str()` 再字符串 `.replace`）。
+2. **`dict.fromkeys()` 对不可哈希值**：`list(dict.fromkeys([{...dict...}]))` —— dict 不可哈希，`fromkeys` 报 TypeError。应改成 `list({e["text"]: e for e in [...]}.values())`（按 `text` 去重，保留 dict）。
+
+**修复**：`cleanup.py` 三处 `Path.replace`（行 ~438/467/474）改 `str(Path(...)).replace`；两处 `dict.fromkeys`（行 ~436/465）改 dict 推导去重。
+
+**排查**：`tail /tmp/sd-serve.log` 看 500 + traceback；`curl -s /api/cleanup-execution-plan | python3 -m json.tool` 直接复现后端报错（不经过前端）。**别一上来猜前端卡——先看后端日志**。
+
+---
+
+### 「待补来源」tab 显示空（后端有数据）
+
+**现象**：「待补来源」tab 空，但 `/api/scan-run` 返回的 `source_status` 字段有数据。
+
+**根因**：`runScan()` 把响应映射到 `health` 时漏了 `source_status` 字段（只映了 `upstream_sources` / `duplicates_same_name` 等），前端 `recoverDirs = health.source_status` 拿到 `undefined`。后端加了字段、前端映射层不同步 = 数据到不了视图。
+
+**修复**：`runScan` 的 health 映射加 `source_status: r.source_status || []`。
+
+**教训**：改后端响应结构（新增字段）后，grep 前端映射点（`runScan` / `loadData` 里 `health =` / `scan =` 的赋值），确认新字段被接住，否则就是"后端有、前端看不到"。
+
+---
+
 ## 适配性风险（跨用户环境）
 
 ### 路径中的特殊字符

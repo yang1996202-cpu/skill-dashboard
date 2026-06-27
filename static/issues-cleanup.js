@@ -35,17 +35,44 @@ const boundaryLabel=(a)=>{
 const fmtScanTime=(t)=>t?t.replace('T',' ').slice(0,16):'';
 let _execShowAll=false; // executionPlan 各阶段目录的展开状态（独立于同名 tab 的 _issueShowAll）
 
-// Scan scope persisted across sessions
+// Scan scope persisted across sessions —— 多选 toggle(Set)。
+// scope 跟能力来源页视图映照:current=只扫当前目录 / active=扫「当前可用」
+// / inventory=扫「来源库存」/ review=扫「待复核」。all=隐藏全量档,默认不选。
+// 老 daily/deep/mine 单值在启动时迁移成 new Set(['active'])。
+// localStorage 存 JSON.stringify([...set]);读出若为 JSON 数组直接 new Set(arr),
+// 若是老字符串(单值)迁移后清掉再写数组。
+const _SCAN_SCOPE_VALID=['current','active','inventory','review','all'];
+function _migrateScanScope(v){
+  if(v==='daily'||v==='deep'||v==='mine')return 'active';
+  return _SCAN_SCOPE_VALID.includes(v)?v:null;
+}
+const _SCAN_SCOPE_KEY='sd-scan-scope-v2'; // v2:默认 active+review(≈原 daily 的 user+project);v1 默认只 active 太窄,上来啥都没有
 let _scanScope=(()=>{
   try{
-    const saved=localStorage.getItem('sd-scan-scope');
-    if(saved) return saved;
+    const saved=localStorage.getItem(_SCAN_SCOPE_KEY);
+    if(!saved)return new Set(['active','review']);
+    try{
+      const arr=JSON.parse(saved);
+      if(Array.isArray(arr)){
+        const migrated=arr.map(_migrateScanScope).filter(Boolean);
+        return new Set(migrated.length?migrated:['active','review']);
+      }
+    }catch{}
+    const m=_migrateScanScope(saved);
+    if(m) return new Set([m]);
   }catch{}
-  return 'deep';
+  return new Set(['active','review']);
 })();
+// toggle:点一下选中,再点取消。约束:至少留一个(删到最后一个不删)。
 function setScanScope(scope){
-  _scanScope=scope==='daily'?'daily':'deep';
-  localStorage.setItem('sd-scan-scope',_scanScope);
+  if(!_SCAN_SCOPE_VALID.includes(scope))return;
+  if(_scanScope.has(scope)){
+    if(_scanScope.size<=1)return; // 至少留一个
+    _scanScope.delete(scope);
+  }else{
+    _scanScope.add(scope);
+  }
+  try{localStorage.setItem(_SCAN_SCOPE_KEY,JSON.stringify([..._scanScope]))}catch{}
   renderScanConfig();
 }
 
@@ -125,10 +152,19 @@ function sourcePolicy(t){
 function sourceLayerLabel(t){
   return t?.layer_label||LAYER_FALLBACK[t?.category||'unknown']||'未知来源';
 }
-function sourceIsDaily(t){
-  if(t?.is_current) return true;
-  const c=t?.category||'unknown';
-  return c==='user'||c==='project';
+// 扫描范围匹配:scope 跟能力来源页视图映照。
+// current=只扫当前目录; active/inventory/review/all 复用对应 sourceIs* 谓词。
+function sourceMatchesScanScope(t,scope){
+  if(scope==='current')return !!t?.is_current;
+  if(scope==='all')return true;
+  if(scope==='inventory')return sourceIsInventory(t);
+  if(scope==='review')return sourceIsReview(t);
+  return sourceIsActive(t); // default = active
+}
+// 老入口(被外部 cleanup-plan/deep 按钮等引用),保留为 active + current 的合并口径,
+// 等价于旧行 user/project/is_current 在新分类下的落点。不再叫 "daily"。
+function sourceIsScanActive(t){
+  return !!t?.is_current||sourceIsActive(t);
 }
 function sourceIsActive(t){
   return ['active-user','active-system','active-plugin','active-connector','commands'].includes(sourceCapabilityBucket(t));
@@ -183,7 +219,30 @@ function getVisibleSourceGroups(){
   return filterGroupsByView(targetGroups,_sourceViewMode);
 }
 function getDailyScanTargets(){
-  return targetGroups.flatMap(g=>g.dirs.filter(sourceIsDaily));
+  // 兼容老入口(active+current 合并);新代码请用 getScanScopeTargets(scope)。
+  return targetGroups.flatMap(g=>g.dirs.filter(sourceIsScanActive));
+}
+function getScanScopeTargets(scope){
+  // 单 scope 入口(兼容外部调用);内部多选走 getSelectedScanScopeTargets。
+  return targetGroups.flatMap(g=>g.dirs.filter(t=>sourceMatchesScanScope(t,scope)));
+}
+// 多选 toggle:对当前 _scanScope 里每个 scope 求 OR 合并去重。
+function getSelectedScanScopeTargets(){
+  const seen=new Set();
+  const out=[];
+  const scopes=[..._scanScope];
+  if(!scopes.length)return [];
+  // all 直接全量
+  if(scopes.includes('all'))return targets.slice();
+  targetGroups.forEach(g=>g.dirs.forEach(t=>{
+    const norm=String(t.path||'').replace(/\/+$/,'');
+    if(seen.has(norm))return;
+    if(scopes.some(s=>sourceMatchesScanScope(t,s))){
+      seen.add(norm);
+      out.push(t);
+    }
+  }));
+  return out;
 }
 function sourceMatchesView(t,viewMode){
   if(viewMode==='all')return true;
@@ -208,7 +267,8 @@ function renderScanConfig(){
   if(!el) return;
   let statusHtml='';
   if(scanResult){
-    const scopeLabel=scanResult.scope==='daily'?'重点扫描':'全量扫描';
+    const scopeLabelMap={current:'当前目录',active:'当前可用',inventory:'来源库存',review:'待复核',all:'全部目录',daily:'当前可用',deep:'当前可用'};
+    const scopeLabel=scopeLabelMap[scanResult.scope]||scanResult.scope||'当前可用';
     const tokenOk=scanResult.github_token_configured;
     const est=scanResult.upstream_api_estimate||0;
     const rl=scanResult.github_rate_limit||{};
@@ -228,9 +288,11 @@ function renderScanConfig(){
       ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">${scanResult.lint.warnings.length} 个数据异常</span>`:''}
     </div>`;
   }
-  const scopeBtn=(scope,label)=>{
-    const active=_scanScope===scope;
-    return `<button class="btn btn-sm ${active?'btn-primary':''}" onclick="setScanScope('${scope}')" style="${active?'':'background:var(--bg-card-alt);color:var(--text-muted)'}">${label}</button>`;
+  const scopeBtn=(scope,label,title)=>{
+    // toggle 多选:active 用 ✓ 前缀 + 实色背景,非 active 灰底。
+    const active=_scanScope.has(scope);
+    const check=active?'<span style="display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-radius:2px;position:relative;vertical-align:-1px;margin-right:3px"><span style="position:absolute;left:1px;top:-2px;font-size:9px;line-height:1">✓</span></span>':'<span style="display:inline-block;width:10px;height:10px;border:1.5px solid var(--text-muted);border-radius:2px;vertical-align:-1px;margin-right:3px"></span>';
+    return `<button class="btn btn-sm ${active?'btn-primary':''}" onclick="setScanScope('${scope}')" title="${esc(title)}" style="${active?'':'background:var(--bg-card-alt);color:var(--text-muted)'}">${check}${label}</button>`;
   };
   const checkBox=(key,label,title)=>{
     const checked=_scanChecks.includes(key);
@@ -239,14 +301,18 @@ function renderScanConfig(){
       <span>${label}</span>
     </label>`;
   };
+  // 扫描范围跟能力来源页视图映照:能选 current/active/inventory/review 对应范围
+  // + all(全量档)。多选 toggle。
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
       <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始整理</button>
-      <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始，自动扫描并生成处理建议。</span>
+      <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始,自动扫描并生成处理建议。</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center">
-        <div style="display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)">
-          ${scopeBtn('daily','重点扫描')}
-          ${scopeBtn('deep','全量扫描')}
+        <div style="display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)" title="扫描范围跟能力来源页视图映照">
+          ${scopeBtn('current','当前目录','只扫当前 target 目录')}
+          ${scopeBtn('active','当前可用','映照「能力来源 → 当前可用」:已启用插件/连接器/用户根/系统内置')}
+          ${scopeBtn('inventory','来源库存','映照「能力来源 → 来源库存」:市场目录/缓存/已装未启用')}
+          ${scopeBtn('review','待复核','映照「能力来源 → 待复核」:导入副本/项目级/未知')}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           ${checkBox('same-name','同名','跨目录同名 skill')}
@@ -254,6 +320,9 @@ function renderScanConfig(){
           ${checkBox('content-changes','变更','检测本地内容改动')}
         </div>
       </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">
+      扫描范围: ${getSelectedScanScopeTargets().length} 目录（多选 toggle，再点取消）
     </div>
     ${statusHtml}
   </div>`;
@@ -286,13 +355,12 @@ function setCleanupLoading(active,step=1){
 async function startCleanupFlow(){
   setCleanupLoading(true,1);
   try{
-    const scope=_scanScope||'deep';
     const checks=[..._scanChecks];
     if(checks.length){
-      await runScan(scope,{silent:true,deferRender:true,checks});
+      await runScan(null,{silent:true,deferRender:true,checks});
     }
     setCleanupLoading(true,2);
-    await runCleanupPlan(scope,{deferRender:true});
+    await runCleanupPlan(null,{deferRender:true});
     await runExecutionPlan('declutter',{silent:true});
     toast('整理完成：已生成可处理建议');
   }catch(e){
@@ -303,21 +371,25 @@ async function startCleanupFlow(){
   }
 }
 
-async function runScan(scope='deep',opts={}){
+async function runScan(scope,opts={}){
   try{
-    const scanTargets=scope==='deep'?targets:getDailyScanTargets();
+    // scope 参数忽略(向后兼容);实际用 _scanScope 多选合并 directories。
+    // all 在 _scanScope 里 → 全量;否则合并所有选中 scope 的目录去重。
+    const scanTargets=_scanScope.has('all')?targets:getSelectedScanScopeTargets();
     const directories=targets.length?scanTargets.map(t=>t.path):[];
+    const scopeTag=[..._scanScope].sort().join(',')||'active';
     const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name','content-changes'];
     const r=await fetch('/api/scan-run',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({directories,scope,checks})
+      body:JSON.stringify({directories,scope:scopeTag,checks})
     }).then(r=>r.json());
     if(r.error){toast(r.error,'error');return}
     scanResult=r;
     // Map scan result into health/globalOverlap for renderIssues
     health={
       upstream_sources:r.upstream_sources||[],
+      source_status:r.source_status||[],
       content_changes:r.content_changes,
       structure_issues:r.structure_issues||[],
       cleanup_candidates:[],
@@ -338,36 +410,54 @@ async function runScan(scope='deep',opts={}){
   }catch(e){if(!opts.silent)toast('扫描请求失败（可能超时或服务未响应）：'+e.message+'。后续预案会基于旧缓存继续。','error')}
 }
 
-async function runCleanupPlan(scope='daily',opts={}){
+// 把 scan 选中的范围透传给 cleanup-plan/execution-plan 后端。
+// 不再把所有非 all scope 压成 daily —— 那会让选"当前目录"时治理 tab 冒出别处目录。
+// 改为:directories = scan 选中的目录(合并去重);cleanup scope 仍 daily/deep 二档
+// (all→deep 全量审计;其余→daily 重点,过滤 observe/hide)。
+function cleanupScopeAndDirectories(){
+  // 治理 tab(可移垃圾站/待你看)看全量可清理目录,不受 scan scope 限制——
+  // scan scope 只管分析 tab(同名/上游/变更)。否则选窄 scope 时治理 tab 全空。
+  const cleanupScope=_scanScope.has('all')?'deep':'daily';
+  return {cleanupScope, directories:[]};
+}
+async function runCleanupPlan(scope,opts={}){
+  // scope 参数忽略(向后兼容);实际用 _scanScope 多选。
+  const {cleanupScope,directories}=cleanupScopeAndDirectories();
   const btn=$('cleanup-plan-btn');
   const deepBtn=$('cleanup-plan-deep-btn');
   if(btn)btn.disabled=true;
   if(deepBtn)deepBtn.disabled=true;
-  if(btn)btn.textContent=scope==='deep'?'⏳ 全量计划中...':'⏳ 生成计划中...';
+  if(btn)btn.textContent=cleanupScope==='deep'?'⏳ 全量计划中...':'⏳ 生成计划中...';
   try{
-    const r=await fetch(`/api/cleanup-plan?scope=${encodeURIComponent(scope)}`).then(r=>r.json());
+    const dirQuery=directories.map(d=>`&dir=${encodeURIComponent(d)}`).join('');
+    const r=await fetch(`/api/cleanup-plan?scope=${encodeURIComponent(cleanupScope)}${dirQuery}`).then(r=>r.json());
     if(r.error){toast(r.error,'error');return}
     cleanupPlan=r;
+    // 记录本次 plan 限定的目录,runExecutionPlan 复用
+    cleanupPlanDirectories=directories;
     executionPlan=null;
     cleanupExcludedActions.clear();
     if(!opts.deferRender)renderIssues();
-    if(!opts.silent)toast(`${scope==='deep'?'全量目录审计':'重点治理计划'}完成: ${r.summary?.directories||0} 目录`);
+    if(!opts.silent)toast(`${cleanupScope==='deep'?'全量目录审计':'重点治理计划'}完成: ${r.summary?.directories||0} 目录`);
   }catch(e){toast('清理计划失败: '+e.message,'error')}
   finally{
     if(btn){btn.disabled=false;btn.textContent='目录依据'}
     if(deepBtn)deepBtn.disabled=false;
   }
 }
+let cleanupPlanDirectories=[]; // runCleanupPlan 选中的目录,runExecutionPlan 复用
 
 async function runExecutionPlan(strategy='conservative',opts={}){
-  const scope=cleanupPlan?.scope||'daily';
+  const cleanupScope=cleanupPlan?.scope||(_scanScope.has('all')?'deep':'daily');
+  const directories=cleanupPlanDirectories.length?cleanupPlanDirectories:getSelectedScanScopeTargets().map(t=>t.path).filter(Boolean);
   const btn=$('execution-plan-btn');
   const declutterBtn=$('execution-plan-declutter-btn');
   if(btn)btn.disabled=true;
   if(declutterBtn)declutterBtn.disabled=true;
   if(btn)btn.textContent=strategy==='declutter'?'⏳ 生成断舍离预案...':'⏳ 生成执行预案...';
   try{
-    const r=await fetch(`/api/cleanup-execution-plan?scope=${encodeURIComponent(scope)}&strategy=${encodeURIComponent(strategy)}`).then(r=>r.json());
+    const dirQuery=directories.map(d=>`&dir=${encodeURIComponent(d)}`).join('');
+    const r=await fetch(`/api/cleanup-execution-plan?scope=${encodeURIComponent(cleanupScope)}&strategy=${encodeURIComponent(strategy)}${dirQuery}`).then(r=>r.json());
     if(r.error){toast(r.error,'error');return}
     executionPlan=r;
     cleanupExcludedActions.clear();
@@ -457,37 +547,50 @@ function computeGovernBuckets(){
   }));
   return buckets;
 }
-// 单个治理目录卡（layer 横幅 + LAYER_DOC 解释 + 勾选/标记操作）
+// evidence 元素兼容 object({type,text}) 和老 string。
+const _evText=(e)=>typeof e==='object'&&e?e.text:String(e||'');
+// 单个治理目录卡 —— 按 operation 分流:move 类突出"为什么可删+可恢复",
+// review 类突出"为什么不能自动删+你要看什么"。evidence 默认折叠。
 function renderGovernActionCard(a){
   const executable=cleanupIsCandidateAction(a);
   const doc=LAYER_DOC[a.layer]||{};
   const boundary=doc.boundary||boundaryLabel(a);
   const bTone=boundaryTone(boundary);
   const layerText=a.layer_label||a.from_state||'未知层级';
-  const dest=a.operation==='mark_multi_agent_deploy'?' · 多端部署'
-    :a.operation==='manual_review'?' · 待你看'
-    :/move_.*_trash/.test(a.operation)?' → 垃圾站'
-    :' · 不动';
+  const isMove=/move_.*_trash/.test(a.operation);
+  const isReview=a.operation==='manual_review';
+  const isMultiDeploy=a.operation==='mark_multi_agent_deploy';
   const subj=a.skill_name||a.agent||'';
-  const title=subj+dest;
+  // move 类主标突出 skill/目录名 + "可删"
+  const title=isMove?(a.skill_name?`${a.skill_name} · 重复副本可删`:`${subj} · 整个目录可删`)
+    :isReview?`${subj} · 需要你看一眼`
+    :isMultiDeploy?`${a.skill_name||subj} · 多端部署副本`
+    :subj;
+  const evidenceHtml=(a.evidence&&a.evidence.length)?`<details style="margin-top:6px"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;list-style:none">▸ 为什么这么判断（${a.evidence.length} 条）</summary><div style="font-size:10px;color:var(--text-dim);line-height:1.6;padding-top:4px">${a.evidence.map(e=>`<div>· ${escapeHtml(_evText(e))}</div>`).join('')}</div></details>`:'';
+  // move 类:主提示条(为什么可删 + 进垃圾站可恢复);review 类:主提示(为什么不能自动删 + 你要看什么)
+  const promptBar=isMove
+    ?`<div style="font-size:11px;color:var(--text);line-height:1.6;padding:6px 10px;margin:6px 0;background:var(--red)10;border-left:3px solid var(--red);border-radius:0 6px 6px 0">${escapeHtml(a.why||'')}<br><span style="color:var(--text-muted)">点上方勾选 → 右上「移入垃圾站」执行。只进可恢复垃圾站，不会永久删除。</span></div>`
+    :isReview
+    ?`<div style="font-size:11px;color:var(--text);line-height:1.6;padding:6px 10px;margin:6px 0;background:var(--amber)10;border-left:3px solid var(--amber);border-radius:0 6px 6px 0">${escapeHtml(a.why||'')}<br><span style="color:var(--text-muted)">建议：点 skill 名看内容，确认不用了再走「同名」或「损坏」tab 单独删。</span></div>`
+    :`<div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">${escapeHtml(a.why||'')}</div>`;
   return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
     <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center">
-      <span style="font-size:13px;font-weight:700;color:${bTone}">📦 ${escapeHtml(layerText)}</span>
+      <span style="font-size:13px;font-weight:700;color:${bTone}">${escapeHtml(layerText)}</span>
     </div>
     <div style="padding:8px 10px">
-      ${executable?`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:${cleanupExcludedActions.has(a.id)?'var(--bg-card)':'var(--red)'}14;border:1px solid ${cleanupExcludedActions.has(a.id)?'var(--border-subtle)':'var(--red)'}55"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)"><span style="font-size:12px;font-weight:700;color:${cleanupExcludedActions.has(a.id)?'var(--text-muted)':'var(--red)'}">${cleanupExcludedActions.has(a.id)?'已排除（这个目录不会被处理）':`☑ 纳入清理 · 移入垃圾站 · ${a.count||0} skills`}</span></label>`:''}
+      ${executable?`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:${cleanupExcludedActions.has(a.id)?'var(--bg-card)':'var(--red)'}14;border:1px solid ${cleanupExcludedActions.has(a.id)?'var(--border-subtle)':'var(--red)'}55"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)"><span style="font-size:12px;font-weight:700;color:${cleanupExcludedActions.has(a.id)?'var(--text-muted)':'var(--red)'}">${cleanupExcludedActions.has(a.id)?'已排除（这个不会被处理）':`☑ 纳入清理 · 移入垃圾站 · ${a.count||0} skills`}</span></label>`:''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${a.operation==='mark_multi_agent_deploy'?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
-        ${a.operation==='mark_multi_agent_deploy'?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
+        ${isMultiDeploy?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
+        ${isMultiDeploy?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
         <span style="flex:1"></span>
         <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
       </div>
       <div style="font-size:12px;font-weight:600;color:var(--text);margin-top:6px">${escapeHtml(title)}</div>
-      <div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">原因：${escapeHtml(a.why||'')}</div>
+      ${promptBar}
       <div style="font-size:11px;color:var(--text-muted);line-height:1.5">回滚：${escapeHtml(a.rollback||'')}</div>
       ${renderIssuePath(a.path)}
       ${a.duplicate_of?`<div style="font-size:10px;color:var(--text-dim);margin-top:5px">保留副本</div>${renderIssuePath(a.duplicate_of)}`:''}
-      ${a.evidence?.length?`<div style="font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:5px">证据：${a.evidence.map(escapeHtml).join(' / ')}</div>`:''}
+      ${evidenceHtml}
       ${a.sample_skills?.length?`<div class="skill-tags" style="margin-top:6px">${a.sample_skills.slice(0,5).map(n=>`<span class="skill-tag">${escapeHtml(n)}</span>`).join('')}</div>`:''}
     </div>
   </div>`;
@@ -599,7 +702,7 @@ function restoreAllCleanupCandidates(){
 }
 
 async function refreshIssuesAfterDelete(changedPaths=[],opts={}){
-  const scope=opts.scope||scanResult?.scope||cleanupPlan?.scope||executionPlan?.scope||'daily';
+  // scope 参数忽略(runScan/runCleanupPlan 内部用 _scanScope 多选自治)。
   const strategy=opts.strategy||executionPlan?.strategy||'declutter';
   const hadCleanupPlan=!!cleanupPlan||!!executionPlan;
   const hadExecutionPlan=!!executionPlan;
@@ -608,9 +711,9 @@ async function refreshIssuesAfterDelete(changedPaths=[],opts={}){
   await loadTrash();
   await refreshAfterDelete(changedPaths||[]);
   if(hadCleanupPlan){
-    await runCleanupPlan(scope,{silent:true,deferRender:true});
+    await runCleanupPlan(null,{silent:true,deferRender:true});
   }
-  await runScan(scope,{silent:true,deferRender:true,preserveIssueView:true});
+  await runScan(null,{silent:true,deferRender:true,preserveIssueView:true});
   _issueTypeTab=tabBefore;
   _issueShowAll=showAllBefore;
   if(hadExecutionPlan){
@@ -631,7 +734,6 @@ async function executeRecommendedCleanupActions(){
   if(!confirm(`将 ${selected.length} 个清理项移入垃圾站。\n\n其中包含 ${dirCount} 个候选目录、${dupCount} 个完全重复 skill，共 ${totalSkills} 个 skills。\n${excluded?`已排除 ${excluded} 项。\\n`:''}\n不会永久删除，可在垃圾站恢复。确认执行？`))return;
   const btn=$('cleanup-execute-btn');
   if(btn){btn.disabled=true;btn.textContent='执行中...'}
-  const scopeBefore=scanResult?.scope||cleanupPlan?.scope||executionPlan?.scope||'daily';
   const strategyBefore=executionPlan?.strategy||'declutter';
   try{
     const r=await fetch('/api/cleanup-execute',{
@@ -649,7 +751,7 @@ async function executeRecommendedCleanupActions(){
     const d=await r.json();
     if(!d.ok&&d.error){toast(d.error,'error');return}
     cleanupExcludedActions.clear();
-    await refreshIssuesAfterDelete(d.changed_paths||[],{scope:scopeBefore,strategy:strategyBefore});
+    await refreshIssuesAfterDelete(d.changed_paths||[],{strategy:strategyBefore});
     toast(`已移入垃圾站 ${d.moved||0} 个 skill（${selected.length} 项）${d.failed?`，${d.failed} 个失败`:''}`);
   }catch(e){toast('执行失败: '+e.message,'error')}
   finally{
@@ -680,26 +782,36 @@ function renderIssues(){
   const changedSkills=changes?.changed||[];
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
+  // 待补来源:三信号(steal-meta / .git remote / .skill-lock)全空的 skill。
+  // 数据来自扫描的 source_status(后端 detect_source_local,0 GitHub API,默认扫描即产出)。
+  // 点「补来源」直接打开 skill 详情的补来源面板,按 SKILL.md 内容搜回上游。
+  const recoverDirs=(health?.source_status||[]).filter(s=>s.source==='unknown');
+
   const issueTabs=[
     {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length},
     {key:'upstream',emoji:'🔗',label:'上游',count:upstreamAll.length},
     {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length},
     {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length},
+    {key:'recover',emoji:'◆',label:'待补来源',title:'没有任何上游来源留痕的 skill(steal-meta/.git/lock 三信号全空),点补来源按内容搜回上游',count:recoverDirs.length},
   ];
   const govBuckets=computeGovernBuckets();
+  // frozen tab(不动:锁定/观察/缓存)只在 all scope 显示 —— 非 all 时
+  // 这些目录本来就不该出现在治理结果里,展示出来纯困惑。
+  const showFrozen=_scanScope.has('all');
   const governTabs=executionPlan?[
-    {key:'trash',emoji:'🗑️',label:'可移垃圾站',count:govBuckets.trash.length},
-    {key:'review',emoji:'🔎',label:'待你看',count:govBuckets.review.length},
-    {key:'frozen',emoji:'🔒',label:'不动',count:govBuckets.frozen.length},
+    {key:'trash',emoji:'🗑️',label:'可移垃圾站',title:'hash 一致的重复 skill / 候选目录副本',count:govBuckets.trash.length},
+    {key:'review',emoji:'🔎',label:'待你看',title:'导入副本 / 项目级 / 未知来源,需你判断',count:govBuckets.review.length},
+    ...(showFrozen?[{key:'frozen',emoji:'🔒',label:'不动',title:'保护区 / 市场货架 / 缓存,只读不动',count:govBuckets.frozen.length}]:[]),
   ]:[];
   const allTabs=[...issueTabs,...governTabs];
-  // 当前 tab 无数据/不存在时落到第一个有数据的，避免空页
+  // tab 不存在才回退;count=0 也允许切(下方有空状态提示)。
+  // 不能弹回——弹回会让用户点了同名/变更却高亮跳走,以为"点不动"。
   const curDef=allTabs.find(t=>t.key===_issueTypeTab);
-  if(!curDef||curDef.count===0){
-    _issueTypeTab=allTabs.find(t=>t.count>0)?.key||'same-name';
+  if(!curDef){
+    _issueTypeTab='same-name';
   }
 
-  const tabBtn=(t)=>`<button class="issue-tab ${_issueTypeTab===t.key?'active':''}" onclick="_issueTypeTab='${t.key}';_issueShowAll=false;renderIssues()"><span>${t.emoji}</span><span>${t.label}</span>${t.count?`<b>${t.count}</b>`:''}</button>`;
+  const tabBtn=(t)=>`<button class="issue-tab ${_issueTypeTab===t.key?'active':''}" onclick="_issueTypeTab='${t.key}';_issueShowAll=false;renderIssues()" title="${esc(t.title||'')}"><span>${t.emoji}</span><span>${t.label}</span>${t.count?`<b>${t.count}</b>`:''}</button>`;
   let tabHtml='<div class="issue-tabs">'+issueTabs.map(tabBtn).join('');
   if(governTabs.length){
     tabHtml+=`<span aria-hidden="true" style="display:inline-flex;align-self:center;width:1px;height:16px;background:var(--border);margin:0 4px"></span>${governTabs.map(tabBtn).join('')}`;
@@ -774,7 +886,7 @@ function renderIssues(){
         'vercel-lock':['NPX/Vercel','通过 npx skills add 安装，记录在 ~/.agents/.skill-lock.json'],
         'unknown':['未知','无法识别上游来源']
       };
-      // Group symlink copies that point to the same canonical copy so we don't show N identical update buttons.
+      // 先按 canonical_dir 去重(合并 symlink 副本,避免 N 个相同更新按钮)
       const upstreamGroups={};
       outdated.forEach(s=>{
         const key=s.canonical_dir||s.dir;
@@ -783,22 +895,40 @@ function renderIssues(){
         }
         upstreamGroups[key].copies.push({dir:s.dir,is_symlink:s.is_symlink,link_target:s.link_target});
       });
+      // 再按应用(agent)分组,套折叠卡——用户要"按应用展开看哪些 skill 要更新"。
+      const upByAgent={};
       Object.values(upstreamGroups).forEach(s=>{
-        const cat=_dirCategory(s.dir);
-        const cm=CAT_META[cat]||CAT_META.unknown;
-        const [sourceLabel,sourceTitle]=SOURCE_LABEL[s.source||'unknown']||SOURCE_LABEL['unknown'];
-        const canonical=s.canonical_dir||s.dir;
-        const updateDir=canonical;
-        const updateLabel=s.source==='vercel-lock'?'NPX 更新':s.source==='git-remote'?'Git 更新':'更新';
-        const copyCount=s.copies.length;
-        const copyHint=copyCount>1?`&#10;共 ${copyCount} 个副本: ${s.copies.map(c=>c.dir.replace(/^\/Users\/[^/]+/,'~')).join(', ')}`:'';
-        h+=`<div class="issue-row">
-          ${issueDirBadge(canonical)}
-          <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span>${copyCount>1?`<span style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:999px" title="${esc(copyHint)}">+${copyCount-1} 副本</span>`:''}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div><div style="font-size:10px;color:var(--text-muted);font-family:monospace" title="当前版本 → 上游最新版本">${s.installed_commit?.slice(0,8)||'?'} → ${s.latest_commit?.slice(0,8)||'?'}</div>${renderIssuePath(canonical)}</div>
-          <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
-          <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
-          <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(updateDir)}')">${updateLabel}</button></div>`;
+        const agent=_dirCategory(s.dir);
+        (upByAgent[agent]=upByAgent[agent]||[]).push(s);
       });
+      h+=`<div class="issue-card-grid">`;
+      Object.entries(upByAgent).forEach(([agent,skills])=>{
+        const cm=CAT_META[agent]||CAT_META.unknown;
+        h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.up-body');var on=b.style.display==='none';b.style.display=on?'block':'none';this.querySelector('.up-arrow').textContent=on?'▼':'▶'">
+            <span class="up-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
+            <span style="font-size:13px;font-weight:600">${cm?.name||agent}</span>
+            <span style="font-size:11px;color:var(--red);background:var(--bg-card);padding:1px 6px;border-radius:999px">${skills.length} 个过时</span>
+          </div>
+          <div class="up-body" style="display:none;padding:6px 12px 10px">
+            ${skills.map(s=>{
+              const [sourceLabel,sourceTitle]=SOURCE_LABEL[s.source||'unknown']||SOURCE_LABEL['unknown'];
+              const canonical=s.canonical_dir||s.dir;
+              const updateLabel=s.source==='vercel-lock'?'NPX 更新':s.source==='git-remote'?'Git 更新':'更新';
+              const copyCount=s.copies.length;
+              const copyHint=copyCount>1?`&#10;共 ${copyCount} 个副本: ${s.copies.map(c=>c.dir.replace(/^\/Users\/[^/]+/,'~')).join(', ')}`:'';
+              return `<div class="issue-row">
+                ${issueDirBadge(canonical)}
+                <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span>${copyCount>1?`<span style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:999px" title="${esc(copyHint)}">+${copyCount-1} 副本</span>`:''}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div><div style="font-size:10px;color:var(--text-muted);font-family:monospace" title="当前版本 → 上游最新版本">${s.installed_commit?.slice(0,8)||'?'} → ${s.latest_commit?.slice(0,8)||'?'}</div>${renderIssuePath(canonical)}</div>
+                <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
+                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
+                <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(canonical)}')">${updateLabel}</button>
+              </div>`;
+            }).join('')}
+          </div>
+        </div>`;
+      });
+      h+=`</div>`;
     }else if(pendingCompare.length){
       h+=`<div style="font-size:12px;color:var(--text-muted);padding:6px 0">检测到 ${pendingCompare.length} 个 GitHub 来源，未配置 token 暂无法比对版本。</div>`;
       pendingCompare.slice(0,12).forEach(s=>{
@@ -836,13 +966,18 @@ function renderIssues(){
           ${locs.map(loc=>{
             const sn=loc.name||dup.name;
             const sKey=sn+'|'+loc.dir;
-            return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+            // unknown skill 判断:dir 推不出活跃能力桶 → 高亮"补来源"按钮
+            const _t=_dirTarget(loc.dir);
+            const _bucket=_t?sourceCapabilityBucket(_t):'unknown';
+            const needSrc=_bucket==='unknown'||_bucket==='review-copy';
+            return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
               ${issueDirBadge(loc.dir)}
               <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
               <div style="min-width:0">
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 ${renderIssuePath(loc.dir)}
               </div>
+              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}',{autoExpandRecovery:true})" title="按内容搜回上游来源" style="font-size:9px;padding:2px 6px;${needSrc?'color:var(--amber);border-color:var(--amber)':''}">补来源</button>
               <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
               <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
@@ -882,8 +1017,62 @@ function renderIssues(){
     h+=`</div></section>`;
   }
 
+  // ── Recover(待补来源)section:按目录分组,卡内 skill 懒展开 ──
+  if(_issueTypeTab==='recover'&&recoverDirs.length){
+    // 按 dir 分组,目录按 unknown skill 数降序。卡内 skill **懒展开**——初始只渲染
+    // 卡头(目录+count),点开才渲染 skill 行。否则 active scope 几百 skill 全量进
+    // display:none body(每卡),12 卡 = 几千行 DOM 每次重渲染,浏览器卡死点不动。
+    const recoverGroups={};
+    recoverDirs.forEach(s=>{(recoverGroups[s.dir]=recoverGroups[s.dir]||[]).push(s);});
+    const recoverGroupList=Object.entries(recoverGroups)
+      .map(([dir,skills])=>({dir,skills}))
+      .sort((a,b)=>b.skills.length-a.skills.length);
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3 style="color:var(--amber)">◆ 待补来源</h3><p>这些 skill 没有任何上游来源留痕（steal-meta / .git / lock 三信号全空）。按目录分组,展开点「补来源」按 SKILL.md 内容搜回上游仓库。</p></div><span>${recoverDirs.length} skill · ${recoverGroupList.length} 目录</span></div>`;
+    h+=`<div class="issue-card-grid">`;
+    const gLim=_issueShowAll?recoverGroupList.length:Math.min(LIMIT,recoverGroupList.length);
+    recoverGroupList.slice(0,gLim).forEach((g,i)=>{
+      const gid='rc'+i+'-'+Math.random().toString(36).slice(2,6);
+      _rcGroupData[gid]=g.skills; // 存数据,展开时取(不初始渲染 DOM)
+      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="toggleRecoverGroup('${gid}',this)">
+          <span class="rc-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
+          ${issueDirBadge(g.dir)}
+          <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill</span>
+        </div>
+        <div id="rcbody-${gid}" class="issue-group-body" style="display:none;padding:6px 12px 10px"></div>
+      </div>`;
+    });
+    h+=`</div></section>`;
+    if(recoverGroupList.length>LIMIT){
+      h+=_issueShowAll
+        ?`<div class="notice-line"><span>显示全部 ${recoverGroupList.length} 个目录</span><button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">只看前 ${LIMIT}</button></div>`
+        :`<div class="notice-line"><span>显示前 ${LIMIT} / 共 ${recoverGroupList.length} 个目录(${recoverDirs.length} skill)</span><button class="btn btn-sm btn-primary" onclick="_issueShowAll=true;renderIssues()">显示全部</button></div>`;
+    }
+  }
+
   h+=planHtml;
   $('issues-list').innerHTML=h;
+}
+
+// recover 目录卡懒展开:点卡头才渲染该目录的 skill 行,避免 active scope 几百 skill
+// 全量进 display:none body 卡死浏览器。_rcGroupData 存每卡 skill 数据(renderIssues 填)。
+const _rcGroupData={};
+function toggleRecoverGroup(gid,headerEl){
+  const body=document.getElementById('rcbody-'+gid);
+  if(!body)return;
+  const arrow=headerEl.querySelector('.rc-arrow');
+  const on=body.style.display==='none';
+  body.style.display=on?'block':'none';
+  if(arrow)arrow.textContent=on?'▼':'▶';
+  // 懒展开:首次展开才渲染 skill 行,避免初始全量 DOM 卡死
+  if(on&&!body.dataset.filled){
+    body.dataset.filled='1';
+    const skills=_rcGroupData[gid]||[];
+    body.innerHTML=skills.map(s=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle)">
+      <span style="flex:1;min-width:0;font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}')">${escapeHtml(s.name)}</span>
+      <button class="btn btn-sm" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}',{autoExpandRecovery:true})" title="按 SKILL.md 内容搜回上游来源" style="font-size:9px;padding:2px 6px;color:var(--amber);border-color:var(--amber)">补来源</button>
+    </div>`).join('');
+  }
 }
 
 async function fixSkill(name,action,btn){

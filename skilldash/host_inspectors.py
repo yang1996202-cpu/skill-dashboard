@@ -1008,6 +1008,32 @@ def _codex_profile(home: Path) -> dict | None:
     return _profile_from_sources("Codex", "codex", root, source_roots, _mcp_summaries_for_root(root), "high")
 
 
+def _openclaw_profile(home: Path) -> dict | None:
+    """OpenClaw host profile: exposes the three OpenClaw source roots.
+
+    OpenClaw skills come from three physical sources:
+      - bundled:  npm package (node_modules/openclaw/skills) — vendor shipped
+      - shared:   ~/.openclaw/skills — symlink layer to ~/.agents/skills
+      - workspace:~/.openclaw/workspace/skills — ClawHub market installs
+    The bundled root lives outside the home dotdir, so the generic dotdir scanner
+    cannot see it; this factory surfaces it explicitly.
+    """
+    root = home / ".openclaw"
+    bundled_roots = _openclaw_bundled_skill_roots()
+    if not root.exists() and not bundled_roots:
+        return None
+    source_roots = [
+        _source_root("shared-skills", root / "skills", "OpenClaw shared 链接层(软链到 ~/.agents/skills)"),
+        _source_root("workspace-skills", root / "workspace" / "skills", "OpenClaw workspace 市场装技能"),
+    ]
+    for br in bundled_roots:
+        source_roots.append(_source_root("bundled-skills", br, "OpenClaw npm bundled 内置技能"))
+    return _profile_from_sources(
+        "OpenClaw", "openclaw", root, source_roots,
+        _mcp_summaries_for_root(root), "medium",
+    )
+
+
 def _generic_dotdir_profile(dotdir: Path, known_names: set[str]) -> dict | None:
     if dotdir.name in known_names or not dotdir.is_dir():
         return None
@@ -1027,7 +1053,6 @@ def _generic_dotdir_profile(dotdir: Path, known_names: set[str]) -> dict | None:
         ".cursor": "Cursor",
         ".agents": "通用 Agents",
         ".hermes": "Hermes",
-        ".openclaw": "OpenClaw",
         ".qclaw": "QClaw",
         ".cola": "Cola",
         ".alice": "Alice",
@@ -1040,9 +1065,9 @@ def discover_host_profiles(home: Path | None = None) -> list[dict]:
     """Discover non-secret host profiles for scanner planning and UI context."""
     home = home or Path.home()
     profiles = []
-    known_dotdirs = {spec["dotdir"] for spec in BUDDY_FAMILY_SPECS} | {".claude", ".codex"}
+    known_dotdirs = {spec["dotdir"] for spec in BUDDY_FAMILY_SPECS} | {".claude", ".codex", ".openclaw"}
 
-    for factory in (_claude_profile, _codex_profile):
+    for factory in (_claude_profile, _codex_profile, _openclaw_profile):
         profile = factory(home)
         if profile:
             profiles.append(profile)
@@ -1286,6 +1311,58 @@ def known_host_app_skill_roots() -> list[Path]:
             except (PermissionError, OSError):
                 pass
     roots.extend(_app_embedded_skill_roots(home))
+    roots.extend(_openclaw_bundled_skill_roots())
+    return roots
+
+
+def _openclaw_bundled_skill_roots() -> list[Path]:
+    """Discover OpenClaw npm-bundled skill roots.
+
+    OpenClaw ships ~57 skills inside its npm package (node_modules/openclaw/skills).
+    The package lives in npm-global prefix (commonly ~/.npm-global/lib/node_modules)
+    or wherever the user installed it. We probe a few candidate locations and fall
+    back to `npm root -g`. Returns the discovered skills/ directory per package.
+    """
+    roots: list[Path] = []
+    seen: set[tuple] = set()
+    home = Path.home()
+    # Candidate npm-global prefixes (most common layouts).
+    candidates = [
+        home / ".npm-global" / "lib" / "node_modules" / "openclaw" / "skills",
+        home / ".nvm" / "versions" / "node",  # nvm: handled via npm root -g below
+    ]
+    for cand in candidates:
+        try:
+            if cand.is_dir() and _count_skill_entries(cand) > 0:
+                st = cand.stat()
+                key = (st.st_dev, st.st_ino)
+                if key not in seen:
+                    seen.add(key)
+                    roots.append(cand)
+        except OSError:
+            continue
+    # Fallback: ask npm where its global root is, then append openclaw/skills.
+    try:
+        import subprocess
+        result = subprocess.run(
+            ["npm", "root", "-g"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode == 0:
+            gpath = result.stdout.strip()
+            if gpath:
+                bundled = Path(gpath) / "openclaw" / "skills"
+                try:
+                    if bundled.is_dir() and _count_skill_entries(bundled) > 0:
+                        st = bundled.stat()
+                        key = (st.st_dev, st.st_ino)
+                        if key not in seen:
+                            seen.add(key)
+                            roots.append(bundled)
+                except OSError:
+                    pass
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
     return roots
 
 

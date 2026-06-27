@@ -1,6 +1,6 @@
 /* ── Modal ── */
 const ALL_CATS=['code-dev','content','image-gen','video-audio','data','web-search','social','doc','comms','design','translate','sysadmin','persona','finance','other'];
-async function showSkill(name,dir){
+async function showSkill(name,dir,opts={}){
   _recoverCtx={name,dir:dir||'',candidates:[]};
   try{
     const url=dir?`/api/preview?full=1&dir=${encodeURIComponent(dir)}&name=${encodeURIComponent(name)}`:`/api/skill/${name}/content`;
@@ -13,6 +13,24 @@ async function showSkill(name,dir){
     const cat=sk?.category||'other';
     const catSrc=sk?.categorySource||'';
     const catLabel=catSrc==='frontmatter'?'📋 frontmatter':catSrc==='user'?'🏷️ 用户覆盖':'🔤 关键词';
+    // 判断 unknown skill:dir 推不出活跃能力桶(active-*) → 提示补来源。
+    // 复用 sourceCapabilityBucket;steal-meta/.git/npx-lock 来源由后端识别,
+    // 这里只看运行态能力分类是否未知。
+    let isUnknown=false;
+    if(dir&&typeof sourceCapabilityBucket==='function'&&typeof _dirTarget==='function'){
+      const bucket=sourceCapabilityBucket(_dirTarget(dir));
+      isUnknown=bucket==='unknown'||bucket==='review-copy';
+    }
+    // 来源信息:从扫描结果 health.source_status 查(detect_source_local 检测的三信号:
+    // steal-meta/.git/vercel-lock)。没扫描时 health 无 source_status,提示扫描后显示。
+    const SOURCE_LABELS={'steal-meta':'Steal安装','git-remote':'Git仓库','vercel-lock':'NPX安装','unknown':'未知(无来源留痕)'};
+    let sourceInfo=null;
+    try{
+      if(typeof health!=='undefined'&&Array.isArray(health.source_status)){
+        sourceInfo=health.source_status.find(s=>s.name===name&&(!dir||s.dir===dir))||null;
+      }
+    }catch(e){}
+    const autoExpand=opts.autoExpandRecovery===true||(opts.autoExpandRecovery===undefined&&isUnknown);
     $('modal-title').textContent=name;
     $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;color:var(--text);margin-bottom:12px">
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:10px;flex-wrap:wrap">
@@ -24,16 +42,31 @@ async function showSkill(name,dir){
           ${ALL_CATS.map(c=>`<option value="${c}" ${categoryOverrides[name]===c?'selected':''}>${CAT_NAMES[c]||c}</option>`).join('')}
         </select>
       </div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px;padding:5px 10px;background:var(--bg-card-alt);border-radius:6px;border:1px solid var(--border-subtle)">
+        <span>来源: </span>${sourceInfo?`<strong style="color:${sourceInfo.source==='unknown'?'var(--amber)':'var(--accent)'}">${SOURCE_LABELS[sourceInfo.source]||sourceInfo.source}</strong>${sourceInfo.repo?' · <span style="font-family:var(--mono);font-size:10px">'+escapeHtml(sourceInfo.repo)+'</span>':''}`:'<span style="color:var(--text-muted)">扫描后显示(点"开始整理"检测来源)</span>'}
+      </div>
       ${renderUnderstandingPanel(u)}
       <pre style="white-space:pre-wrap;word-break:break-word;font-family:'SF Mono',monospace;font-size:11px;line-height:1.6;color:var(--text-dim);background:var(--bg-card-alt);padding:12px;border-radius:8px;border:1px solid var(--border);max-height:50vh;overflow-y:auto">${escapeHtml(d.preview||d.content||d.error||'(无内容)')}</pre>
       <div style="margin-top:10px;border-top:1px solid var(--border-subtle);padding-top:8px">
         <div onclick="toggleRecoveryPanel()" style="cursor:pointer;font-size:12px;color:var(--accent);display:flex;align-items:center;gap:4px;user-select:none">
-          <span id="rec-arrow">▶</span> 补上游来源 <span style="color:var(--text-muted);font-size:10px">(unknown skill 按内容搜回来源)</span>
+          <span id="rec-arrow">▶</span> 补上游来源
+          ${isUnknown?'<span style="color:var(--amber);font-size:10px;background:var(--bg-card-alt);padding:1px 6px;border-radius:999px;border:1px solid var(--border-subtle);margin-left:4px">unknown · 建议补来源</span>':'<span style="color:var(--text-muted);font-size:10px">(unknown skill 按内容搜回来源)</span>'}
         </div>
         <div id="rec-panel" style="display:none;margin-top:8px"></div>
       </div>
     </div>`;
-    $('modal').classList.remove('hidden')
+    $('modal').classList.remove('hidden');
+    // unknown skill(或外部主动调用)自动展开补来源面板,省一步点击
+    if(autoExpand){
+      // 双 rAF 确保 innerHTML 已 commit,再展开面板 + 滚到底部让用户看到补来源交互
+      // (面板嵌在详情底部,被 SKILL.md pre 压在下方,不滚用户看不到)
+      requestAnimationFrame(()=>requestAnimationFrame(()=>{
+        const p=$('rec-panel');
+        if(p&&p.style.display==='none')toggleRecoveryPanel();
+        const body=$('modal-body');
+        if(body)body.scrollTop=body.scrollHeight;
+      }));
+    }
   }
   catch(e){$('modal-title').textContent=name;$('modal-body').textContent='加载失败';$('modal').classList.remove('hidden')}
 }
@@ -59,13 +92,16 @@ function renderRecoveryPanel(name,dir){
   }
   const prefilled=[...new Set(lines)].slice(0,5).join('\n');
   $('rec-panel').innerHTML=`
-    <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;line-height:1.5">从 SKILL.md 挑独有内容话术(描述/标题/罕见句),一行一条。<b>按名字搜会撞同类,按独有内容搜才准</b>。</div>
-    <textarea id="rec-snippets" rows="4" style="width:100%;font-size:11px;font-family:var(--mono);padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);box-sizing:border-box;resize:vertical">${escapeHtml(prefilled)}</textarea>
-    <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
-      <button class="btn btn-sm btn-primary" onclick="doRecoverSearch()">🔍 搜索来源</button>
-      <span id="rec-status" style="font-size:11px;color:var(--text-muted)"></span>
-    </div>
-    <div id="rec-results" style="margin-top:8px"></div>`;
+    <div style="border:1px solid var(--amber);border-radius:8px;padding:10px;background:var(--bg-card-alt);margin-top:4px">
+      <div style="font-size:12px;font-weight:600;color:var(--amber);margin-bottom:6px">◆ 按内容搜回上游来源</div>
+      <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px;line-height:1.5">从 SKILL.md 挑独有内容话术(描述/标题/罕见句),一行一条。<b>按名字搜会撞同类,按独有内容搜才准</b>。</div>
+      <textarea id="rec-snippets" rows="4" style="width:100%;font-size:11px;font-family:var(--mono);padding:6px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);box-sizing:border-box;resize:vertical">${escapeHtml(prefilled)}</textarea>
+      <div style="margin-top:6px;display:flex;gap:8px;align-items:center">
+        <button class="btn btn-sm btn-primary" onclick="doRecoverSearch()">🔍 搜索来源</button>
+        <span id="rec-status" style="font-size:11px;color:var(--text-muted)"></span>
+      </div>
+      <div id="rec-results" style="margin-top:8px"></div>
+    </div>`;
 }
 async function doRecoverSearch(){
   let dir=_recoverCtx.dir;

@@ -81,7 +81,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 |---|---|---|
 | `/api/fast-scan` | GET | 列出当前目标库的 skills |
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
-| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）|
+| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）；`source_status`（每技能来源 `{name, dir, source, repo}`，跟随选定范围，只收 `category=user/project`，喂「待补来源」tab，0 API）|
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
@@ -112,6 +112,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/duplicate-decisions` | GET | 列出本地多端部署决策 |
 | `/api/duplicate-decision` | POST/DELETE | 记录 / 撤销多端部署决策（DELETE 带 `?key=` 查询参数） |
 | `/api/trash` | GET/DELETE | 列出垃圾站 / 清空 |
+| `/api/trash/stats` | GET | 累计删除/清空统计(读全量 history.jsonl 聚合,不受 /api/history 50 条限制) |
 | `/api/trash/{id}` | DELETE | 永久删除 |
 | `/api/trash/{id}/restore` | GET/POST | 恢复到原路径或当前目录 |
 | `/api/batch-delete` | POST | 批量删除 skills（body: `{items: [{target, name}]}`） |
@@ -155,6 +156,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 **App-embedded agent**(CherryStudio / Kimi 等 macOS 桌面 App):skill 在 `~/Library/Application Support/<app>/` 下,由 `host_inspectors.py::_app_embedded_skill_roots` 发现(`_APP_EMBEDDED_AGENTS` 白名单 + 大小写不敏感找 `skills/`,depth-3 限性能),`discovery.py::_classify_skill_dir_detail` 给 `layer=app-embedded / policy=manage`;`_agent_from_path` 有 Application Support 分支取 app 名(`kimi-desktop→Kimi`)。
 
+**两类 app 宿主,两条 discovery 路**(接新 app 宿主必看):WorkBuddy/CodeBuddy 的 builtin 在 `/Applications/*.app/Contents/Resources/...`,由 `host_inspectors.py::BUDDY_FAMILY_SPECS` 硬编码 source root 发现;CherryStudio/Kimi 的 skill 在 `~/Library/Application Support/<app>/`(home 内),由 `_app_embedded_skill_roots` 白名单发现。**路径落在 `/Applications` 下的宿主,穿透浏览 API(`/api/source/skills`、`/api/preview`)的默认 home-only 白名单会 403,必须补 `is_app_builtin` 放行(`source.py::_list_source_skills`、`skill.py::_serve_preview`),否则 discovery 数得到、展开是空目录**;写操作(删/复制 target)保持 home-only,不往 app bundle 写。
+
 原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
 
 ### Host Profile：通用扫描与 Agent 范儿的结合层
@@ -175,6 +178,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 **upstream 的 API 消耗优化**（source_ops.py）：`check_upstream_status` 是包装层，调真实查询（`_check_upstream_status_raw`）前先用 content_hash 短路——本地 SKILL.md 内容 hash 自上次 upstream 检测后未变 → 24h 内复用上次结果（`_upstream_hash_cache`，复用结果带 `upstream_cached:true` 标记），跳过重复 GitHub 查询。hash 变化或缓存过期走真实查询并回写缓存。短路面 key 用 `_hash_key(skill_dir)`（与 `record_content_hash` 同 key），跨 agent 不串。底层还保留 `_github_cache`(5 分钟 TTL) + `_github_rate_limit_reset`(限流检测) + `GITHUB_TOKEN` 加载（常量，Track B import 用，别动）。
 
+`/api/global-stats` 的 `unique_skills`/`category_distribution` 是 **active-only 口径**：`_scan_global_categories`(discovery.py) 用 `_target_is_active(detail)` 按 `runtime_state`(user-root/builtin/enabled/loaded/connector) + `category=user` + `layer=vendor-bundled` 过滤 tdir，排除 marketplace/cache/installed-disabled，与前端 `sourceCapabilityBucket`(app-core.js) 同口径。改前是全域含库存灌水。
+
 ### 清理执行准则：hash 一致不是直接删除依据
 
 `/api/cleanup-execution-plan` 只生成预案，不直接改文件。推荐移入垃圾站的候选限定在：
@@ -185,16 +190,20 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
 
+### 垃圾站按操作打包(kind:package)
+
+一次移入操作(`_cleanup_execute` 请求 / `batch_delete`)涉及 ≥2 个 skill 时聚成一个 trash 包(`kind:package`),`.trash-meta.json` 记 `skills:[{name,original_path,sub}]`;同名 skill(多版本快照)用 `sub`(`name__<i>`)区分。前端两级展示(包→展开 skill,`togglePkgCard`)。单 skill 删除保持单条(`kind:skill`,`_trash_dir` 保留给 `_delete_skill`)。包恢复 per-skill 回 `original_path` + failed 收集(200+failed,非整体 409)。`/api/trash/stats` 读全量 `history.jsonl` 聚合累计删除。实现都在 `routes/cleanup.py`。
+
 ### skill 模型派生字段
 
 跨 Agent 收敛的两个正交派生字段(定义见 `docs/skill-model.md`),在现有四维(layer/policy/category/capability bucket)之上派生,不破坏前端契约:
 
 - `extension_type`(skill 载体形态):skill/builtin/plugin/connector/catalog/cache/agent → `discovery.py::_derive_extension_type`,从 layer + runtime_state + package_role 派生,挂 `_classify_skill_dir_detail` 返回
-- `readiness`(Agent 就绪度):uninitialized/configured-empty/builtin-only/light/heavy → `source.py::_derive_group_readiness`,挂 `/api/targets` group,前端卡片头徽章(`sourceReadinessBadge`)
+- `readiness`(Agent 就绪度):uninitialized/configured-empty/builtin-only/light/heavy → `source.py::_derive_group_readiness`,用 active_skills(排货架/缓存的真实活跃数)+ host_profile 的 mcp_enabled,挂 `/api/targets` group,前端 group 卡片头显示徽章(`sourceReadinessBadge`)
 
 `extension_type` 前端暂不单占目录行(与 runtime_state/layer 重叠,防噪音);`readiness` 徽章已上 group 卡片头。
 
-group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(cli/app/ide)、`profile_family`(buddy-family/claude-code/codex)、`extension_breakdown`(按 extension_type 聚合的构成 dict)。app-embedded agent(CherryStudio/Kimi)`profile_family` 为 None,形态徽章靠前端 fallback 推断。
+group 还挂三个身份/构成层字段(`/api/targets` group 级,前端卡片头显示):`agent_form`(cli/app/ide,`source.py::_derive_agent_form`,路径 + profile_summary 推断)、`profile_family`(buddy-family/claude-code/codex,从 host_profile 提到 group 顶层)、`extension_breakdown`(按 extension_type 聚合的目录构成 dict,`source.py::_extension_breakdown`)。app-embedded agent(CherryStudio/Kimi)无 host profile factory,`profile_family` 为 None,形态徽章靠前端 fallback 推断。
 
 ### 前端数据流
 
@@ -253,6 +262,14 @@ group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(
 
 前端 `loadData()` 的异步 targets 回调：如果 sources DOM 已有内容（用户已展开过），跳过 `renderSources()` 只更新 badge 数字，避免覆盖用户交互状态。
 
+### Claude plugin 接入能力来源
+
+Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/skills`)由 discovery 通用扫描发现,`claude_plugin_context`(host_inspectors.py)读 `settings.json` enabledPlugins + `installed_plugins.json` 标 runtime_state:路径匹配 installed 记录且 enabled→`loaded`(已启用插件)→bucket `active-plugin`→当前可用;installed 未启用→`installed`→`installed-disabled`→来源库存。`policy=observe`(plugin 走 `/plugin` 命令管理,不在 dashboard 删/切换)。前端 `activeCatOrder` 含 `installed-disabled`。不在 source.py 用 `load_claude_plugin_state` 单独注入(曾导致同一插件 cache 目录 + plugin_id 重复两份)。
+
+### 前端视觉风格（frontend-design 风）
+
+定调：暖纸底 + 墨绿强调（`var(--accent)`：light `#2D5A4E` / dark `#5FB8A0`），系统字体 body + 等宽 `var(--mono)` 做 signature（skill 行 description 带墨绿 `description` key 前缀，像 frontmatter 一行）。**禁用 emoji 装饰**：分类用 `CAT_ABBR` 缩写色块、能力来源用 `CAPABILITY_META.color` status 点、导航/logo/主题用内联 SVG（1.6 stroke）。色板全在 `:root` + `[data-theme]` 变量块，派生色走 `color-mix`；新增组件只取 token，不硬编码色值。
+
 ## 数据目录
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json，cache/ 存诊断结果和全域分类）
@@ -275,6 +292,7 @@ group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(
 - **重构必须删旧**：新旧实现并存是 stale-contract bug 根源（`_classify_skill_dir` 老五分类曾因此被误当 UI 契约测试）。重构到新实现后必须删旧函数，别留半死的过渡态。
 - **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
+- **本地前端验证 → 走 `/browse`**：验证 localhost 前端（点击/检查 DOM/截图/抓 console）用 `/browse` skill（GStack 编译 CLI，全局已装 `~/.claude/skills/browse`），不临时手写 playwright。`$B goto http://localhost:3457` → `snapshot -i` 拿 `@e` 引用 → `click @e30`（别猜 CSS selector）→ `js "..."` 断言 / `console` 抓报错 / `screenshot` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。
 
 ## 下一步方向
 

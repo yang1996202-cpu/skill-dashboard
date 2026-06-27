@@ -80,7 +80,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 |---|---|---|
 | `/api/fast-scan` | GET | 列出当前目标库的 skills |
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
-| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）|
+| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）；`source_status`（每技能来源 `{name, dir, source, repo}`，跟随选定范围，只收 `category=user/project`，喂「待补来源」tab，0 API）|
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
@@ -291,6 +291,7 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 - **重构必须删旧**：新旧实现并存是 stale-contract bug 根源（`_classify_skill_dir` 老五分类曾因此被误当 UI 契约测试）。重构到新实现后必须删旧函数，别留半死的过渡态。
 - **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
+- **本地前端验证 → 走 `/browse`**：验证 localhost 前端（点击/检查 DOM/截图/抓 console）用 `/browse` skill（GStack 编译 CLI，全局已装 `~/.claude/skills/browse`），不临时手写 playwright。`$B goto http://localhost:3457` → `snapshot -i` 拿 `@e` 引用 → `click @e30`（别猜 CSS selector）→ `js "..."` 断言 / `console` 抓报错 / `screenshot` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。
 
 ## 下一步方向
 

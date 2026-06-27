@@ -69,6 +69,19 @@ class TestGovernanceLayer(unittest.TestCase):
         self.assertEqual(d["policy"], "review")
         self.assertEqual(d["category"], "cross-copy")
 
+    def test_openclaw_shared_link_is_observe_not_deletable(self):
+        # ~/.openclaw/skills is a symlink layer to ~/.agents/skills; never deletable
+        d = self._detail(".openclaw/skills")
+        self.assertEqual(d["layer"], "shared-link")
+        self.assertEqual(d["policy"], "observe")
+        self.assertFalse(d["is_deletable"])
+
+    def test_openclaw_workspace_is_manage(self):
+        # ~/.openclaw/workspace/skills is ClawHub market installs → manage
+        d = self._detail(".openclaw/workspace/skills")
+        self.assertEqual(d["layer"], "agent-installed")
+        self.assertEqual(d["policy"], "manage")
+
 
 if __name__ == "__main__":
     unittest.main()

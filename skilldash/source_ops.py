@@ -515,6 +515,83 @@ def _check_upstream_status_raw(skill_dir):
     return result
 
 
+def detect_source_local(skill_dir):
+    """Pure-local source detection for a skill directory. Zero GitHub API calls.
+
+    背景:recover(待补来源)功能需要数据,但当前三信号来源读取
+    (steal-meta / .git remote / vercel-lock)被绑死在烧 GitHub API 的
+    `_check_upstream_status_raw` 里——每个信号拿到 repo 后立刻调
+    `_github_latest_commit` / `_github_tree_sha_for_path` 判版本。所以扫描默认
+    (不含 upstream check)时根本不检测来源,recover 没数据。
+
+    意图:抽出一个**纯本地读三信号、不判版本**的检测函数,让扫描默认就能跑
+    (0 API),结果喂给前端 recover tab 列出"三信号全空 = source:unknown"的 skill。
+
+    约束(铁律):
+      - 绝不调用 `_github_latest_commit` / `_github_tree_sha_for_path` /
+        `_github_api_get` / 任何网络请求。
+      - 复用 `read_source_metadata` / `read_vercel_skill_lock` / `parse_github_url`,
+        不从零写。
+      - 零依赖(标准库 subprocess/git 即可)。
+      - 不修改 `_check_upstream_status_raw`——upstream check 仍走它。
+
+    Args:
+        skill_dir: Path 指向单个 skill 目录(含 SKILL.md)。
+
+    Returns:
+        {"source": "steal-meta"|"git-remote"|"vercel-lock"|"unknown",
+         "repo": str, "ref": str, "subdir": str}
+        三信号按优先级命中第一个就停;都没命中 → source="unknown", repo=""。
+    """
+    # 1) steal-meta(.skill-source.env,由 write_source_metadata 写)
+    meta = read_source_metadata(skill_dir)
+    if meta:
+        repo = meta.get("SKILL_SOURCE_REPO", "")
+        if repo:
+            return {
+                "source": "steal-meta",
+                "repo": repo,
+                "ref": meta.get("SKILL_SOURCE_REF", "main"),
+                "subdir": meta.get("SKILL_SOURCE_SUBDIR", ""),
+            }
+
+    # 2) .git/origin remote(本地 git 命令,不发网络)
+    git_dir = Path(skill_dir) / ".git"
+    if git_dir.exists():
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(skill_dir), "remote", "get-url", "origin"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if r.returncode == 0:
+                parsed = parse_github_url(r.stdout.strip())
+                if parsed:
+                    owner, repo, ref, subdir, _clean = parsed
+                    return {
+                        "source": "git-remote",
+                        "repo": f"{owner}/{repo}",
+                        "ref": ref,
+                        "subdir": subdir,
+                    }
+        except Exception:
+            pass
+
+    # 3) vercel-lock(.skill-lock.json,由 npx skills add 写)
+    vercel = read_vercel_skill_lock(skill_dir)
+    if vercel:
+        repo = vercel.get("source", "")
+        if repo:
+            return {
+                "source": "vercel-lock",
+                "repo": repo,
+                "ref": vercel.get("ref", "main"),
+                "subdir": vercel.get("skillPath", ""),
+            }
+
+    # 4) 都没命中
+    return {"source": "unknown", "repo": "", "ref": "", "subdir": ""}
+
+
 # ── GitHub API helpers with rate-limit protection ──
 _github_cache = {}  # (url,) -> (timestamp, result)
 _github_cache_ttl = 300  # 5 minutes

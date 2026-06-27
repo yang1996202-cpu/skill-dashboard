@@ -33,6 +33,7 @@ from skilldash.paths import BASE_DIR, CACHE_DIR, DIAG_LOG, load_cached_diagnosis
 from skilldash.source_ops import (
     GITHUB_TOKEN,
     check_upstream_status,
+    detect_source_local,
     get_github_rate_limit,
 )
 from skilldash.understanding import compact_understanding, understand_skill
@@ -227,6 +228,7 @@ class ScanRoutes:
             "duplicates_same_name": [],
             "duplicates_identical": [],
             "content_changes": None,
+            "source_status": [],
             "scanned_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "scanned_dirs": len(valid_dirs),
             "scope": requested_scope,
@@ -261,6 +263,31 @@ class ScanRoutes:
             if "upstream" in checks else 0
         )
         result["github_rate_limit"] = get_github_rate_limit()
+
+        # 纯本地来源检测(0 GitHub API):为 recover(待补来源)功能提供数据。
+        # detect_source_local 只读本地三信号(.skill-source.env / .git remote /
+        # .skill-lock.json),不判版本。**跟扫描范围**(dir_skill_map 来自用户"开始整理"
+        # 勾选的目录)——与同名/上游/变更 tab 同源一致:用户选"当前目录"就只看当前目录
+        # 的缺来源 skill,选"全部"才全量。只收 category=user/project(用户自管根 + 项目级),
+        # 排除货架/缓存/vendor/builtin(本就没单个来源留痕,也不该让用户补)。
+        user_project_dirs = {
+            tdir for tdir in dir_skill_map
+            if _classify_skill_dir_detail(tdir).get("category") in ("user", "project")
+        }
+        for tdir, names in dir_skill_map.items():
+            if tdir not in user_project_dirs:
+                continue
+            for name in names:
+                try:
+                    info = detect_source_local(tdir / name)
+                except Exception:
+                    info = {"source": "unknown", "repo": "", "ref": "", "subdir": ""}
+                result["source_status"].append({
+                    "name": name,
+                    "dir": str(tdir),
+                    "source": info.get("source", "unknown"),
+                    "repo": info.get("repo", ""),
+                })
 
         # Content changes（本地读文件，快，保持串行）
         if "content-changes" in checks:
