@@ -289,7 +289,7 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 
 ## 下一步方向
 
-**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装入口已落地（§5/6/7）；**待做**：按内容 code search 通用层（§4）、unknown"补来源"入口。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读（§8，写进去可能被 app 清理）。
+**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装入口已落地（§5/6/7）；**待做**：按内容 code search 通用层（§4）、unknown"补来源"入口。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读旁观（§8；steal 装进去实测可工作 + 留痕正常，与 app 版本管理并存的冲突未实测）。
 
 **"问题与整理"页的扫描规则与展示优化**：
 - 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态
