@@ -291,7 +291,7 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 - **重构必须删旧**：新旧实现并存是 stale-contract bug 根源（`_classify_skill_dir` 老五分类曾因此被误当 UI 契约测试）。重构到新实现后必须删旧函数，别留半死的过渡态。
 - **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
-- **本地前端验证 → 走 `/browse`**：验证 localhost 前端（点击/检查 DOM/截图/抓 console）用 `/browse` skill（GStack 编译 CLI，全局已装 `~/.claude/skills/browse`），不临时手写 playwright。`$B goto http://localhost:3457` → `snapshot -i` 拿 `@e` 引用 → `click @e30`（别猜 CSS selector）→ `js "..."` 断言 / `console` 抓报错 / `screenshot` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。
+- **本地前端验证 → 走 `/browse`**：browse CLI 不在 PATH，先设 `B=/Users/yang/projects/gstack-offline/.claude/skills/gstack/browse/dist/browse`（编译产物；`[ -x "$B" ]` 不通过就 `cd ~/projects/gstack-offline/.claude/skills/gstack/browse && ./setup`，~10s 需 bun）。然后 `$B goto http://localhost:3457` → `$B snapshot -i` 拿 `@e` 引用 → `$B click @e30`（别猜 CSS selector）→ `$B js "..."` 断言 / `$B console` 抓报错 / `$B screenshot <path>` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。browse 不可用时 fallback `NODE_PATH=/Users/yang/.npm-global/lib/node_modules node <script>`（playwright）。**验证不烧 GitHub API**：upstream/上游渲染用 mock 注入 `$B js 'health={upstream_sources:[{name,dir,repo,status}]};_issueTypeTab="upstream";renderIssues()'`，绝不 `runScan(all,upstream)` 烧配额（曾因此一次烧 4000+ API，用户被迫覆盖）。
 
 ## 下一步方向
 

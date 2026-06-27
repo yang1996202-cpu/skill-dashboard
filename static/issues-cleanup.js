@@ -34,6 +34,7 @@ const boundaryLabel=(a)=>{
 };
 const fmtScanTime=(t)=>t?t.replace('T',' ').slice(0,16):'';
 let _execShowAll=false; // executionPlan 各阶段目录的展开状态（独立于同名 tab 的 _issueShowAll）
+let _upShowAll=false; // 上游 tab「待比对」列表展开状态（独立，避免与同名 tab 的 _issueShowAll 串）
 
 // Scan scope persisted across sessions —— 多选 toggle(Set)。
 // scope 跟能力来源页视图映照:current=只扫当前目录 / active=扫「当前可用」
@@ -179,7 +180,7 @@ function issueDirBadge(dirPath){
   const t=_dirTarget(dirPath);
   const key=sourceCapabilityBucket(t);
   const meta=capabilityMeta(key);
-  return `<span style="font-size:10px" title="${esc(meta.label)}">${meta.emoji}</span>`;
+  return `<span style="display:inline-flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(meta.desc||'')}"><span style="width:7px;height:7px;border-radius:50%;background:${meta.color};display:inline-block;flex-shrink:0"></span>${esc(meta.label||'')}</span>`;
 }
 function sourceCanDelete(t){
   return sourcePolicy(t)==='manage'&&t?.is_deletable!==false;
@@ -376,7 +377,12 @@ async function runScan(scope,opts={}){
     // scope 参数忽略(向后兼容);实际用 _scanScope 多选合并 directories。
     // all 在 _scanScope 里 → 全量;否则合并所有选中 scope 的目录去重。
     const scanTargets=_scanScope.has('all')?targets:getSelectedScanScopeTargets();
-    const directories=targets.length?scanTargets.map(t=>t.path):[];
+    const directories=scanTargets.map(t=>t.path).filter(Boolean);
+    if(!directories.length){
+      // targets 没加载完 或 选中范围无目录——绝不调 scan-run,否则后端会 fallback 全量、烧 API 还污染缓存
+      if(!opts.silent)toast('目录还在加载或选中范围没有目录,稍候再点','error');
+      return;
+    }
     const scopeTag=[..._scanScope].sort().join(',')||'active';
     const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name','content-changes'];
     const r=await fetch('/api/scan-run',{
@@ -839,7 +845,11 @@ function renderIssues(){
   if(curTab&&governTabs.some(t=>t.key===curTab.key)){
     const actions=govBuckets[curTab.key]||[];
     if(!actions.length){
-      h+=`<div class="empty" style="padding:30px 0">✅ 这组没有目录</div>`;
+      const reviewCnt=(govBuckets.review||[]).length;
+      const isTrash=curTab.key==='trash';
+      h+=`<div class="empty" style="padding:26px 0;line-height:1.7">${isTrash&&reviewCnt
+        ?`✅ 当前范围没有可自动移垃圾站的候选（保守策略：只推荐备份/导入/下载层里 SKILL.md 完全一致的重复，且可恢复）。<br><span style="color:var(--text-muted)">有 ${reviewCnt} 个目录在「🔎 待你看」等你判断要不要清理 → </span><button class="btn btn-sm btn-primary" onclick="_issueTypeTab='review';_issueShowAll=false;renderIssues()">去看待你看</button>`
+        :`✅ 这组没有目录`}</div>`;
     }else{
       const GLIMIT=12;
       const shown=_issueShowAll?actions:actions.slice(0,GLIMIT);
@@ -876,7 +886,7 @@ function renderIssues(){
   if(_issueTypeTab==='upstream'&&upstreamDetected.length){
     const outdated=upstreamDetected.filter(s=>s.status==='outdated');
     const pendingCompare=upstreamDetected.filter(s=>s.status!=='outdated');
-    const headTag=outdated.length?`${outdated.length} 个过时`:`${pendingCompare.length} 个待比对`;
+    const headTag=[outdated.length&&`${outdated.length} 个过时`,pendingCompare.length&&`${pendingCompare.length} 个已最新/待比对`].filter(Boolean).join(' · ')||'无过时';
     h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔗 上游追踪</h3><p>只提示可复核更新，不自动改文件。未配置 token 时仅展示检测到的来源。</p></div><span>${headTag}</span></div>`;
     h+=`<div class="card issue-list-card">`;
     if(outdated.length){
@@ -929,14 +939,27 @@ function renderIssues(){
         </div>`;
       });
       h+=`</div>`;
-    }else if(pendingCompare.length){
-      h+=`<div style="font-size:12px;color:var(--text-muted);padding:6px 0">检测到 ${pendingCompare.length} 个 GitHub 来源，未配置 token 暂无法比对版本。</div>`;
-      pendingCompare.slice(0,12).forEach(s=>{
+    }
+    if(pendingCompare.length){
+      const upLim=_upShowAll?pendingCompare.length:Math.min(LIMIT,pendingCompare.length);
+      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;margin-top:10px">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.up-pend-body');var on=b.style.display==='none';b.style.display=on?'block':'none';this.querySelector('.up-pend-arrow').textContent=on?'▼':'▶'">
+          <span class="up-pend-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
+          <span style="font-size:13px;font-weight:600">已最新 / 待比对</span>
+          <span style="font-size:11px;color:var(--text-muted);background:var(--bg-card);padding:1px 6px;border-radius:999px">${pendingCompare.length} 个</span>
+        </div>
+        <div class="up-pend-body" style="display:none;padding:6px 12px 10px">`;
+      pendingCompare.slice(0,upLim).forEach(s=>{
         const canonical=s.canonical_dir||s.dir;
-        h+=`<div class="issue-row">${issueDirBadge(canonical)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span></div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(canonical)}</div><span style="font-size:11px;color:var(--text-muted)">版本待比对</span></div>`;
+        const isCurrent=s.status==='current';
+        h+=`<div class="issue-row">${issueDirBadge(canonical)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span></div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(canonical)}</div><span style="font-size:11px;color:${isCurrent?'var(--green)':'var(--text-muted)'}">${isCurrent?'✓ 已最新':'待比对'}</span></div>`;
       });
-    }else{
-      h+=`<div style="font-size:12px;color:var(--text-muted);padding:8px 0">${upstreamDetected.length} 个 skill 追踪到上游仓库，均无过时版本</div>`;
+      if(pendingCompare.length>LIMIT){
+        h+=_upShowAll
+          ?`<div class="notice-line"><span>显示全部 ${pendingCompare.length} 个</span><button class="btn btn-sm" onclick="_upShowAll=false;renderIssues()">只看前 ${LIMIT}</button></div>`
+          :`<div class="notice-line"><span>显示前 ${LIMIT} / 共 ${pendingCompare.length} 个</span><button class="btn btn-sm btn-primary" onclick="_upShowAll=true;renderIssues()">显示全部 ${pendingCompare.length}</button></div>`;
+      }
+      h+=`</div></div>`;
     }
     h+=`</div></section>`;
   }
@@ -1033,11 +1056,13 @@ function renderIssues(){
     recoverGroupList.slice(0,gLim).forEach((g,i)=>{
       const gid='rc'+i+'-'+Math.random().toString(36).slice(2,6);
       _rcGroupData[gid]=g.skills; // 存数据,展开时取(不初始渲染 DOM)
+      const shortDir=(g.dir||'').replace(/^\/Users\/[^/]+/,'~');
       h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="toggleRecoverGroup('${gid}',this)">
           <span class="rc-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
           ${issueDirBadge(g.dir)}
-          <span style="flex:1;font-size:12px;font-weight:600">${g.skills.length} 个 skill</span>
+          <span style="flex:1;min-width:0;font-size:12px;font-weight:600;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.dir)}">${esc(shortDir)}</span>
+          <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${g.skills.length} skill</span>
         </div>
         <div id="rcbody-${gid}" class="issue-group-body" style="display:none;padding:6px 12px 10px"></div>
       </div>`;

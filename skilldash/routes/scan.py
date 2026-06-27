@@ -200,13 +200,12 @@ class ScanRoutes:
 
         directories = body.get("directories", [])
         requested_scope = body.get("scope") or ("deep" if not directories else "custom")
-        # If no directories specified, scan all discovered dirs
         home = Path.home()
         if not directories:
-            skill_dirs = _discover_skill_dirs()
-            directories = [str(d) for d in skill_dirs
-                          if sum(1 for x in d.iterdir()
-                                if (x.is_dir() or x.is_symlink()) and (x / "SKILL.md").exists()) > 0]
+            # 不 fallback 全量:前端 targets 没加载完时会误传空 directories,fallback 会烧 GitHub API 全量扫描 + 污染共享缓存。
+            # 前端 runScan 已在 directories 空时不调 scan-run;此处防御性返回 400。
+            self._json_response({"error": "未指定扫描目录(targets 可能还在加载),请稍候再点"}, status=400)
+            return
 
         # Default checks 不含 upstream:upstream 烧 GitHub API(未认证 60 次/小时,
         # 全量扫描会打爆),用户在二哥扫描面板主动勾"上游"才查。same-name/content-changes 纯本地 0 API。
