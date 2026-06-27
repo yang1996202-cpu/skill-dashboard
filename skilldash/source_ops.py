@@ -9,6 +9,7 @@ GitHub API 自带 TTL 缓存(_github_cache)与限流状态(_github_rate_limit_re
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -21,7 +22,7 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
-from .content_hash import record_content_hash
+from .content_hash import _hash_key, _load_content_hashes, record_content_hash
 from .paths import BASE_DIR
 
 
@@ -372,6 +373,44 @@ def _install_one(selected_dir, clone_dir, target, owner, repo, ref, clean_url, p
 def check_upstream_status(skill_dir):
     """Check if a skill is behind its upstream GitHub source.
 
+    包装层:在调用真实 GitHub 查询前,用 content_hash 短路——本地 SKILL.md
+    内容 hash 自上次 upstream 检测后未变 → 24h 内复用上次结果,跳过重复
+    GitHub API 查询(降低未认证 60 次/小时额度消耗)。hash 变化或缓存过期
+    则走真实查询并回写缓存。
+
+    返回结构与 _check_upstream_status_raw 完全一致。
+    """
+    skill_md = Path(skill_dir) / "SKILL.md"
+    if skill_md.exists():
+        key = _hash_key(skill_dir)
+        try:
+            current_hash = hashlib.sha256(
+                skill_md.read_text("utf-8", errors="ignore").encode("utf-8")
+            ).hexdigest()
+        except Exception:
+            current_hash = ""
+        # 读 content_hash 存档判断"内容是否变了"
+        stored = _load_content_hashes()
+        stored_hash = (stored.get(key) or {}).get("hash", "")
+        cached = _upstream_hash_cache.get(key)
+        now = time.time()
+        if (current_hash and stored_hash == current_hash
+                and cached and (now - cached[0]) < _upstream_hash_cache_ttl):
+            # 内容没变 + 缓存未过期 → 复用,标 cached
+            result = dict(cached[1])
+            result["upstream_cached"] = True
+            return result
+        # 否则走真实查询;查询后若内容相对存档没变,把结果回写缓存
+        result = _check_upstream_status_raw(skill_dir)
+        if current_hash and stored_hash == current_hash:
+            _upstream_hash_cache[key] = (now, result)
+        return result
+    return _check_upstream_status_raw(skill_dir)
+
+
+def _check_upstream_status_raw(skill_dir):
+    """Check if a skill is behind its upstream GitHub source. (real GitHub query)
+
     Returns: {"status": "current"|"outdated"|"unknown", "installed_commit": str,
               "latest_commit": str, "repo": str, "ahead_by": int, "error": str,
               "source": "steal-meta"|"git-remote"|"vercel-lock"|"unknown"}
@@ -480,6 +519,28 @@ def check_upstream_status(skill_dir):
 _github_cache = {}  # (url,) -> (timestamp, result)
 _github_cache_ttl = 300  # 5 minutes
 _github_rate_limit_reset = 0  # timestamp when rate limit resets; 0 means not limited
+
+# content_hash 短路缓存:skill 的 SKILL.md 内容 hash 自上次 upstream 检测后未变 →
+# 24h 内跳过重复 GitHub 查询。key 用 _hash_key(skill_dir) 保证跨 agent 不串。
+# value: (checked_at_ts, last_result_dict)
+_upstream_hash_cache = {}
+_upstream_hash_cache_ttl = 86400  # 24h
+
+
+def get_github_rate_limit():
+    """返回当前 GitHub API 限流轮廓(只读),给扫描前计费提示用。
+
+    返回 {"limited": bool, "reset_ts": int, "reset_in_sec": int, "token_configured": bool}。
+    token_configured 来自 GITHUB_TOKEN 是否非空(决定 60 vs 5000 额度)。
+    """
+    reset_ts = _github_rate_limit_reset
+    now = time.time()
+    if reset_ts == 0 or now >= reset_ts:
+        return {"limited": False, "reset_ts": 0, "reset_in_sec": 0,
+                "token_configured": bool(GITHUB_TOKEN)}
+    return {"limited": True, "reset_ts": int(reset_ts),
+            "reset_in_sec": int(reset_ts - now),
+            "token_configured": bool(GITHUB_TOKEN)}
 
 
 def _github_rate_limited_now():

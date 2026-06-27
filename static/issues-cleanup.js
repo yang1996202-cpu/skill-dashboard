@@ -50,12 +50,13 @@ function setScanScope(scope){
 }
 
 // Scan check types persisted across sessions
+// 默认不含 upstream:upstream 烧 GitHub API(未认证 60 次/小时),用户主动勾才查。
 let _scanChecks=(()=>{
   try{
     const saved=localStorage.getItem('sd-scan-checks');
     if(saved) return JSON.parse(saved);
   }catch{}
-  return ['same-name','upstream','content-changes'];
+  return ['same-name','content-changes'];
 })();
 function toggleScanCheck(key,checked){
   const set=new Set(_scanChecks);
@@ -209,9 +210,21 @@ function renderScanConfig(){
   if(scanResult){
     const scopeLabel=scanResult.scope==='daily'?'重点扫描':'全量扫描';
     const tokenOk=scanResult.github_token_configured;
+    const est=scanResult.upstream_api_estimate||0;
+    const rl=scanResult.github_rate_limit||{};
+    // 上游检测计费提示:仅当本次扫描勾了 upstream(estimate>0)才显示
+    let apiHint='';
+    if(est>0){
+      const quota=tokenOk?'5000 次/小时':'60 次/小时';
+      apiHint=`<span style="color:var(--amber);margin-left:8px" title="upstream 检测对每个 skill 调 GitHub API">上游检测: ${est} 个 skill ≈ ${est} 次 API（${quota}）</span>`;
+      if(rl.limited){
+        apiHint+=`<span style="color:var(--red);margin-left:8px" title="已触发 GitHub 限流">限流中，约 ${rl.reset_in_sec?Math.ceil(rl.reset_in_sec/60):0} 分钟后重置</span>`;
+      }
+    }
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
       <span>扫描：${scopeLabel} · ${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
       ${tokenOk?`<span style="color:var(--green);margin-left:8px" title="已配置 GITHUB_TOKEN，额度 5000 次/小时">🔐 Token 已配置</span>`:`<span style="color:var(--amber);margin-left:8px" title="未配置 GITHUB_TOKEN，GitHub API 未认证额度 60 次/小时">⚠ 未配置 Token</span>`}
+      ${apiHint}
       ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">${scanResult.lint.warnings.length} 个数据异常</span>`:''}
     </div>`;
   }
@@ -237,7 +250,7 @@ function renderScanConfig(){
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           ${checkBox('same-name','同名','跨目录同名 skill')}
-          ${checkBox('upstream','上游','检查是否有上游新版本')}
+          ${checkBox('upstream','上游 (API)','检查是否有上游新版本（消耗 GitHub API，未认证 60 次/小时）')}
           ${checkBox('content-changes','变更','检测本地内容改动')}
         </div>
       </div>
@@ -294,7 +307,7 @@ async function runScan(scope='deep',opts={}){
   try{
     const scanTargets=scope==='deep'?targets:getDailyScanTargets();
     const directories=targets.length?scanTargets.map(t=>t.path):[];
-    const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name'];
+    const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name','content-changes'];
     const r=await fetch('/api/scan-run',{
       method:'POST',
       headers:{'Content-Type':'application/json'},

@@ -30,7 +30,11 @@ from skilldash.discovery import (
 )
 from skilldash.overlap import _find_same_name_duplicates
 from skilldash.paths import BASE_DIR, CACHE_DIR, DIAG_LOG, load_cached_diagnosis
-from skilldash.source_ops import GITHUB_TOKEN, check_upstream_status
+from skilldash.source_ops import (
+    GITHUB_TOKEN,
+    check_upstream_status,
+    get_github_rate_limit,
+)
 from skilldash.understanding import compact_understanding, understand_skill
 
 
@@ -203,8 +207,9 @@ class ScanRoutes:
                           if sum(1 for x in d.iterdir()
                                 if (x.is_dir() or x.is_symlink()) and (x / "SKILL.md").exists()) > 0]
 
-        # Always run all check types
-        checks = body.get("checks", ["same-name", "upstream", "content-changes"])
+        # Default checks 不含 upstream:upstream 烧 GitHub API(未认证 60 次/小时,
+        # 全量扫描会打爆),用户在二哥扫描面板主动勾"上游"才查。same-name/content-changes 纯本地 0 API。
+        checks = body.get("checks", ["same-name", "content-changes"])
 
         # Validate directories
         valid_dirs = []
@@ -246,6 +251,16 @@ class ScanRoutes:
                 continue
             if names:
                 dir_skill_map[tdir] = names
+
+        # 扫前计费提示:upstream 检测会打 GitHub API,给用户知情。
+        # estimate = 将查 upstream 的 skill 总数(仅当用户勾了 upstream);
+        # 实际 API 消耗受 content_hash 短路(24h 缓存)和 5 分钟 _github_cache 进一步压低,
+        # 这里给的是上界估计。
+        result["upstream_api_estimate"] = (
+            sum(len(names) for names in dir_skill_map.values())
+            if "upstream" in checks else 0
+        )
+        result["github_rate_limit"] = get_github_rate_limit()
 
         # Content changes（本地读文件，快，保持串行）
         if "content-changes" in checks:

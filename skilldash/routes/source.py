@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import time
 from pathlib import Path
@@ -655,3 +656,154 @@ class SourceRoutes:
                 "batch": bool(result.get("results")),
             },
         )
+
+    def _code_search(self):
+        """按内容召回候选仓库 + (可选) hash 确认。
+
+        POST body:
+          - snippets?: [str]  SKILL.md 独有内容话术(优先 description/标题/罕见句)
+          - query?:    str    单个查询(等价于 snippets:[query])
+          - skill_dir?: str   本地 skill 目录,confirm=True 时必填
+          - confirm?:  bool   对每个候选 confirm_candidate 算 hash 比对
+
+        snippets / query 任一非空即触发 search_candidates。无 GITHUB_TOKEN 时
+        后端降级返回 error 结构(不发起 401 请求)。
+
+        安全:skill_dir 必须 is_relative_to(home),与 _serve_preview 同口径;
+        写操作(删/复制 target)不走这里,只读本地 SKILL.md 算 hash。
+        """
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+
+        snippets = data.get("snippets") or []
+        if isinstance(snippets, str):
+            snippets = [snippets]
+        snippets = [str(s) for s in snippets if str(s).strip()]
+
+        query = str(data.get("query") or "").strip()
+        if query and query not in snippets:
+            snippets.append(query)
+
+        confirm = bool(data.get("confirm"))
+        skill_dir = str(data.get("skill_dir") or "").strip()
+
+        # confirm 要求 skill_dir 且必须在 home 下(安全校验,照抄 _serve_preview)
+        confirm_dir_resolved = None
+        if confirm:
+            if not skill_dir:
+                self._json_response(
+                    {"error": "confirm requires skill_dir"}, status=400)
+                return
+            # 支持 ~/ 前缀
+            if skill_dir.startswith("~/"):
+                skill_dir = str(Path.home() / skill_dir[2:])
+            resolved = Path(skill_dir).resolve()
+            if not resolved.is_relative_to(Path.home()):
+                self._json_response(
+                    {"error": "skill_dir must be under home directory"}, status=403)
+                return
+            confirm_dir_resolved = resolved
+
+        if not snippets:
+            self._json_response(
+                {"error": "snippets or query required"}, status=400)
+            return
+
+        # 延迟 import 避免循环(source_ops import 链已稳,但显式延迟更安全)
+        from skilldash.code_search import search_candidates, confirm_candidate
+
+        result = search_candidates(snippets)
+        # 无 token / 限流等降级结构,直接透传
+        if "error" in result or "candidates" not in result:
+            self._json_response(result)
+            return
+
+        candidates = result.get("candidates") or []
+        if confirm and confirm_dir_resolved and candidates:
+            confirmed = []
+            for cand in candidates:
+                r = confirm_candidate(cand, confirm_dir_resolved)
+                confirmed.append({
+                    "repo": cand.get("repo"),
+                    "path": cand.get("path"),
+                    "html_url": cand.get("html_url"),
+                    "matched_snippets": cand.get("matched_snippets"),
+                    "hit_count": cand.get("hit_count"),
+                    "match": r.get("match"),
+                    "hash_local": r.get("hash_local"),
+                    "hash_remote": r.get("hash_remote"),
+                    "confirm_error": r.get("error"),
+                })
+            self._json_response({
+                "candidates": confirmed,
+                "searched_snippets": result.get("searched_snippets"),
+                "skipped": result.get("skipped"),
+                "rate_limited": result.get("rate_limited"),
+                "confirmed": True,
+            })
+            return
+
+        self._json_response(result)
+
+    def _attach_source(self):
+        """给已存在的 unknown skill 补来源 meta(写 .skill-source.env)。
+
+        POST body:
+          - skill_dir: str  本地 skill 目录(必填,支持 ~/ 前缀)
+          - repo:      str  owner/repo(必填)
+          - subdir:    str  skill 在仓库内的子目录(可选,默认 '')
+          - ref:       str  仓库 ref(可选,默认 'main')
+          - url:       str  来源 URL(可选,默认拼 github.com/{repo})
+
+        安全校验:skill_dir 必须 is_relative_to(home)(照抄 _code_search)。
+        只写一个 .skill-source.env,不动 skill 本体。commit 留空,后续 upstream
+        检测会补。写完清掉该 skill 的 upstream 短路缓存(_upstream_hash_cache),
+        否则 SKILL.md 内容没变会复用旧的 unknown 结果。
+        """
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+
+        skill_dir = str(data.get("skill_dir") or "").strip()
+        repo = str(data.get("repo") or "").strip()
+        if not skill_dir or not repo:
+            self._json_response({"error": "skill_dir and repo required"}, status=400)
+            return
+
+        # repo 格式校验(owner/repo),防注入
+        if not re.match(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$", repo):
+            self._json_response({"error": "invalid repo format (owner/repo)"}, status=400)
+            return
+
+        # skill_dir 安全校验(照抄 _code_search / _serve_preview)
+        if skill_dir.startswith("~/"):
+            skill_dir = str(Path.home() / skill_dir[2:])
+        resolved = Path(skill_dir).resolve()
+        if not resolved.is_relative_to(Path.home()):
+            self._json_response({"error": "skill_dir must be under home directory"}, status=403)
+            return
+        if not resolved.is_dir():
+            self._json_response({"error": "skill_dir not found"}, status=404)
+            return
+
+        subdir = str(data.get("subdir") or "").strip()
+        ref = str(data.get("ref") or "main").strip()
+        url = str(data.get("url") or f"https://github.com/{repo}").strip()
+
+        from skilldash.source_ops import write_source_metadata, _upstream_hash_cache
+        from skilldash.content_hash import _hash_key
+        try:
+            write_source_metadata(resolved, repo, ref, subdir, url, "")
+            # 清该 skill 的 upstream 短路缓存,下次检测读到新 meta(source=steal-meta)
+            _upstream_hash_cache.pop(_hash_key(resolved), None)
+            self._json_response({"ok": True, "source": "steal-meta",
+                                 "repo": repo, "subdir": subdir, "ref": ref, "url": url})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)

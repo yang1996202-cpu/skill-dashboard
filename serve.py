@@ -112,6 +112,8 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/duplicate-decision"):    ("_duplicate_decision", None),
         ("POST", "/api/steal"):                 ("_steal_skill", None),
         ("POST", "/api/steal-npx"):             ("_steal_npx", None),
+        ("POST", "/api/code-search"):           ("_code_search", None),
+        ("POST", "/api/attach-source"):         ("_attach_source", None),
         ("POST", "/api/copy-skill"):            ("_copy_skill", None),
         ("POST", "/api/batch-delete"):          ("_batch_delete", None),
         ("POST", "/api/custom-sources"):        ("_add_custom_source", None),

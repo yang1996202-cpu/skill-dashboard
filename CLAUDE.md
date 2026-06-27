@@ -34,6 +34,7 @@ skilldash/understanding.py  — 离线理解层
 skilldash/skill_parser.py   — SKILL.md frontmatter/markdown 解析（零依赖，避免 PyYAML）
 skilldash/taxonomy.py       — 离线理解层的关键词规则 taxonomy
 skilldash/source_ops.py     — GitHub 业务:来源解析、安装、更新、上游检查、API(纯库,不依赖 serve)
+skilldash/code_search.py    — 按内容召回 GitHub 候选仓库 + hash 确认(来源恢复通用层,纯库)
 skilldash/host_inspectors.py — 宿主专属 inspector(Claude/Codex/buddy family)+ host profile
 skilldash/routes/           — 按 domain 拆分的 HTTP handler mixin:system/source/skill/cleanup/scan
 _diag_worker.py    — 诊断子进程（由 scan.py 通过 subprocess 调用）
@@ -79,7 +80,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 |---|---|---|
 | `/api/fast-scan` | GET | 列出当前目标库的 skills |
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
-| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
+| `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）|
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
 | `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
@@ -93,6 +94,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/steal` | POST | 从 GitHub URL 装 skill（合集仓库多候选返回 `multi`+candidates，前端弹勾选框批量装；`install_skill` clone 一次复用；支持 blob/tree/根 URL）|
 | `/api/steal-npx` | POST | 走 `npx -y skills add` 装（探测返回 candidates；装带 names 批量；package 白名单 + subprocess 列表参数防注入；装 mode 总是 `-g` 用户级，`-a` 映射当前 target agent）|
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
+| `/api/code-search` | POST | 按内容召回 GitHub 候选仓库 + 可选 hash 确认（body `{snippets?, query?, skill_dir?, confirm?}`；无 GITHUB_TOKEN 降级返回 error；多片段召回，/search/code 限 10 次/分）|
+| `/api/attach-source` | POST | 给 unknown skill 补来源写 `.skill-source.env`（body `{skill_dir, repo, subdir?, ref?, url?}`；复用 write_source_metadata，写完清 upstream 短路缓存）|
 | `/api/skill/{name}` | DELETE | 删除 skill |
 | `/api/skill/{name}/content` | GET | 读取 SKILL.md 原始内容 |
 | `/api/skill/{name}/upstream` | GET | 检查上游版本状态 |
@@ -168,9 +171,11 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 ### 扫描 API：用户选范围 + 选类型
 
-`POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 为 `['same-name', 'upstream', 'content-changes']` 的子集，只跑用户勾选的分析类型；`scope` 控制目录范围（`daily` 在 UI 上叫“重点扫描”，使用 `sourceIsDaily()` 的重点整理目标；`deep` 在 UI 上叫“全量扫描”，含全部目录）。
+`POST /api/scan-run` 接受 `{directories, scope, checks}` 参数。`checks` 默认 `['same-name', 'content-changes']`（**不含 upstream**——upstream 对每个 skill 调 GitHub API，未认证 60 次/小时，全量扫描会打爆；用户在二哥扫描面板主动勾"上游"才查）。`scope` 控制目录范围（`daily` 在 UI 上叫"重点扫描"，使用 `sourceIsDaily()` 的重点整理目标；`deep` 在 UI 上叫"全量扫描"，含全部目录）。返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零，是 API 消耗上界；实际受 content_hash 短路 + 5 分钟 `_github_cache` 进一步压低）和 `github_rate_limit`（`{limited, reset_ts, reset_in_sec, token_configured}`，供前端扫前计费提示）。
 
 辅助函数 `_find_same_name_duplicates(dirs)` 接受 Path 列表参数，被 cleanup 和扫描复用。
+
+**upstream 的 API 消耗优化**（source_ops.py）：`check_upstream_status` 是包装层，调真实查询（`_check_upstream_status_raw`）前先用 content_hash 短路——本地 SKILL.md 内容 hash 自上次 upstream 检测后未变 → 24h 内复用上次结果（`_upstream_hash_cache`，复用结果带 `upstream_cached:true` 标记），跳过重复 GitHub 查询。hash 变化或缓存过期走真实查询并回写缓存。短路面 key 用 `_hash_key(skill_dir)`（与 `record_content_hash` 同 key），跨 agent 不串。底层还保留 `_github_cache`(5 分钟 TTL) + `_github_rate_limit_reset`(限流检测) + `GITHUB_TOKEN` 加载（常量，Track B import 用，别动）。
 
 `/api/global-stats` 的 `unique_skills`/`category_distribution` 是 **active-only 口径**：`_scan_global_categories`(discovery.py) 用 `_target_is_active(detail)` 按 `runtime_state`(user-root/builtin/enabled/loaded/connector) + `category=user` + `layer=vendor-bundled` 过滤 tdir，排除 marketplace/cache/installed-disabled，与前端 `sourceCapabilityBucket`(app-core.js) 同口径。改前是全域含库存灌水。
 
@@ -289,12 +294,11 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 
 ## 下一步方向
 
-**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装入口已落地（§5/6/7）；**待做**：按内容 code search 通用层（§4）、unknown"补来源"入口。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读旁观（§8；steal 装进去实测可工作 + 留痕正常，与 app 版本管理并存的冲突未实测）。
+**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装 + code search 通用层 + 补来源入口已全部落地（§5/6/7）；**待做**：真实 GitHub Code Search 命中率实测（依赖片段质量 + /search/code 10 次/分配额）。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读旁观（§8；steal 装进去实测可工作 + 留痕正常，与 app 版本管理并存的冲突未实测）。
 
 **"问题与整理"页的扫描规则与展示优化**：
 - 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态
 - 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
-- 分类标签与扫描结果的联动展示
 - 问题页的删除操作与能力来源页的分类删除联动
 
 **Buddy family 内置 Commands**：
