@@ -28,7 +28,7 @@ from .paths import BASE_DIR
 # ── GitHub URL parsing ──
 GITHUB_HTTPS_RE = re.compile(
     r"^https?://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?"
-    r"(?:/tree/(?P<ref>[^/]+)(?:/(?P<subdir>.+))?)?"
+    r"(?:/(?:tree|blob)/(?P<ref>[^/]+)(?:/(?P<subdir>.+))?)?"
     r"/?$"
 )
 GITHUB_SSH_RE = re.compile(
@@ -47,6 +47,10 @@ def parse_github_url(url):
         repo = m.group("repo")
         ref = m.group("ref") or "main"
         subdir = m.group("subdir") or ""
+        # blob 链接指向文件（如 .../blob/main/neat-freak/SKILL.md），
+        # 子目录取其父目录（剥掉末尾文件名）；install 找不到 SKILL.md 时 rglob 兜底
+        if "/blob/" in url and subdir:
+            subdir = subdir.rsplit("/", 1)[0] if "/" in subdir else ""
         clean = f"https://github.com/{owner}/{repo}"
         if subdir:
             clean += f"/tree/{ref}/{subdir}"
@@ -163,18 +167,19 @@ def create_snapshot(skill_dir):
 
 
 # ── Install skill from GitHub (pure Python) ──
-def install_skill(source_url, target_path, preferred_name=None):
-    """Install a skill from a GitHub URL. Pure Python, no dashboard.
+def install_skill(source_url, target_path, preferred_name=None, names=None):
+    """Install skill(s) from a GitHub URL. Pure Python, no dashboard.
 
-    Steps:
-      1. Parse GitHub URL (owner/repo/ref/subdir)
-      2. git clone --depth 1 to temp dir
-      3. Find SKILL.md (handle subdirectories)
-      4. If target exists, create snapshot
-      5. shutil.copytree to target
-      6. Write .skill-source.env
+    Behavior:
+      - Single candidate (or subdir URL) → install directly (backward-compatible).
+      - preferred_name given and matches → install that one (backward-compatible).
+      - names given (list) → install all matching candidates (batch; clone once reused).
+      - Multiple candidates without preferred_name/names → return {"ok":False, "multi":True,
+        "candidates":[...], "repo":...} so the caller can prompt the user to pick.
 
-    Returns: {"ok": bool, "name": str, "output": str, "error": str, "snapshot": str}
+    Returns single-install shape {"ok", "name", "output", "snapshot"} for the
+    single path, batch shape {"ok", "results":[{"name","commit","snapshot","output","error"}...],
+    "output"} for the batch path, and the multi-prompt shape above for the probe path.
     """
 
     parsed = parse_github_url(source_url)
@@ -213,25 +218,88 @@ def install_skill(source_url, target_path, preferred_name=None):
             shutil.rmtree(tmp_root, ignore_errors=True)
             return {"ok": False, "error": "仓库里没有找到 SKILL.md"}
 
-        # Select skill directory
+        # Decide which candidates to install
+        selected_dirs = []
+        batch_mode = False
         if len(candidates) == 1:
-            selected_dir = candidates[0]
-        else:
-            # Multiple skills — try preferred_name match
-            if preferred_name:
-                for c in candidates:
-                    if c.name == preferred_name:
-                        selected_dir = c
-                        break
-                else:
-                    names = ", ".join(c.name for c in candidates[:5])
-                    shutil.rmtree(tmp_root, ignore_errors=True)
-                    return {"ok": False, "error": f"仓库里有多个 skill，请指定名称。找到: {names}"}
-            else:
-                names = ", ".join(c.name for c in candidates[:5])
+            selected_dirs = [candidates[0]]
+        elif names:
+            # Batch: filter candidates by name
+            wanted = {n for n in names if n}
+            selected_dirs = [c for c in candidates if c.name in wanted]
+            if not selected_dirs:
+                cands = ", ".join(c.name for c in candidates[:10])
                 shutil.rmtree(tmp_root, ignore_errors=True)
-                return {"ok": False, "error": f"仓库里有多个 skill，请指定名称。找到: {names}"}
+                return {"ok": False, "error": f"勾选的名字都不在仓库里。找到: {cands}"}
+            batch_mode = True
+        elif preferred_name:
+            # Backward-compat: single selection by name
+            for c in candidates:
+                if c.name == preferred_name:
+                    selected_dirs = [c]
+                    break
+            if not selected_dirs:
+                cands = ", ".join(c.name for c in candidates[:10])
+                shutil.rmtree(tmp_root, ignore_errors=True)
+                return {"ok": False, "error": f"仓库里没找到指定的 skill ({preferred_name})。找到: {cands}"}
+        else:
+            # Probe mode: return candidate list so the caller can prompt
+            payload = {
+                "ok": False,
+                "multi": True,
+                "candidates": [c.name for c in candidates][:50],
+                "repo": f"{owner}/{repo}",
+                "error": f"仓库里有 {len(candidates)} 个 skill，请选择",
+            }
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            return payload
 
+        target = Path(target_path)
+        if not target.exists():
+            target.mkdir(parents=True, exist_ok=True)
+
+        results = []
+        for selected_dir in selected_dirs:
+            res = _install_one(
+                selected_dir, clone_dir, target, owner, repo, ref, clean_url,
+                preferred_name if (not batch_mode and preferred_name) else None,
+            )
+            results.append(res)
+
+        if not batch_mode:
+            # Single-install response (backward compatible)
+            shutil.rmtree(tmp_root, ignore_errors=True)
+            r = results[0]
+            return {
+                "ok": r["ok"],
+                "name": r["name"],
+                "output": r["output"],
+                "snapshot": r["snapshot"],
+                "error": r.get("error", ""),
+            }
+
+        # Batch response
+        ok_count = sum(1 for r in results if r["ok"])
+        summary = "、".join(
+            f"{r['name']}({'成功' if r['ok'] else '失败'})" for r in results
+        )
+        output = f"已装 {ok_count}/{len(results)} 个: {summary}"
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        return {
+            "ok": ok_count > 0,
+            "results": results,
+            "output": output,
+            "repo": f"{owner}/{repo}",
+        }
+
+    except Exception as e:
+        shutil.rmtree(tmp_root, ignore_errors=True)
+        return {"ok": False, "error": str(e)}
+
+
+def _install_one(selected_dir, clone_dir, target, owner, repo, ref, clean_url, preferred_name=None):
+    """Install a single already-cloned skill dir into target. Used by install_skill."""
+    try:
         selected_name = preferred_name or selected_dir.name
         selected_rel = str(selected_dir.relative_to(clone_dir)) if selected_dir != clone_dir else ""
 
@@ -248,8 +316,10 @@ def install_skill(source_url, target_path, preferred_name=None):
             )
             installed_commit = commit_res.stdout.strip()
 
-        target = Path(target_path)
         dest_dir = target / selected_name
+        # Path safety: dest must stay inside target
+        if not dest_dir.resolve().is_relative_to(target.resolve()):
+            return {"ok": False, "name": selected_name, "error": "目标路径越界", "output": "", "snapshot": None, "commit": ""}
 
         # Snapshot if exists
         snapshot_path = None
@@ -272,24 +342,30 @@ def install_skill(source_url, target_path, preferred_name=None):
         # Write metadata
         write_source_metadata(dest_dir, f"{owner}/{repo}", ref, selected_rel, clean_url, installed_commit)
 
-        output = f"安装到 {target_path}/{selected_name}\n来源: {owner}/{repo}@{ref}"
+        output = f"安装到 {target}/{selected_name}\n来源: {owner}/{repo}@{ref}"
         if selected_rel:
             output += f"\n子目录: {selected_rel}"
         output += f"\n提交: {installed_commit[:7]}"
         if snapshot_path:
             output += f"\n快照: {snapshot_path}"
 
-        shutil.rmtree(tmp_root, ignore_errors=True)
         return {
             "ok": True,
             "name": selected_name,
             "output": output,
             "snapshot": snapshot_path,
+            "commit": installed_commit,
+            "error": "",
         }
-
     except Exception as e:
-        shutil.rmtree(tmp_root, ignore_errors=True)
-        return {"ok": False, "error": str(e)}
+        return {
+            "ok": False,
+            "name": selected_dir.name,
+            "error": str(e),
+            "output": "",
+            "snapshot": None,
+            "commit": "",
+        }
 
 
 # ── Check upstream status (pure Python, no gh CLI) ──
@@ -600,3 +676,235 @@ def update_skill(skill_name, target_path):
             return install_skill(url, target_path, preferred_name=skill_name)
 
     return {"ok": False, "error": "没有找到上游来源记录，无法更新"}
+
+
+# ── npx skills CLI wrapper ──
+# 实测 (2026-06):
+#   `npx -y skills add -l <pkg>` 列仓库内 skill:边框输出,skill 名独占一行,
+#   锚点 "Available Skills",每名匹配 ^[a-z][a-z0-9-]*$。
+#   `--skill A B` 空格分隔多值(官方例子 --skill pr-review commit);
+#   `--agent claude-code|codex|cursor|...`(72 个,见 --help)。
+#   `-y` 跳确认;`-g` global(user-level);不传 -g 走 cwd 项目级 .agents/skills/。
+#   装点 ~/.agents/skills/(global) 或 <cwd>/.agents/skills/(project),
+#   lock 在 ~/.agents/.skill-lock.json 或 <cwd>/.skill-lock.json。
+
+_NPX_PKG_RE = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
+_NPX_GHURL_RE = re.compile(r"^https://github\.com/[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?(/.*)?$", re.IGNORECASE)
+# skill 名特征:小写开头,小写字母/数字/短横线,长度 1-64
+_NPX_SKILL_LINE_RE = re.compile(r"^[a-z][a-z0-9-]{0,63}$")
+# ANSI 转义 + 边框装饰符,用于剥离 -l 输出
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[\(\)][AB012]")
+
+# 当前 target 路径 → skills CLI -a agent 名映射
+# 实测 -a 接受 claude-code / codex / cursor / gemini-cli 等;映射不了的回退 -g
+def agent_name_for_target(target_path):
+    """Map a skill target dir path to a `skills add -a <agent>` value.
+
+    Returns agent name string (e.g. "claude-code") or None if unmappable
+    (caller falls back to -g global install).
+    """
+    if not target_path:
+        return None
+    p = str(target_path).replace("\\", "/").rstrip("/")
+    low = p.lower()
+    # 路径片段匹配(末尾段优先)
+    if "/.claude/skills" in low or low.endswith("/.claude/skills"):
+        return "claude-code"
+    if "/.codex/skills" in low or low.endswith("/.codex/skills"):
+        return "codex"
+    if "/.cursor/skills" in low or low.endswith("/.cursor/skills"):
+        return "cursor"
+    if "/.gemini/skills" in low or low.endswith("/.gemini/skills") or "/.gemini-cli/skills" in low:
+        return "gemini-cli"
+    if "/.opencode/skills" in low:
+        return "opencode"
+    if "/.github copilot" in low or "/.github-copilot" in low:
+        return "github-copilot"
+    # 通用 ~/.agents/skills 或项目级 .agents/skills → CLI 自动检测,不传 -a
+    if "/.agents/skills" in low:
+        return None
+    return None
+
+
+def _validate_npx_package(package):
+    """Validate package arg against owner/repo or GitHub URL whitelist.
+
+    Returns (clean_package, error). clean_package is the value to pass
+    to subprocess (never shell-escaped; always a single argv element).
+    """
+    pkg = (package or "").strip()
+    if not pkg:
+        return None, "package 不能为空"
+    # owner/repo 形式
+    if _NPX_PKG_RE.match(pkg):
+        return pkg, None
+    # https GitHub URL 形式(CLI 也接受)
+    if _NPX_GHURL_RE.match(pkg):
+        # 去掉末尾 / 和 .git
+        clean = pkg.rstrip("/")
+        if clean.endswith(".git"):
+            clean = clean[:-4]
+        return clean, None
+    return None, f"package 格式非法(需 owner/repo 或 https://github.com/...): {pkg}"
+
+
+def _parse_npx_list_output(text):
+    """Extract candidate skill names from `skills add -l` output.
+
+    Output has ANSI codes + box borders. Skill names appear on their own
+    line under the "Available Skills" anchor. We strip ANSI, drop border
+    decoration lines, and collect lines matching the skill-name pattern.
+    """
+    if not text:
+        return []
+    # 剥 ANSI
+    clean = _ANSI_RE.sub("", text)
+    lines = clean.splitlines()
+    # 找 Available Skills 锚点(英文);部分版本可能用中文,兜底扫全文
+    start = 0
+    for i, ln in enumerate(lines):
+        if "Available Skills" in ln or "available skills" in ln.lower():
+            start = i + 1
+            break
+    candidates = []
+    seen = set()
+    for ln in lines[start:]:
+        s = ln.strip()
+        if not s:
+            continue
+        # 去掉边框残留符
+        s = s.lstrip("│├└┌─◆◇●○►▹·•*").rstrip("│├└┌─")
+        s = s.strip()
+        if not s:
+            continue
+        # 跳过描述行(含空格/句号/逗号,长度通常 > 64)
+        if " " in s or len(s) > 64:
+            continue
+        if _NPX_SKILL_LINE_RE.match(s) and s not in seen:
+            seen.add(s)
+            candidates.append(s)
+    # 去掉 CLI 提示行(如 "Use --skill <name> ...")里被误识别的片段
+    return candidates[:200]
+
+
+def install_skill_npx(package, agent=None, skill_names=None):
+    """Install skill(s) via `npx -y skills add` (Vercel skills CLI).
+
+    Pure function — no serve dependency.
+
+    Probe mode (skill_names is None):
+        runs `skills add -l <pkg>` → returns
+        {"ok": False, "multi": True, "candidates": [...], "package": pkg}
+
+    Install mode (skill_names given, non-empty list):
+        runs `skills add -y -s <n1> <n2> ... [-a <agent> | -g] <pkg>`
+        → returns {"ok": bool, "results": [{"name": n, "ok": True}...],
+                   "output": str, "package": pkg}
+
+    Errors return {"ok": False, "error": str}.
+
+    Security: package validated against owner/repo + https URL whitelist.
+    All args passed as a subprocess list — never shell=True, never string
+    concatenation of user input.
+    """
+    clean_pkg, err = _validate_npx_package(package)
+    if err:
+        return {"ok": False, "error": err}
+
+    # npx 必须在 PATH
+    npx = shutil.which("npx")
+    if not npx:
+        return {"ok": False, "error": "未找到 npx,需先装 Node"}
+
+    # Probe mode
+    if not skill_names:
+        cmd = [npx, "-y", "skills", "add", "-l", clean_pkg]
+        try:
+            res = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "skills CLI 探测超时(120s)"}
+        except FileNotFoundError:
+            return {"ok": False, "error": "未找到 npx,需先装 Node"}
+        out = (res.stdout or "") + "\n" + (res.stderr or "")
+        # CLI 失败(仓库不存在/网络)时 stderr/stdout 带错误信息
+        if res.returncode != 0:
+            # 仍然尝试解析:某些版本 exit code 非零但已列出 skills
+            cands = _parse_npx_list_output(out)
+            if cands:
+                return {"ok": False, "multi": True, "candidates": cands, "package": clean_pkg}
+            msg = (res.stderr or res.stdout or "").strip()[-300:]
+            return {"ok": False, "error": f"skills CLI 探测失败: {msg or '未知错误'}"}
+        cands = _parse_npx_list_output(out)
+        if not cands:
+            return {"ok": False, "error": "仓库里没有找到 skill(或输出格式无法解析)"}
+        return {"ok": False, "multi": True, "candidates": cands, "package": clean_pkg}
+
+    # Install mode
+    # 校验 skill_names:只允许小写字母/数字/短横线,防注入
+    clean_names = []
+    name_re = re.compile(r"^[a-zA-Z0-9._-]{1,64}$")
+    for n in skill_names:
+        n = str(n).strip()
+        if not n or not name_re.match(n):
+            return {"ok": False, "error": f"skill 名非法: {n!r}"}
+        clean_names.append(n)
+
+    # package 作为 source 位置参数紧跟 add 之后(skills CLI 标准用法 add <pkg> [options])。
+    # 不能放末尾——-s / -a 都是多值选项,会把末尾的 package 当成 skill/agent 名吃掉,
+    # 导致 skills add 报 "Missing required argument: source"。
+    # dashboard 的 target 都是用户级(~/.xxx),skills add 必须加 -g(用户级)才装进
+    # ~/.agents/skills 真身 + symlink 到 agent 目录;不加 -g 会装到 cwd 项目级
+    # (.claude/skills),dashboard 的用户级 target 看不到。-a 限制只给指定 agent 建 symlink。
+    cmd = [npx, "-y", "skills", "add", clean_pkg, "-y", "-s"] + clean_names + ["-g"]
+    if agent:
+        # agent 名也校验(字母/数字/短横线)
+        if not re.match(r"^[a-zA-Z0-9._-]{1,32}$", agent):
+            return {"ok": False, "error": f"agent 名非法: {agent!r}"}
+        cmd += ["-a", agent]
+
+    try:
+        res = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=120,
+        )
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "skills CLI 安装超时(120s)"}
+    except FileNotFoundError:
+        return {"ok": False, "error": "未找到 npx,需先装 Node"}
+
+    out = (res.stdout or "") + "\n" + (res.stderr or "")
+    clean_out = _ANSI_RE.sub("", out)
+
+    # 成功判定:CLI 装成功时 exit 0 且输出含 "Installation Summary" 或 skill 路径
+    installed = []
+    if res.returncode == 0:
+        # 从输出里抓实际装上的 skill 名(Installation Summary 段或 .agents/skills/<name> 路径)
+        for n in clean_names:
+            # 路径形如 ~/.../.agents/skills/<name> 或 universal/symlink 段
+            if re.search(r"(?:\.agents/skills/|skills[/\\])" + re.escape(n) + r"(?:[/\s]|$)", clean_out) \
+               or re.search(r"\b" + re.escape(n) + r"\b", clean_out):
+                installed.append({"name": n, "ok": True})
+        # 兜底:如果输出含 Installation Summary 但没匹配到具体名,认为全部成功
+        if not installed and ("Installation Summary" in clean_out or "Installing" in clean_out):
+            installed = [{"name": n, "ok": True} for n in clean_names]
+
+    if installed:
+        ok_count = sum(1 for r in installed if r["ok"])
+        summary = "、".join(r["name"] for r in installed if r["ok"])
+        return {
+            "ok": True,
+            "results": installed,
+            "output": f"已通过 skills CLI 装 {ok_count} 个: {summary}",
+            "package": clean_pkg,
+            "raw_output": clean_out[-800:],
+        }
+
+    # 失败:返回错误 + 原始输出片段
+    msg = clean_out.strip()[-400:] if clean_out.strip() else "未知错误"
+    return {
+        "ok": False,
+        "error": f"skills CLI 安装失败: {msg}",
+        "package": clean_pkg,
+        "raw_output": clean_out[-800:],
+    }

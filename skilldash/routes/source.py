@@ -24,9 +24,13 @@ from skilldash.discovery import (
     _scan_commands,
     _skill_entry_kind,
 )
-from skilldash.host_inspectors import host_profile_summaries_by_agent, load_mcp_inventory
+from skilldash.host_inspectors import (
+    host_profile_summaries_by_agent,
+    load_claude_plugin_state,
+    load_mcp_inventory,
+)
 from skilldash.paths import CACHE_DIR, STATE_DIR
-from skilldash.source_ops import install_skill
+from skilldash.source_ops import agent_name_for_target, install_skill, install_skill_npx
 from skilldash.understanding import compact_understanding, understand_skill
 
 
@@ -559,19 +563,95 @@ class SourceRoutes:
             data = {}
         source = data.get("source", "").strip()
         skill_name = data.get("name", "").strip()
+        names_raw = data.get("names", [])
+        names = None
+        if isinstance(names_raw, list):
+            names = [str(n).strip() for n in names_raw if str(n).strip()]
+            if not names:
+                names = None
         if not source:
             self._json_response({"error": "missing source URL"}, status=400)
             return
 
         target = self._current_target()
-        result = install_skill(source, target, preferred_name=skill_name or None)
+        result = install_skill(source, target, preferred_name=skill_name or None, names=names)
         self._json_response(result)
+        # Multi-probe responses are not yet installs; skip history.
+        if result.get("multi"):
+            return
         status = "ok" if result.get("ok") or result.get("success") else "failed"
+        installed_names = []
+        if result.get("results"):
+            installed_names = [r.get("name", "") for r in result["results"] if r.get("ok")]
+        count = len(installed_names) if installed_names else (1 if status == "ok" else 0)
         self._log_history(
             "install",
             paths=[result.get("path", "") or source],
-            count=1 if status == "ok" else 0,
+            count=count,
             source="steal",
             status=status,
-            detail={"source": source, "name": skill_name or result.get("name", ""), "error": result.get("error", "")},
+            detail={
+                "source": source,
+                "name": ", ".join(installed_names) if installed_names else (skill_name or result.get("name", "")),
+                "error": result.get("error", ""),
+                "batch": bool(result.get("results")),
+            },
+        )
+
+    def _steal_npx(self):
+        """Install skill(s) via Vercel `skills` CLI (npx -y skills add).
+
+        POST body: {package: str, names?: [str]}
+          - names 不传 → 探测,返回 {multi: True, candidates, package}
+          - names 传 → 装到当前 target 映射的 agent 目录,失败回退 -g
+
+        agent 映射:当前 target 路径 → skills CLI -a 值(claude-code/codex/
+        cursor/...);映射不了回退 -g global(~/.agents/skills/)。
+        """
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length).decode('utf-8') if length else '{}'
+        try:
+            data = json.loads(body)
+        except Exception:
+            data = {}
+        package = data.get("package", "").strip()
+        names_raw = data.get("names", [])
+        names = None
+        if isinstance(names_raw, list):
+            names = [str(n).strip() for n in names_raw if str(n).strip()]
+            if not names:
+                names = None
+        if not package:
+            self._json_response({"ok": False, "error": "missing package"}, status=400)
+            return
+
+        # agent 映射:当前 target → -a 值;映射不了返回 None → -g global
+        target = self._current_target()
+        agent = agent_name_for_target(target) if target else None
+
+        result = install_skill_npx(package, agent=agent, skill_names=names)
+        self._json_response(result)
+
+        # 探测响应(multi)不算安装,不写 history
+        if result.get("multi"):
+            return
+
+        status = "ok" if result.get("ok") else "failed"
+        installed_names = []
+        if result.get("results"):
+            installed_names = [r.get("name", "") for r in result["results"] if r.get("ok")]
+        count = len(installed_names) if installed_names else 0
+        self._log_history(
+            "install",
+            paths=[package],
+            count=count,
+            source="npx",
+            status=status,
+            detail={
+                "package": package,
+                "agent": agent or "global",
+                "name": ", ".join(installed_names) if installed_names else "",
+                "error": result.get("error", ""),
+                "batch": bool(result.get("results")),
+            },
         )

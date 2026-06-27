@@ -47,7 +47,7 @@ static/sources.js          — 能力来源、来源浏览、批量同步/删除
 static/skill-detail.js     — skill 详情、对比、分类编辑
 static/app-bootstrap.js    — 刷新、目标切换、诊断、安装入口、启动加载
 .data/             — 运行时状态与缓存（state/、cache/，.gitignore）
-docs/              — 项目文档（troubleshooting.md）
+docs/              — 项目文档（troubleshooting.md、skill-model.md、source-recovery.md）
 README.md
 LICENSE
 screenshots/       — 截图（dashboard / sources / upstream / issues）
@@ -82,7 +82,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果 |
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
-| `/api/global-stats` | GET | 全域分类分布统计（5 分钟缓存） |
+| `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/diagnose` | POST | 触发完整诊断（旧流程，保留兼容） |
 | `/api/diagnosis-status` | GET | 轮询诊断进度 |
 | `/api/history` | GET | 操作历史记录 |
@@ -91,7 +91,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/installed-plugins` | GET | 返回本机 Claude 插件状态（已启用 / 已安装 / 市场列表）|
 | `/api/mcp-inventory` | GET | 跨 Agent MCP server 清单（Claude `.claude.json` / Codex `config.toml` / Cursor `mcp.json` / 项目级 `.mcp.json`，只读 name/transport/disabled）|
 | `/api/custom-sources` | GET/POST/DELETE | 管理自定义来源 |
-| `/api/steal` | POST | 从 GitHub URL 安装 skill |
+| `/api/steal` | POST | 从 GitHub URL 装 skill（合集仓库多候选返回 `multi`+candidates，前端弹勾选框批量装；`install_skill` clone 一次复用；支持 blob/tree/根 URL）|
+| `/api/steal-npx` | POST | 走 `npx -y skills add` 装（探测返回 candidates；装带 names 批量；package 白名单 + subprocess 列表参数防注入；装 mode 总是 `-g` 用户级，`-a` 映射当前 target agent）|
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
 | `/api/skill/{name}` | DELETE | 删除 skill |
 | `/api/skill/{name}/content` | GET | 读取 SKILL.md 原始内容 |
@@ -106,7 +107,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
 | `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |
 | `/api/duplicate-decisions` | GET | 列出本地多端部署决策 |
-| `/api/duplicate-decision` | POST/DELETE | 记录 / 撤销多端部署决策 |
+| `/api/duplicate-decision` | POST/DELETE | 记录 / 撤销多端部署决策（DELETE 带 `?key=` 查询参数） |
 | `/api/trash` | GET/DELETE | 列出垃圾站 / 清空 |
 | `/api/trash/{id}` | DELETE | 永久删除 |
 | `/api/trash/{id}/restore` | GET/POST | 恢复到原路径或当前目录 |
@@ -233,6 +234,12 @@ group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(
 - 对话框支持多行路径（一行一个），带引导说明（自己找 / 让 Agent 找）
 - `addCustomSource()` 逐个验证路径，汇总结果（成功/失败/已存在）
 
+### 安装入口（steal 合集勾选 + npx）
+
+- **steal 合集勾选**：合集仓库根 URL → `install_skill` 多候选返回 `multi` → 前端 `renderStealPicker` 弹勾选框（clone 一次，循环 copy 子目录 + 分别写 meta/hash）。`parse_github_url` 认 `tree|blob`（blob 剥末尾文件名取父目录）。
+- **npx 入口**：`install_skill_npx` 包装 `npx -y skills add`。**防注入三道**：package 白名单（owner/repo 或 github URL）+ skill_names/agent 正则校验 + subprocess 列表参数（绝不 shell=True）。装 mode **总是 `-g`**（否则装 cwd 项目级看不到），package 作为 source 位置参数放 `add` 后（放末尾会被 `-s`/`-a` 多值吃掉报 Missing source）。
+- **默认勾查重**：勾选框默认勾**当前 target 内未装的**（已装标"已装"不勾），**仅当前 target 不跨 target**（`skills` 是当前 target 的 scan.installed）。
+
 ### /api/targets 缓存
 
 `_list_targets()` 带 3 分钟 TTL 内存缓存（`_targets_cache` / `_targets_cache_ts`）。冷启动 ~6s，缓存命中 ~0.1s。缓存期间 `is_current` 标志实时刷新（对比 state 里存的当前目标）。
@@ -265,6 +272,8 @@ group 还挂三个身份/构成层字段(`/api/targets` group 级):`agent_form`(
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
 
 ## 下一步方向
+
+**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装入口已落地（§5/6/7）；**待做**：按内容 code search 通用层（§4）、unknown"补来源"入口。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读（§8，写进去可能被 app 清理）。
 
 **"问题与整理"页的扫描规则与展示优化**：
 - 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态

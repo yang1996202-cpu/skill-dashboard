@@ -191,32 +191,224 @@ function showStealDialog(){
 }
 
 async function doSteal(){
-  const source=$('steal-source').value.trim();
+  const sourceEl=$('steal-source');
+  const source=sourceEl?sourceEl.value.trim():(window.__stealSource||'');
   if(!source){toast('请输入来源','error');return}
   const btn=$('steal-btn');
   const result=$('steal-result');
-  btn.disabled=true;btn.textContent='安装中...';
-  result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';
-  result.textContent='正在安装...';
+  if(btn){btn.disabled=true;btn.textContent='安装中...';}
+  if(result){result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';result.textContent='正在检测仓库...';}
   try{
     const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source})});
     const d=await r.json();
-    if(d.ok){
-      result.style.background='var(--green-bg)';result.style.color='var(--green)';
-      result.textContent='✅ 安装成功';
+    if(d.multi===true){
+      // Multi-candidate repo → render pick UI
+      window.__stealSource=source;
+      renderStealPicker(d);
+    }else if(d.ok){
+      if(result){result.style.background='var(--green-bg)';result.style.color='var(--green)';result.textContent='✅ 安装成功';}
       toast('Skill 已安装');
       invalidateTargetsCache();
       clearGlobalSearchCache();
       await loadData();
+      setTimeout(function(){$('modal').classList.add('hidden');},800);
     }else{
-      result.style.background='var(--red-bg)';result.style.color='var(--red)';
-      result.textContent='❌ '+(d.error||'安装失败');
+      if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent='❌ '+(d.error||'安装失败');}
     }
   }catch(e){
-    result.style.background='var(--red-bg)';result.style.color='var(--red)';
-    result.textContent='❌ '+e.message;
+    if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent='❌ '+e.message;}
   }
-  btn.disabled=false;btn.textContent='安装';
+  if(btn){btn.disabled=false;btn.textContent='安装';}
+}
+
+function renderStealPicker(d){
+  const cands=d.candidates||[];
+  const repo=d.repo||'';
+  // 查重(仅当前 target 内,不跨 target):已装的不默认勾+标记"已装",未装的默认勾
+  const installedNames=new Set((skills||[]).map(function(s){return s.name;}));
+  $('modal-title').textContent='选择要安装的 Skill';
+  $('modal-body').innerHTML=`
+    <div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+      <div style="margin-bottom:6px;color:var(--text-muted)">仓库 <strong style="color:var(--indigo)">${repo}</strong> 有 ${cands.length} 个 skill，勾选要安装的：</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="btn" style="font-size:12px;padding:4px 10px" onclick="stealPickerToggle(true)">全选</button>
+        <button class="btn" style="font-size:12px;padding:4px 10px" onclick="stealPickerToggle(false)">全不选</button>
+      </div>
+      <div id="steal-pick-list" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);padding:4px 0;margin-bottom:12px">
+        ${cands.map(function(c){
+          const installed=installedNames.has(c);
+          return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;border-bottom:1px solid var(--border)">
+            <input type="checkbox" class="steal-pick-cb" value="${escapeHtml(c)}" ${installed?'':'checked'} style="accent-color:var(--indigo)">
+            <span style="font-family:var(--mono);font-size:12px">${escapeHtml(c)}</span>
+            ${installed?'<span style="font-size:11px;color:var(--text-muted);margin-left:auto">已装</span>':''}
+          </label>`;
+        }).join('')}
+      </div>
+      <div id="steal-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+        <button class="btn btn-primary" id="steal-install-btn" onclick="doStealInstall()">装勾选的</button>
+      </div>
+    </div>`;
+}
+function stealPickerToggle(on){
+  document.querySelectorAll('.steal-pick-cb').forEach(function(cb){cb.checked=on;});
+}
+
+async function doStealInstall(){
+  const picked=Array.from(document.querySelectorAll('.steal-pick-cb:checked')).map(function(cb){return cb.value;});
+  if(picked.length===0){toast('请至少勾选一个','error');return}
+  const source=window.__stealSource||'';
+  const btn=$('steal-install-btn');
+  const result=$('steal-result');
+  if(btn){btn.disabled=true;btn.textContent='安装中...';}
+  if(result){result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';result.textContent='正在安装 '+picked.length+' 个...';}
+  try{
+    const r=await fetch('/api/steal',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source,names:picked})});
+    const d=await r.json();
+    if(d.ok){
+      const lines=(d.results||[]).map(function(r){
+        return (r.ok?'✓ ':'✗ ')+r.name+(r.ok?'':' ('+(r.error||'失败')+')');
+      });
+      if(result){
+        result.style.background='var(--green-bg)';result.style.color='var(--green)';
+        result.textContent=lines.join('\n')+'\n'+(d.output||'');
+        result.style.whiteSpace='pre-wrap';
+      }
+      toast(d.output||('已安装 '+picked.length+' 个'));
+      invalidateTargetsCache();
+      clearGlobalSearchCache();
+      await loadData();
+      if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+      setTimeout(function(){$('modal').classList.add('hidden');},1200);
+    }else{
+      if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent='❌ '+(d.error||'安装失败');}
+      if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+    }
+  }catch(e){
+    if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent='❌ '+e.message;}
+    if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+  }
+}
+
+/* ── npx 安装 (skills CLI 包装) ── */
+function showNpxDialog(){
+  const curTarget=targets.find(t=>t.is_current)||targets[0];
+  const name=curTarget?curTarget.name:'当前库';
+  $('modal-title').textContent='npx 安装 Skill';
+  $('modal-body').innerHTML=`
+    <div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+      <div style="margin-bottom:8px;color:var(--text-muted);font-size:12px">走 <code style="font-family:var(--mono);padding:1px 5px;background:var(--bg-card-alt);border-radius:4px">npx -y skills add</code> 安装器,装到当前目录映射的 agent 或 global</div>
+      <div style="margin-bottom:12px;color:var(--text-muted)">安装到: <strong style="color:var(--indigo)">${name}</strong></div>
+      <label style="display:block;margin-bottom:6px;font-weight:500">来源 (owner/repo 或 GitHub URL)</label>
+      <input id="npx-source" type="text" placeholder="vercel-labs/agent-skills 或 https://github.com/owner/repo" style="width:100%;padding:8px 12px;border-radius:8px;border:1px solid var(--border);background:var(--bg-card);color:var(--text);font-size:13px;font-family:inherit;margin-bottom:12px">
+      <div id="npx-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+        <button class="btn btn-primary" id="npx-btn" onclick="doNpxProbe()">检测</button>
+      </div>
+    </div>`;
+  $('modal').classList.remove('hidden');
+}
+
+async function doNpxProbe(){
+  const sourceEl=$('npx-source');
+  const package=sourceEl?sourceEl.value.trim():(window.__npxPackage||'');
+  if(!package){toast('请输入来源','error');return}
+  const btn=$('npx-btn');
+  const result=$('npx-result');
+  if(btn){btn.disabled=true;btn.textContent='检测中...';}
+  if(result){result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';result.textContent='正在调用 skills CLI 探测仓库...';}
+  try{
+    const r=await fetch('/api/steal-npx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package})});
+    const d=await r.json();
+    if(d.multi===true){
+      window.__npxPackage=package;
+      renderNpxPicker(d);
+    }else if(d.ok){
+      if(result){result.style.background='var(--green-bg)';result.style.color='var(--green)';result.textContent='安装成功';}
+      toast('Skill 已安装');
+      invalidateTargetsCache();
+      clearGlobalSearchCache();
+      await loadData();
+      setTimeout(function(){$('modal').classList.add('hidden');},800);
+    }else{
+      if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent=(d.error||'探测失败');}
+    }
+  }catch(e){
+    if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent=e.message;}
+  }
+  if(btn){btn.disabled=false;btn.textContent='检测';}
+}
+
+function renderNpxPicker(d){
+  const cands=d.candidates||[];
+  const pkg=d.package||window.__npxPackage||'';
+  // 查重(仅当前 target 内,不跨 target):已装的不默认勾+标记"已装",未装的默认勾
+  const installedNames=new Set((skills||[]).map(function(s){return s.name;}));
+  $('modal-title').textContent='选择要安装的 Skill';
+  $('modal-body').innerHTML=`
+    <div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">
+      <div style="margin-bottom:6px;color:var(--text-muted)"><code style="font-family:var(--mono);padding:1px 5px;background:var(--bg-card-alt);border-radius:4px">${escapeHtml(pkg)}</code> 有 ${cands.length} 个 skill,勾选要安装的:</div>
+      <div style="display:flex;gap:8px;margin-bottom:8px">
+        <button class="btn" style="font-size:12px;padding:4px 10px" onclick="npxPickerToggle(true)">全选</button>
+        <button class="btn" style="font-size:12px;padding:4px 10px" onclick="npxPickerToggle(false)">全不选</button>
+      </div>
+      <div id="npx-pick-list" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:8px;background:var(--bg-card);padding:4px 0;margin-bottom:12px">
+        ${cands.map(function(c){
+          const installed=installedNames.has(c);
+          return `<label style="display:flex;align-items:center;gap:8px;padding:6px 12px;cursor:pointer;border-bottom:1px solid var(--border)">
+            <input type="checkbox" class="npx-pick-cb" value="${escapeHtml(c)}" ${installed?'':'checked'} style="accent-color:var(--indigo)">
+            <span style="font-family:var(--mono);font-size:12px">${escapeHtml(c)}</span>
+            ${installed?'<span style="font-size:11px;color:var(--text-muted);margin-left:auto">已装</span>':''}
+          </label>`;
+        }).join('')}
+      </div>
+      <div id="npx-result" style="display:none;padding:10px;border-radius:8px;margin-bottom:8px;font-size:12px"></div>
+      <div style="display:flex;gap:8px;justify-content:flex-end">
+        <button class="btn" onclick="$('modal').classList.add('hidden')">取消</button>
+        <button class="btn btn-primary" id="npx-install-btn" onclick="doNpxInstall()">装勾选的</button>
+      </div>
+    </div>`;
+}
+function npxPickerToggle(on){
+  document.querySelectorAll('.npx-pick-cb').forEach(function(cb){cb.checked=on;});
+}
+
+async function doNpxInstall(){
+  const picked=Array.from(document.querySelectorAll('.npx-pick-cb:checked')).map(function(cb){return cb.value;});
+  if(picked.length===0){toast('请至少勾选一个','error');return}
+  const package=window.__npxPackage||'';
+  const btn=$('npx-install-btn');
+  const result=$('npx-result');
+  if(btn){btn.disabled=true;btn.textContent='安装中...';}
+  if(result){result.style.display='block';result.style.background='var(--bg-card-alt)';result.style.color='var(--text-muted)';result.textContent='正在通过 skills CLI 安装 '+picked.length+' 个...';}
+  try{
+    const r=await fetch('/api/steal-npx',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({package,names:picked})});
+    const d=await r.json();
+    if(d.ok){
+      const lines=(d.results||[]).map(function(r){
+        return (r.ok?'✓ ':'✗ ')+r.name+(r.ok?'':' ('+(r.error||'失败')+')');
+      });
+      if(result){
+        result.style.background='var(--green-bg)';result.style.color='var(--green)';
+        result.textContent=lines.join('\n')+'\n'+(d.output||'');
+        result.style.whiteSpace='pre-wrap';
+      }
+      toast(d.output||('已安装 '+picked.length+' 个'));
+      invalidateTargetsCache();
+      clearGlobalSearchCache();
+      await loadData();
+      if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+      setTimeout(function(){$('modal').classList.add('hidden');},1200);
+    }else{
+      if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent=(d.error||'安装失败');}
+      if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+    }
+  }catch(e){
+    if(result){result.style.background='var(--red-bg)';result.style.color='var(--red)';result.textContent=e.message;}
+    if(btn){btn.disabled=false;btn.textContent='装勾选的';}
+  }
 }
 
 loadData();
