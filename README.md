@@ -140,7 +140,7 @@ python3 serve.py
 - `static/issues-cleanup.js`：问题与整理、清理计划、垃圾站
 - `static/sources.js`：能力来源、来源浏览、批量同步/删除
 - `static/skill-detail.js`：详情、对比、分类编辑
-- `static/app-bootstrap.js`：刷新、目标切换、诊断、安装入口、启动加载
+- `static/app-bootstrap.js`：刷新、目标切换、安装入口、启动加载
 
 ---
 
