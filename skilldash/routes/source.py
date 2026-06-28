@@ -897,6 +897,44 @@ class SourceRoutes:
         except Exception:
             pass
 
+    def _patch_scan_cache_remove(self, items):
+        """删除 skill 后从 scan-result.json 剔除该 skill,否则「问题与整理」页
+        残留已删 skill 的 source_status/upstream_sources(要等下次扫描才清)。
+
+        与 _patch_scan_cache_attach 对称:attach 加来源时 patch 进缓存,删除时剔除。
+        items: [(name, parent_dir), ...] — parent 是 skill 父目录(scan.py 里
+        source_status.dir / upstream_sources.dir 存的就是父目录 str(tdir))。
+        scan-result.json 不存在(从未扫描)则跳过。
+        """
+        if not items:
+            return
+        try:
+            cf = CACHE_DIR / "scan-result.json"
+            if not cf.exists():
+                return
+            data = json.loads(cf.read_text("utf-8"))
+            pairs = set()
+            for nm, parent in items:
+                try:
+                    pairs.add((nm, str(Path(parent).expanduser().resolve())))
+                except Exception:
+                    continue
+            if not pairs:
+                return
+            changed = False
+            for key in ("source_status", "upstream_sources"):
+                arr = data.get(key, [])
+                if not arr:
+                    continue
+                new_arr = [s for s in arr if (s.get("name"), s.get("dir")) not in pairs]
+                if len(new_arr) != len(arr):
+                    data[key] = new_arr
+                    changed = True
+            if changed:
+                cf.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+        except Exception:
+            pass
+
     def _attach_source(self):
         """给已存在的 unknown skill 补来源 meta(写 .skill-source.env)。
 

@@ -111,6 +111,7 @@ class SkillRoutes:
             if _is_skill_entry(skill_dir, include_broken=True):
                 try:
                     dest = self._trash_dir(skill_dir)
+                    self._patch_scan_cache_remove([(name, str(skill_dir.parent))])
                     self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "target": target})
                     self._json_response({"ok": True, "name": name, "trashed": str(dest)})
                 except Exception as e:
@@ -125,6 +126,7 @@ class SkillRoutes:
             return
         try:
             dest = self._trash_dir(skill_dir)
+            self._patch_scan_cache_remove([(name, str(skill_dir.parent))])
             self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name})
             self._json_response({"ok": True, "name": name, "trashed": str(dest)})
         except Exception as e:

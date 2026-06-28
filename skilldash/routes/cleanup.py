@@ -644,3 +644,5 @@ class CleanupRoutes:
         self._json_response({"ok": True, "deleted": ok, "failed": fail, "package": package_id, "details": details})
         moved_paths = [str(sd) for sd in skill_dirs]
         self._log_history("move_to_trash", paths=moved_paths, count=ok, source="batch_delete", status="ok" if fail == 0 else ("failed" if ok == 0 else "partial"), detail={"failed": fail, "total": len(items), "package": package_id})
+        # 剔除 scan-result.json 缓存里这些 skill,否则问题与整理页残留已删 skill
+        self._patch_scan_cache_remove([(sd.name, str(sd.parent)) for sd in skill_dirs])
