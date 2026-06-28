@@ -168,12 +168,20 @@ async function doRecoverSearch(){
   }catch(e){$('rec-status').textContent='搜索失败: '+e.message;}
 }
 function _recoverMarkSolved(){
-  // attach 成功后乐观更新:该 skill 已有来源,从待补来源(unknown)移除 + 重渲染。
-  // 不然待补来源 tab 还显示它(health.source_status 是扫描缓存,attach 不触发重扫)。
-  if(typeof health!=='undefined'&&Array.isArray(health.source_status)){
-    health.source_status=health.source_status.filter(s=>s.name!==_recoverCtx.name);
-    if(typeof renderIssues==='function') renderIssues();
+  // attach 成功后乐观更新:① 从待补来源(unknown)移除 ② 加到上游(status unknown 待扫描确认版本)。
+  // 不然待补来源还显示 + 上游看不到(health 是扫描缓存,attach 不触发重扫)。不烧 API(status 用 unknown,扫描后更新)。
+  if(typeof health==='undefined')return;
+  const nm=_recoverCtx.name, dir=_recoverCtx.dir||'';
+  const skillDir=(nm&&dir.split('/').pop()===nm)?dir:(nm?dir.replace(/\/$/,'')+'/'+nm:dir);
+  const repo=_recoverCtx._lastRepo||'';
+  if(Array.isArray(health.source_status)){
+    health.source_status=health.source_status.filter(s=>s.name!==nm);
   }
+  if(Array.isArray(health.upstream_sources)&&repo){
+    health.upstream_sources=health.upstream_sources.filter(s=>s.name!==nm);
+    health.upstream_sources.push({name:nm,dir:skillDir,repo,status:'unknown',source:'steal-meta',canonical_dir:skillDir});
+  }
+  if(typeof renderIssues==='function') renderIssues();
 }
 async function doAttachSource(i){
   const c=_recoverCtx.candidates&&_recoverCtx.candidates[i];
@@ -186,7 +194,7 @@ async function doAttachSource(i){
   $('rec-status').textContent='记录来源中...';
   try{
     const r=await fetch('/api/attach-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({skill_dir:skillDir,repo:c.repo,subdir,ref:'main',url:c.url||c.html_url||''})}).then(r=>r.json());
-    if(r.ok){toast('已记录来源: '+c.repo);$('rec-status').innerHTML=`<span style="color:var(--green)">✓ 已记录来源: ${escapeHtml(c.repo)}。下次二哥扫描(勾上游)可追溯版本。</span>`;$('rec-results').innerHTML='';_recoverMarkSolved();}
+    if(r.ok){toast('已记录来源: '+c.repo);$('rec-status').innerHTML=`<span style="color:var(--green)">✓ 已记录来源: ${escapeHtml(c.repo)}。下次二哥扫描(勾上游)可追溯版本。</span>`;$('rec-results').innerHTML='';_recoverCtx._lastRepo=c.repo;_recoverMarkSolved();}
     else{$('rec-status').innerHTML=`<span style="color:var(--red)">${escapeHtml(r.error||'记录失败')}</span>`;}
   }catch(e){$('rec-status').textContent='记录失败: '+e.message;}
 }
@@ -206,7 +214,7 @@ async function doAttachManual(){
     let pick=skills.find(s=>s.match)||skills.find(s=>s.name===nm)||skills[0];
     if(!pick){ms.innerHTML='<span style="color:var(--amber)">仓库里没找到 SKILL.md</span>';return;}
     const r=await fetch('/api/attach-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({skill_dir:skillDir,repo:p.repo,subdir:pick.subdir,ref:'main',url})}).then(r=>r.json());
-    if(r.ok){toast(pick.match?('✓ 来源确认: '+p.repo):('⚠ 已记录: '+p.repo+' (内容不一致)'));ms.innerHTML=pick.match?`<span style="color:var(--green)">✓ 来源确认: ${escapeHtml(p.repo)} (内容一致,subdir=${pick.subdir||'根'})</span>`:`<span style="color:var(--amber)">⚠ 已记 ${escapeHtml(p.repo)} (${escapeHtml(pick.name)} 内容不一致,subdir=${pick.subdir||'根'})</span>`;$('rec-results').innerHTML='';_recoverMarkSolved();}
+    if(r.ok){toast(pick.match?('✓ 来源确认: '+p.repo):('⚠ 已记录: '+p.repo+' (内容不一致)'));ms.innerHTML=pick.match?`<span style="color:var(--green)">✓ 来源确认: ${escapeHtml(p.repo)} (内容一致,subdir=${pick.subdir||'根'})</span>`:`<span style="color:var(--amber)">⚠ 已记 ${escapeHtml(p.repo)} (${escapeHtml(pick.name)} 内容不一致,subdir=${pick.subdir||'根'})</span>`;$('rec-results').innerHTML='';_recoverCtx._lastRepo=p.repo;_recoverMarkSolved();}
     else{ms.innerHTML=`<span style="color:var(--red)">${escapeHtml(r.error||'记录失败')}</span>`;}
   }catch(e){ms.textContent='失败: '+e.message;}
 }
