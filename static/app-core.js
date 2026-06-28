@@ -277,6 +277,7 @@ async function loadCachedScanResult(){
       content_changes:r.content_changes,
       structure_issues:r.structure_issues||[],
       cleanup_candidates:[],
+      source_status:r.source_status||[],
       generated_at:r.scanned_at,
     };
     globalOverlap={

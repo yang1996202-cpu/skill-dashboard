@@ -36,6 +36,22 @@ from pathlib import Path
 from skilldash.source_ops import GITHUB_TOKEN
 
 
+def _cs_log(msg: str) -> None:
+    """诊断日志:append 到 .data/codesearch.log(与 source.py::_cs_log 同文件),吞 IO 错误。
+
+    纯库内部记召回 skip 原因(限流/err/空结果),让黑盒可观测。延迟 import CACHE_DIR
+    避免顶层耦合。
+    """
+    try:
+        from skilldash.paths import CACHE_DIR
+        log_path = CACHE_DIR.parent / "codesearch.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [lib] {msg}\n")
+    except Exception:
+        pass
+
+
 # ── 内部状态 ──
 # (url,) -> (timestamp, data_or_None, error_or_None)
 # 自建轻量缓存,与 source_ops._github_cache 独立(它服务于上游检查,语义不同)。
@@ -220,6 +236,7 @@ def search_candidates(snippets, per_query=DEFAULT_PER_QUERY):
         if _cs_rate_limited_now():
             rate_limited = True
             skipped.append(snippet)
+            _cs_log(f"skip(rate_window) sn={snippet[:40]!r}")
             continue
 
         q = urllib.parse.quote(snippet)
@@ -232,15 +249,18 @@ def search_candidates(snippets, per_query=DEFAULT_PER_QUERY):
         if err == "rate_limited":
             rate_limited = True
             skipped.append(snippet)
+            _cs_log(f"skip(rate_limited) sn={snippet[:40]!r}")
             continue
         if err or not data:
             # 网络/解析失败或空结果:换下个片段重试(§4:中文首次精确短语常空)。
             skipped.append(snippet)
+            _cs_log(f"skip(err={err}) sn={snippet[:40]!r}")
             continue
 
         items = data.get("items") or []
         if not items:
             skipped.append(snippet)
+            _cs_log(f"skip(empty_results) sn={snippet[:40]!r}")
             continue
 
         searched.append(snippet)
@@ -270,6 +290,79 @@ def search_candidates(snippets, per_query=DEFAULT_PER_QUERY):
         "skipped": skipped,
         "rate_limited": rate_limited,
     }
+
+
+_github_login_cache = None
+
+
+def get_github_login():
+    """token 认证拿 GitHub login(缓存)。用于 user:<login> 限定搜用户自己仓库。"""
+    global _github_login_cache
+    if _github_login_cache:
+        return _github_login_cache
+    if not GITHUB_TOKEN:
+        return None
+    data, err = _cs_fetch("https://api.github.com/user")
+    if data and data.get("login"):
+        _github_login_cache = data["login"]
+        return _github_login_cache
+    return None
+
+
+def search_repos_by_name(skill_name, per_query=10):
+    """按 skill 名字搜 GitHub 仓库(/search/repositories,30/分宽裕)——来源恢复主路线。
+
+    替换内容话术搜(/search/code)作主入口。策略:优先搜用户自己仓库(user:<login>,
+    通用名也命中,如 stay-awake → yang1996202-cpu/stay-awake-skill),再全局 fallback。
+    仓库名含 skill 名(含变体如 -skill 后缀)为候选。
+
+    比 /search/code 省 API(1-2 次/skill vs 5 次)且命中率高(skill 名比内容话术独特)。
+    内容话术搜保留作异步补充(docs/source-recovery.md),不删。
+
+    实测(2026-06-28):user:yang1996202-cpu+stay-awake 命中 stay-awake-skill
+    (全局搜被 Johnson468/Stay-Awake ★131 挤掉,user: 限定精准命中)。
+    """
+    if not GITHUB_TOKEN:
+        return {"error": "code_search_requires_token",
+                "hint": "在项目根 .env 配 GITHUB_TOKEN 后可用"}
+    login = get_github_login()
+    candidates = []
+    seen = set()
+    # (query, is_own_scope):自己仓库优先,命中就不全局搜(省 API)
+    queries = []
+    if login:
+        queries.append((f"user:{login} {skill_name}", True))
+    queries.append((skill_name, False))
+
+    for q, is_own_scope in queries:
+        url = (f"https://api.github.com/search/repositories"
+               f"?q={urllib.parse.quote(q)}&per_page={int(per_query)}")
+        data, err = _cs_fetch(url)
+        if err or not data:
+            continue
+        for it in (data.get("items") or [])[:per_query]:
+            repo = it.get("full_name") or ""
+            if not repo or repo in seen:
+                continue
+            repo_name = repo.split("/")[-1]
+            # 仓库名含 skill 名(变体 -skill 后缀也算)
+            if skill_name.lower() not in repo_name.lower():
+                continue
+            seen.add(repo)
+            candidates.append({
+                "repo": repo,
+                "description": it.get("description") or "",
+                "stars": it.get("stargazers_count", 0),
+                "url": it.get("html_url") or "",
+                "is_own": bool(login) and repo.startswith(login + "/"),
+            })
+        if candidates and is_own_scope:
+            break  # 用户仓库命中就不全局搜
+    # 自己仓库优先,再 stars 降序
+    candidates.sort(key=lambda c: (not c["is_own"], -c["stars"]))
+    _cs_log(f"search_repos name={skill_name!r} login={login} hits={len(candidates)} "
+            f"repos={[c['repo'] for c in candidates]}")
+    return {"candidates": candidates, "login": login}
 
 
 def _hash_text(text):

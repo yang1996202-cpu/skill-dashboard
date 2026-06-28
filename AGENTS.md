@@ -97,6 +97,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
 | `/api/code-search` | POST | 按内容召回 GitHub 候选仓库 + 可选 hash 确认（body `{snippets?, query?, skill_dir?, confirm?}`；无 GITHUB_TOKEN 降级返回 error；多片段召回，/search/code 限 10 次/分）|
 | `/api/attach-source` | POST | 给 unknown skill 补来源写 `.skill-source.env`（body `{skill_dir, repo, subdir?, ref?, url?}`；复用 write_source_metadata，写完清 upstream 短路缓存）|
+| `/api/search-source` | POST | 来源恢复主路线:按 skill 名字搜 GitHub 仓库,优先 `user:<login>` 自己仓库(通用名也命中,如 stay-awake→stay-awake-skill)。body `{name}`;返回 `{candidates:[{repo,description,stars,url,is_own}], login}` |
+| `/api/probe-source` | POST | 借用 install_skill 解析层(`list_repo_skills`):给仓库 URL → clone → 列 skills + hash 比对本地,确认来源(不安装,不依赖 search 索引,新仓库也行)。body `{url, skill_dir?}`;返回 `{ok, repo, skills:[{name,subdir,hash,match}], local_hash}` |
 | `/api/skill/{name}` | DELETE | 删除 skill |
 | `/api/skill/{name}/content` | GET | 读取 SKILL.md 原始内容 |
 | `/api/skill/{name}/upstream` | GET | 检查上游版本状态 |

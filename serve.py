@@ -113,6 +113,8 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/steal"):                 ("_steal_skill", None),
         ("POST", "/api/steal-npx"):             ("_steal_npx", None),
         ("POST", "/api/code-search"):           ("_code_search", None),
+        ("POST", "/api/search-source"):         ("_search_source", None),
+        ("POST", "/api/probe-source"):          ("_probe_source", None),
         ("POST", "/api/attach-source"):         ("_attach_source", None),
         ("POST", "/api/copy-skill"):            ("_copy_skill", None),
         ("POST", "/api/batch-delete"):          ("_batch_delete", None),
@@ -183,7 +185,31 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
 
     # ── 路由 handler 包装(从原 do_ 内联业务抽离)──
     def _serve_index(self):
-        self._serve_file(HTML_FILE, "text/html; charset=utf-8")
+        """Serve index.html,给 /static/*.js|*.css 注入 ?v=<mtime> 做 cache-busting。
+
+        文件一改 mtime 变 → URL 变 → 浏览器强制重下。根治"改前端但用户浏览器
+        缓存旧/混合 JS 导致功能不生效/状态乱"(2026-06-28)。_dispatch 已用
+        urlparse 剥 query,_serve_static 收到的 path 不含 ?v=,不受影响。
+        """
+        try:
+            html = HTML_FILE.read_text("utf-8")
+            def _add_v(m):
+                rel = m.group(1)
+                try:
+                    v = str(int((STATIC_DIR / rel).stat().st_mtime))
+                except Exception:
+                    v = "0"
+                return f"/static/{rel}?v={v}"
+            html = re.sub(r"/static/([\w./-]+\.(?:js|css))", _add_v, html)
+            data = html.encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
+            self.end_headers()
+            self.wfile.write(data)
+        except FileNotFoundError:
+            self.send_error(404, "index.html not found")
 
 
     # ── API implementations ──

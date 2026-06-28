@@ -35,6 +35,23 @@ from skilldash.source_ops import agent_name_for_target, install_skill, install_s
 from skilldash.understanding import compact_understanding, understand_skill
 
 
+def _cs_log(msg: str) -> None:
+    """code-search 诊断日志:append 到 .data/codesearch.log,吞掉所有 IO 错误。
+
+    code_search 打 GitHub API + 缓存 + 限流,出错时召回/确认的关键信号(片段/限流/
+    hash 前8位/confirm_error)不落盘就没法定位根因。纯诊断,不影响业务。日志在
+    .data/(已 gitignore)。复现后读这个文件区分:remote 空+err 非空=拉取失败(C);
+    local/remote 都非空且不同=内容差异(A/B)。
+    """
+    try:
+        log_path = CACHE_DIR.parent / "codesearch.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
+
+
 READINESS_META = {
     "uninitialized": {"label": "未初始化", "desc": "Agent 目录不存在或完全空"},
     "configured-empty": {"label": "已配置/空", "desc": "有 skills/ 或 mcp.json,但 0 skill"},
@@ -742,6 +759,14 @@ class SourceRoutes:
         from skilldash.code_search import search_candidates, confirm_candidate
 
         result = search_candidates(snippets)
+        _cs_log(
+            f"search dir={skill_dir} snippets_n={len(snippets)} "
+            f"snippets={[s[:30] for s in snippets]} "
+            f"rate_limited={result.get('rate_limited')} "
+            f"searched_n={len(result.get('searched_snippets') or [])} "
+            f"skipped_n={len(result.get('skipped') or [])} "
+            f"cands={[c.get('repo') for c in (result.get('candidates') or [])]}"
+        )
         # 无 token / 限流等降级结构,直接透传
         if "error" in result or "candidates" not in result:
             self._json_response(result)
@@ -752,6 +777,13 @@ class SourceRoutes:
             confirmed = []
             for cand in candidates:
                 r = confirm_candidate(cand, confirm_dir_resolved)
+                _cs_log(
+                    f"confirm repo={cand.get('repo')} path={cand.get('path')} "
+                    f"match={r.get('match')} "
+                    f"local={(r.get('hash_local') or '')[:8]} "
+                    f"remote={(r.get('hash_remote') or '')[:8]} "
+                    f"err={r.get('error')}"
+                )
                 confirmed.append({
                     "repo": cand.get("repo"),
                     "path": cand.get("path"),
@@ -773,6 +805,46 @@ class SourceRoutes:
             return
 
         self._json_response(result)
+
+    def _search_source(self):
+        """按 skill 名字搜 GitHub 仓库(来源恢复主路线,2026-06-28):优先 user:<login>
+        搜用户自己仓库(通用名也命中,如 stay-awake→stay-awake-skill),全局 fallback。
+        替换内容话术搜(/api/code-search)作主入口——按名字比按内容话术命中率高且省 API。
+        内容话术搜保留作异步补充(docs/source-recovery.md),不删。
+
+        POST body: {name: skill 名}
+        返回 {candidates: [{repo, description, stars, url, is_own}], login}
+        """
+        body = self._read_json() or {}
+        name = self._validate_skill_name(body.get("name") or "")
+        if not name:
+            self._json_response({"error": "invalid skill name"}, status=400)
+            return
+        from skilldash.code_search import search_repos_by_name
+        self._json_response(search_repos_by_name(name))
+
+    def _probe_source(self):
+        """借用 install_skill 解析层(list_repo_skills):给仓库 URL → clone → 列 skills
+        + hash 比对本地。来源恢复确认用(不安装),复用解析层不重复造(2026-06-28)。
+
+        POST body: {url: 仓库 URL, skill_dir?: 本地 skill 目录(给则 hash 比对)}
+        返回 {ok, repo, skills:[{name, subdir, hash, match}], local_hash}
+        """
+        body = self._read_json() or {}
+        url = (body.get("url") or "").strip()
+        if not url:
+            self._json_response({"error": "url required"}, status=400)
+            return
+        skill_dir = (body.get("skill_dir") or "").strip()
+        local = None
+        if skill_dir:
+            if skill_dir.startswith("~/"):
+                skill_dir = str(Path.home() / skill_dir[2:])
+            resolved = Path(skill_dir).resolve()
+            if resolved.is_relative_to(Path.home()):
+                local = resolved
+        from skilldash.source_ops import list_repo_skills
+        self._json_response(list_repo_skills(url, local))
 
     def _attach_source(self):
         """给已存在的 unknown skill 补来源 meta(写 .skill-source.env)。

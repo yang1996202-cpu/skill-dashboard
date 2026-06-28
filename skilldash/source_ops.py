@@ -168,6 +168,60 @@ def create_snapshot(skill_dir):
 
 
 # ── Install skill from GitHub (pure Python) ──
+def list_repo_skills(source_url, local_skill_dir=None):
+    """借用 install_skill 的解析层(parse_github_url + clone + rglob SKILL.md),不安装。
+
+    来源恢复用(2026-06-28):给仓库 URL → clone → 列出所有 skill + hash 比对本地,
+    确认来源。不依赖 GitHub search 索引(新仓库也能解析,如 cant-say 5 天前 push
+    索引延迟,但 clone 照样解析)。复用 parse_github_url + clone(DRY,与 install_skill
+    共用解析层,不重复造)。
+
+    Returns: {ok, repo, skills:[{name, subdir, hash, match}], local_hash} 或 {ok:False, error}
+    """
+    import hashlib
+    parsed = parse_github_url(source_url)
+    if not parsed:
+        return {"ok": False, "error": f"不是有效的 GitHub URL: {source_url}"}
+    owner, repo, ref, subdir, _ = parsed
+    git_check = subprocess.run(["git", "--version"], capture_output=True, text=True)
+    if git_check.returncode != 0:
+        return {"ok": False, "error": "当前环境缺少 git"}
+    tmp = tempfile.mkdtemp(prefix="skill_probe_")
+    clone_dir = Path(tmp) / "repo"
+    try:
+        clone_cmd = ["git", "clone", "--depth", "1"] + (["--branch", ref] if ref else []) + [f"https://github.com/{owner}/{repo}.git", str(clone_dir)]
+        r = subprocess.run(clone_cmd, capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return {"ok": False, "error": f"git clone 失败: {(r.stderr or r.stdout)[-200:]}"}
+        search_dir = clone_dir / subdir if subdir else clone_dir
+        found = []
+        if subdir and (search_dir / "SKILL.md").exists():
+            found = [search_dir]
+        else:
+            found = [d.parent for d in sorted(clone_dir.rglob("SKILL.md"))]
+        if not found:
+            return {"ok": False, "error": "仓库里没有找到 SKILL.md"}
+        local_hash = None
+        if local_skill_dir:
+            md = Path(local_skill_dir) / "SKILL.md"
+            if md.exists():
+                local_hash = hashlib.sha256(md.read_bytes()).hexdigest()
+        skills = []
+        for d in found:
+            md = d / "SKILL.md"
+            h = hashlib.sha256(md.read_bytes()).hexdigest() if md.exists() else ""
+            name = d.name if d != clone_dir else repo  # 根 SKILL.md 用仓库名,不用 clone 临时目录名
+            sub = str(d.relative_to(clone_dir)).replace("\\", "/")
+            if sub == ".":
+                sub = ""
+            skills.append({"name": name, "subdir": sub, "hash": h[:16],
+                           "match": bool(local_hash and h == local_hash)})
+        return {"ok": True, "repo": f"{owner}/{repo}", "skills": skills,
+                "local_hash": (local_hash or "")[:16]}
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def install_skill(source_url, target_path, preferred_name=None, names=None):
     """Install skill(s) from a GitHub URL. Pure Python, no dashboard.
 

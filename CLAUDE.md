@@ -96,6 +96,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/copy-skill` | POST | 复制 skill 到当前目标库 |
 | `/api/code-search` | POST | 按内容召回 GitHub 候选仓库 + 可选 hash 确认（body `{snippets?, query?, skill_dir?, confirm?}`；无 GITHUB_TOKEN 降级返回 error；多片段召回，/search/code 限 10 次/分）|
 | `/api/attach-source` | POST | 给 unknown skill 补来源写 `.skill-source.env`（body `{skill_dir, repo, subdir?, ref?, url?}`；复用 write_source_metadata，写完清 upstream 短路缓存）|
+| `/api/search-source` | POST | 来源恢复主路线:按 skill 名字搜 GitHub 仓库,优先 `user:<login>` 自己仓库(通用名也命中,如 stay-awake→stay-awake-skill)。body `{name}`;返回 `{candidates:[{repo,description,stars,url,is_own}], login}` |
+| `/api/probe-source` | POST | 借用 install_skill 解析层(`list_repo_skills`):给仓库 URL → clone → 列 skills + hash 比对本地,确认来源(不安装,不依赖 search 索引,新仓库也行)。body `{url, skill_dir?}`;返回 `{ok, repo, skills:[{name,subdir,hash,match}], local_hash}` |
 | `/api/skill/{name}` | DELETE | 删除 skill |
 | `/api/skill/{name}/content` | GET | 读取 SKILL.md 原始内容 |
 | `/api/skill/{name}/upstream` | GET | 检查上游版本状态 |
@@ -292,6 +294,7 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 - **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
 - **本地前端验证 → 走 `/browse`**：browse CLI 不在 PATH，先设 `B=/Users/yang/projects/gstack-offline/.claude/skills/gstack/browse/dist/browse`（编译产物；`[ -x "$B" ]` 不通过就 `cd ~/projects/gstack-offline/.claude/skills/gstack/browse && ./setup`，~10s 需 bun）。然后 `$B goto http://localhost:3457` → `$B snapshot -i` 拿 `@e` 引用 → `$B click @e30`（别猜 CSS selector）→ `$B js "..."` 断言 / `$B console` 抓报错 / `$B screenshot <path>` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。browse 不可用时 fallback `NODE_PATH=/Users/yang/.npm-global/lib/node_modules node <script>`（playwright）。**验证不烧 GitHub API**：upstream/上游渲染用 mock 注入 `$B js 'health={upstream_sources:[{name,dir,repo,status}]};_issueTypeTab="upstream";renderIssues()'`，绝不 `runScan(all,upstream)` 烧配额（曾因此一次烧 4000+ API，用户被迫覆盖）。
+- **调试纪律：先报根因证据，再改代码（杜绝猜测性修复）**：任何 bug 改代码前，先单独一行报 `根因=<一句话> 证据=<日志行 / 探测结果 / file:line>`。拿不出证据 → 不许改，先加诊断 log 或直接探测。两层互锁：①机械层（无取舍，卡死猜测）= 改前必报根因证据；②取舍层（被①兜住）= bug 落在黑盒环节（外部 API / 缓存命中 / 限流 / 异步 / 前端吞后端信号）且瞪代码说不出根因，才加 log/探测；普通 UI/显示 bug 看代码 + console 就够。诊断 log 写 `.data/<domain>.log`（已 gitignore），记输入/中间状态/输出，纯增量不影响业务。反例(2026-06-28 code-search"全不一致")：光看代码会猜"hash 太严"去放宽，第一层逼报证据 → 3 次 python 探测定位真因是 GitHub 对长中文片段召回 0（片段策略问题，非 hash）。
 
 ## 下一步方向
 
