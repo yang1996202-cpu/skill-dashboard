@@ -846,6 +846,57 @@ class SourceRoutes:
         from skilldash.source_ops import list_repo_skills
         self._json_response(list_repo_skills(url, local))
 
+    def _patch_scan_cache_attach(self, skill_path, repo):
+        """attach 成功后同步刷新 scan-result.json 缓存,使刷新页面后状态正确。
+
+        根因:source_status(待补来源)/upstream_sources 是 _run_scan 落盘的缓存
+        (CACHE_DIR/scan-result.json)。attach 只写了 .skill-source.env,没动缓存 →
+        刷新页面 loadCachedScanResult 读旧缓存,skill 又回到「待补来源」
+        (前端 recoverDirs = source_status.filter(s=>s.source==='unknown')),
+        上游 tab 也看不到。上一轮 _recoverMarkSolved 只改内存 health,刷新即丢。
+        本方法 patch 缓存,让磁盘真相跟上:
+          1. source_status 里该 skill 的 source 改 'steal-meta' + repo 填上
+             (→ source!=='unknown',不再进 recoverDirs)
+          2. upstream_sources 追加一条(→ 上游 tab 显示,status unknown 待比对)
+        scan-result.json 不存在(从未扫描)则跳过,不报错——下次扫描会自然产出正确状态。
+        """
+        try:
+            cf = CACHE_DIR / "scan-result.json"
+            if not cf.exists():
+                return
+            data = json.loads(cf.read_text("utf-8"))
+            name = skill_path.name
+            parent = str(skill_path.parent)
+            changed = False
+            # 1. source_status: dir 存的是父目录(scan.py str(tdir)),name 单独
+            for s in data.get("source_status", []):
+                if s.get("name") == name and s.get("dir") == parent:
+                    if s.get("source") != "steal-meta" or not s.get("repo"):
+                        s["source"] = "steal-meta"
+                        s["repo"] = repo
+                        changed = True
+            # 2. upstream_sources: 同 name+dir 已有就不重复加
+            ups = data.get("upstream_sources", [])
+            if not any(u.get("name") == name and u.get("dir") == parent for u in ups):
+                ups.append({
+                    "name": name,
+                    "repo": repo,
+                    "status": "unknown",
+                    "installed_commit": "",
+                    "latest_commit": "",
+                    "dir": parent,
+                    "source": "steal-meta",
+                    "is_symlink": False,
+                    "link_target": "",
+                    "canonical_dir": str(skill_path),
+                })
+                data["upstream_sources"] = ups
+                changed = True
+            if changed:
+                cf.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+        except Exception:
+            pass
+
     def _attach_source(self):
         """给已存在的 unknown skill 补来源 meta(写 .skill-source.env)。
 
@@ -900,6 +951,8 @@ class SourceRoutes:
             write_source_metadata(resolved, repo, ref, subdir, url, "")
             # 清该 skill 的 upstream 短路缓存,下次检测读到新 meta(source=steal-meta)
             _upstream_hash_cache.pop(_hash_key(resolved), None)
+            # 同步刷新扫描缓存,否则刷新页面读旧缓存 skill 又回「待补来源」、上游看不到
+            self._patch_scan_cache_attach(resolved, repo)
             self._json_response({"ok": True, "source": "steal-meta",
                                  "repo": repo, "subdir": subdir, "ref": ref, "url": url})
         except Exception as e:
