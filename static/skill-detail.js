@@ -99,6 +99,7 @@ function renderRecoveryPanel(name,dir){
           <input id="rec-manual-url" placeholder="仓库 URL / SKILL.md 链接 / owner-repo" style="flex:1;font-size:11px;font-family:var(--mono);padding:5px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg-card);color:var(--text)">
           <button class="btn btn-sm" onclick="doAttachManual()">记录</button>
         </div>
+        <div id="rec-manual-status" style="margin-top:4px;font-size:11px"></div>
       </details>
       <details style="margin-top:6px">
         <summary style="cursor:pointer;font-size:11px;color:var(--text-muted)" onclick="ensureContentBox()">高级:按 SKILL.md 内容话术搜(慢,召回低)</summary>
@@ -166,6 +167,14 @@ async function doRecoverSearch(){
     }).join('');
   }catch(e){$('rec-status').textContent='搜索失败: '+e.message;}
 }
+function _recoverMarkSolved(){
+  // attach 成功后乐观更新:该 skill 已有来源,从待补来源(unknown)移除 + 重渲染。
+  // 不然待补来源 tab 还显示它(health.source_status 是扫描缓存,attach 不触发重扫)。
+  if(typeof health!=='undefined'&&Array.isArray(health.source_status)){
+    health.source_status=health.source_status.filter(s=>s.name!==_recoverCtx.name);
+    if(typeof renderIssues==='function') renderIssues();
+  }
+}
 async function doAttachSource(i){
   const c=_recoverCtx.candidates&&_recoverCtx.candidates[i];
   if(!c) return;
@@ -177,28 +186,29 @@ async function doAttachSource(i){
   $('rec-status').textContent='记录来源中...';
   try{
     const r=await fetch('/api/attach-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({skill_dir:skillDir,repo:c.repo,subdir,ref:'main',url:c.url||c.html_url||''})}).then(r=>r.json());
-    if(r.ok){toast('已记录来源: '+c.repo);$('rec-status').innerHTML=`<span style="color:var(--green)">✓ 已记录来源: ${escapeHtml(c.repo)}。下次二哥扫描(勾上游)可追溯版本。</span>`;$('rec-results').innerHTML='';}
+    if(r.ok){toast('已记录来源: '+c.repo);$('rec-status').innerHTML=`<span style="color:var(--green)">✓ 已记录来源: ${escapeHtml(c.repo)}。下次二哥扫描(勾上游)可追溯版本。</span>`;$('rec-results').innerHTML='';_recoverMarkSolved();}
     else{$('rec-status').innerHTML=`<span style="color:var(--red)">${escapeHtml(r.error||'记录失败')}</span>`;}
   }catch(e){$('rec-status').textContent='记录失败: '+e.message;}
 }
 async function doAttachManual(){
+  const ms=$('rec-manual-status')||$('rec-status');  // 就近显示在手动 URL 区下方,不跳跃到上面
   const raw=($('rec-manual-url').value||'').trim();
-  if(!raw){$('rec-status').innerHTML='<span style="color:var(--amber)">请粘贴仓库地址</span>';return;}
+  if(!raw){ms.innerHTML='<span style="color:var(--amber)">请粘贴仓库地址</span>';return;}
   const url=raw.startsWith('http')?raw:('https://github.com/'+raw.replace(/^github\.com\//,''));
   const nm=_recoverCtx.name,d=_recoverCtx.dir||'';
   const skillDir=(nm&&d.split('/').pop()===nm)?d:(nm?d.replace(/\/$/,'')+'/'+nm:d);
-  $('rec-status').textContent='解析仓库确认中(clone 几秒)...';
+  ms.textContent='解析仓库确认中(clone 几秒)...';
   try{
     // 借用 install_skill 解析层:clone + 列 skills + hash 比对本地(2026-06-28)
     const p=await fetch('/api/probe-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,skill_dir:skillDir})}).then(r=>r.json());
-    if(!p.ok){$('rec-status').innerHTML=`<span style="color:var(--red)">解析失败: ${escapeHtml(p.error||'')}</span>`;return;}
+    if(!p.ok){ms.innerHTML=`<span style="color:var(--red)">解析失败: ${escapeHtml(p.error||'')}</span>`;return;}
     const skills=p.skills||[];
     let pick=skills.find(s=>s.match)||skills.find(s=>s.name===nm)||skills[0];
-    if(!pick){$('rec-status').innerHTML='<span style="color:var(--amber)">仓库里没找到 SKILL.md</span>';return;}
+    if(!pick){ms.innerHTML='<span style="color:var(--amber)">仓库里没找到 SKILL.md</span>';return;}
     const r=await fetch('/api/attach-source',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({skill_dir:skillDir,repo:p.repo,subdir:pick.subdir,ref:'main',url})}).then(r=>r.json());
-    if(r.ok){toast(pick.match?('✓ 来源确认: '+p.repo):('⚠ 已记录: '+p.repo+' (内容不一致)'));$('rec-status').innerHTML=pick.match?`<span style="color:var(--green)">✓ 来源确认: ${escapeHtml(p.repo)} (内容一致,subdir=${pick.subdir||'根'})</span>`:`<span style="color:var(--amber)">⚠ 已记 ${escapeHtml(p.repo)} (${escapeHtml(pick.name)} 内容不一致,subdir=${pick.subdir||'根'})</span>`;$('rec-results').innerHTML='';}
-    else{$('rec-status').innerHTML=`<span style="color:var(--red)">${escapeHtml(r.error||'记录失败')}</span>`;}
-  }catch(e){$('rec-status').textContent='失败: '+e.message;}
+    if(r.ok){toast(pick.match?('✓ 来源确认: '+p.repo):('⚠ 已记录: '+p.repo+' (内容不一致)'));ms.innerHTML=pick.match?`<span style="color:var(--green)">✓ 来源确认: ${escapeHtml(p.repo)} (内容一致,subdir=${pick.subdir||'根'})</span>`:`<span style="color:var(--amber)">⚠ 已记 ${escapeHtml(p.repo)} (${escapeHtml(pick.name)} 内容不一致,subdir=${pick.subdir||'根'})</span>`;$('rec-results').innerHTML='';_recoverMarkSolved();}
+    else{ms.innerHTML=`<span style="color:var(--red)">${escapeHtml(r.error||'记录失败')}</span>`;}
+  }catch(e){ms.textContent='失败: '+e.message;}
 }
 function firstMeaningfulLine(text){
   return (text||'').split('\n').map(l=>l.trim()).find(l=>l&&l.length>8&&!l.startsWith('```'))||'';
