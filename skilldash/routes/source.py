@@ -434,7 +434,7 @@ class SourceRoutes:
     def _list_targets(self):
         """List all discovered skill directories grouped by agent.
         Uses shared _discover_skill_dirs for directory discovery.
-        Results are cached for 60 seconds to avoid repeated filesystem scans.
+        Results are cached for 180 seconds (3 minutes) to avoid repeated filesystem scans.
         """
         query = parse_qs(urlparse(self.path).query)
         force_refresh = query.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
@@ -573,7 +573,13 @@ class SourceRoutes:
             return
         if target_path.startswith("~"):
             target_path = str(Path.home() / target_path[2:])
-        if not Path(target_path).is_dir():
+        # Contain target under home or a discovered app bundle (same口径 as _list_source_skills)
+        _tp = Path(target_path)
+        _is_app = _tp.is_relative_to(Path("/Applications")) and ".app/" in str(_tp)
+        if not (_tp.is_relative_to(Path.home()) or _is_app):
+            self._json_response({"error": "target must be under home or an app bundle"}, status=403)
+            return
+        if not _tp.is_dir():
             self._json_response({"error": f"not a directory: {target_path}"}, status=400)
             return
 

@@ -1,17 +1,13 @@
-"""scan 域路由 handler:fast-scan/二哥扫描/全域统计/理解/诊断。
+"""scan 域路由 handler:fast-scan/二哥扫描/全域统计/理解。
 
-从 serve.py 拆出的 mixin。诊断运行态状态(_diag_* lock/process/target/start/phase)
-也在此模块级(仅 _diagnose/_diagnosis_status 用);_diag_worker.py 路径用 BASE_DIR
-定位项目根(原 serve.py 用 Path(__file__).parent,移到 skilldash/routes/ 后失效)。
-业务依赖 understanding/discovery/source_ops/content_hash/overlap,顶层 import 无循环。
+从 serve.py 拆出的 mixin。业务依赖 understanding/discovery/source_ops/content_hash/overlap,
+顶层 import 无循环。
 """
 from __future__ import annotations
 
 import json
 import os
 import shutil
-import subprocess
-import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
@@ -29,7 +25,7 @@ from skilldash.discovery import (
     _skill_entry_kind,
 )
 from skilldash.overlap import _find_same_name_duplicates
-from skilldash.paths import BASE_DIR, CACHE_DIR, DIAG_LOG, load_cached_diagnosis
+from skilldash.paths import CACHE_DIR
 from skilldash.source_ops import (
     GITHUB_TOKEN,
     check_upstream_status,
@@ -37,14 +33,6 @@ from skilldash.source_ops import (
     get_github_rate_limit,
 )
 from skilldash.understanding import compact_understanding, understand_skill
-
-
-# ── Diagnosis state (module-level, protected by lock;仅本域 _diagnose/_diagnosis_status 用)──
-_diag_lock = threading.Lock()
-_diag_process = None
-_diag_target = ""
-_diag_start = 0
-_diag_phase = ""
 
 
 class ScanRoutes:
@@ -404,73 +392,3 @@ class ScanRoutes:
             "within_agent_groups": within_agent_count,
             "upstream_sources": len(result.get("upstream_sources", [])),
         }}
-
-    def _diagnose(self):
-        """Trigger Python-only diagnosis in background. No dashboard needed."""
-        global _diag_process, _diag_target, _diag_start, _diag_phase
-        target = self._current_target()
-
-        with _diag_lock:
-            # Check if already running
-            if _diag_process and _diag_process.poll() is None:
-                elapsed = int((time.time() - _diag_start) * 1000)
-                if elapsed > 60000:
-                    _diag_process.kill()
-                    _diag_process = None
-                    self._json_response({"status": "error", "error": "诊断超时 (60s)，请重试"})
-                    return
-                self._json_response({"status": "running", "target": _diag_target,
-                                     "elapsed_ms": elapsed, "phase": "check"})
-                return
-
-            try:
-                CACHE_DIR.mkdir(parents=True, exist_ok=True)
-                log_f = open(DIAG_LOG, "w")
-                worker_script = BASE_DIR / "_diag_worker.py"
-                _diag_process = subprocess.Popen(
-                    [sys.executable, str(worker_script), target],
-                    stdout=log_f, stderr=subprocess.STDOUT,
-                )
-                _diag_target = target
-                _diag_start = time.time()
-                _diag_phase = "check"
-                self._json_response({"status": "started", "target": target})
-            except Exception as e:
-                self._json_response({"status": "error", "error": str(e)})
-
-    def _diagnosis_status(self):
-        """Poll diagnosis progress. If done, cache and return results."""
-        global _diag_process, _diag_target
-        # Use the target captured when diagnosis started, not the current one
-        # (user may have switched targets while diagnosis was running)
-        target = _diag_target or self._current_target()
-
-        with _diag_lock:
-            # If process is running, check if it just finished
-            if _diag_process and _diag_process.poll() is not None:
-                _diag_process = None
-                cached = load_cached_diagnosis(target)
-                if cached:
-                    cached["status"] = "done"
-                    cached["duration_ms"] = int((time.time() - _diag_start) * 1000)
-                    self._json_response(cached)
-                    return
-                else:
-                    self._json_response({"status": "error", "error": "诊断完成但缓存未找到"})
-                    return
-
-            # Process still running
-            if _diag_process and _diag_process.poll() is None:
-                elapsed = int((time.time() - _diag_start) * 1000)
-                self._json_response({"status": "running", "target": _diag_target,
-                                     "elapsed_ms": elapsed, "phase": "check"})
-                return
-
-        # No process — check cache
-        cached = load_cached_diagnosis(target)
-        if cached:
-            cached["status"] = "cached"
-            self._json_response(cached)
-            return
-
-        self._json_response({"status": "idle"})

@@ -48,7 +48,6 @@ class SystemRoutes:
                 {"method": "GET", "path": "/api/skill/{name}/content", "desc": "Read SKILL.md content"},
                 {"method": "GET", "path": "/api/skill/{name}/upstream", "desc": "Check upstream status for a skill"},
                 {"method": "POST", "path": "/api/target", "desc": "Switch target directory"},
-                {"method": "POST", "path": "/api/diagnose", "desc": "Trigger full diagnosis (Python-only)"},
                 {"method": "POST", "path": "/api/scan-run", "desc": "Targeted scan: selected directories + analysis types"},
                 {"method": "GET", "path": "/api/scan-result", "desc": "Get cached scan result"},
                 {"method": "POST", "path": "/api/steal", "desc": "Install skill from GitHub URL"},

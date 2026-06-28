@@ -48,7 +48,15 @@ class SkillRoutes:
         if not (resolved.is_relative_to(Path.home()) or is_app_builtin):
             self._json_response({"error": "dir must be under home directory or a discovered app bundle"}, status=403)
             return
-        skill_md = resolved / name / "SKILL.md"
+        # Validate name (block ../) and contain final path under resolved dir
+        safe_name = self._validate_skill_name(name)
+        if not safe_name:
+            self._json_response({"error": "invalid skill name"}, status=400)
+            return
+        skill_md = (resolved / safe_name / "SKILL.md").resolve()
+        if not skill_md.is_relative_to(resolved):
+            self._json_response({"error": "invalid skill name"}, status=400)
+            return
         if not skill_md.exists():
             self._json_response({"error": "not found"}, status=404)
             return

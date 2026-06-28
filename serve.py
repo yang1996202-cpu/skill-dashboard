@@ -92,7 +92,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/cleanup-execution-plan"): ("_cleanup_execution_plan", None),
         ("GET", "/api/duplicate-decisions"):    ("_list_duplicate_decisions", None),
         ("GET", "/api/fast-scan"):              ("_fast_scan", None),
-        ("GET", "/api/diagnosis-status"):       ("_diagnosis_status", None),
         ("GET", "/api/openapi"):                ("_openapi", None),
         ("GET", "/api/understand"):             ("_serve_understanding", None),
         ("GET", "/api/source/skills"):          ("_list_source_skills", None),
@@ -106,7 +105,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/trash/stats"):            ("_trash_stats", None),
         ("GET", "/api/preview"):                ("_preview_route", None),
         ("POST", "/api/target"):                ("_set_target", None),
-        ("POST", "/api/diagnose"):              ("_diagnose", None),
         ("POST", "/api/scan-run"):              ("_run_scan", None),
         ("POST", "/api/cleanup-execute"):       ("_cleanup_execute", None),
         ("POST", "/api/duplicate-decision"):    ("_duplicate_decision", None),
@@ -117,7 +115,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/probe-source"):          ("_probe_source", None),
         ("POST", "/api/attach-source"):         ("_attach_source", None),
         ("POST", "/api/copy-skill"):            ("_copy_skill", None),
-        ("POST", "/api/batch-delete"):          ("_batch_delete", None),
         ("POST", "/api/custom-sources"):        ("_add_custom_source", None),
         ("DELETE", "/api/custom-sources"):      ("_remove_custom_source", None),
         ("DELETE", "/api/duplicate-decision"):  ("_remove_duplicate_decision", None),
@@ -127,7 +124,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
     _ROUTES_PREFIX = [
         # (method, prefix, suffix, handler, param)  suffix="" 表示纯前缀
         ("GET", "/static/", "", "_serve_static", "path"),
-        ("GET", "/api/trash/", "/restore", "_restore_trash", "path"),
         ("GET", "/api/skill/", "/content", "_serve_skill_content", "name"),
         ("GET", "/api/skill/", "/upstream", "_check_skill_upstream", "name"),
         ("POST", "/api/trash/", "/restore", "_restore_trash", "path"),
@@ -259,7 +255,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
             data = filepath.read_text(encoding="utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._allow_origin_header()
             self.end_headers()
             self.wfile.write(data.encode("utf-8"))
         except FileNotFoundError:
@@ -313,7 +309,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
     def _targets_cache_hit(self, force_refresh=False):
         """Return deep-copied /api/targets cache payload if still valid, else None."""
         global _targets_cache, _targets_cache_ts
-        if _targets_cache and not force_refresh and (time.time() - _targets_cache_ts) < 60:
+        if _targets_cache and not force_refresh and (time.time() - _targets_cache_ts) < 180:
             return json.loads(json.dumps(_targets_cache))
         return None
 
@@ -359,13 +355,25 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         self._dispatch("PATCH")
 
 
+    def _allow_origin_header(self):
+        """Emit Access-Control-Allow-Origin only for the same-host local origin.
+
+        Same-origin requests (the dashboard UI itself) don't need CORS. Without
+        this gate every JSON response carried `*`, letting any website the user
+        visits read local skill inventory, contents, paths, and MCP names.
+        """
+        origin = self.headers.get("Origin", "")
+        if origin in (f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
     def _json_response(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8")
         try:
             self.send_response(status)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Access-Control-Allow-Origin", "*")
+            self._allow_origin_header()
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError):

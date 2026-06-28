@@ -1,6 +1,5 @@
-let scan=null,health=null,skills=[],diagState='idle',installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null;
+let scan=null,health=null,skills=[],installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null;
 const $=id=>document.getElementById(id);
-let diagPollTimer=null;
 let categoryOverrides={};
 function loadCategoryOverrides(){
   try{categoryOverrides=JSON.parse(localStorage.getItem('sd-category-overrides')||'{}')}catch(e){categoryOverrides={}}

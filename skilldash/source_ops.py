@@ -68,13 +68,19 @@ def parse_github_url(url):
 def write_source_metadata(skill_dir, repo, ref, subdir, url, commit):
     """Write .skill-source.env to record upstream info."""
     meta_file = Path(skill_dir) / ".skill-source.env"
+
+    def _clean(v):
+        # Strip CR/LF so a value can't inject extra env lines
+        # (e.g. subdir="\nSKILL_SOURCE_REPO=evil") and corrupt metadata parsing.
+        return str(v).replace("\r", "").replace("\n", "").strip()
+
     lines = [
         f"SKILL_SOURCE_PROVIDER=github",
-        f"SKILL_SOURCE_REPO={repo}",
-        f"SKILL_SOURCE_REF={ref}",
-        f"SKILL_SOURCE_SUBDIR={subdir}",
-        f"SKILL_SOURCE_URL={url}",
-        f"SKILL_SOURCE_INSTALLED_COMMIT={commit}",
+        f"SKILL_SOURCE_REPO={_clean(repo)}",
+        f"SKILL_SOURCE_REF={_clean(ref)}",
+        f"SKILL_SOURCE_SUBDIR={_clean(subdir)}",
+        f"SKILL_SOURCE_URL={_clean(url)}",
+        f"SKILL_SOURCE_INSTALLED_COMMIT={_clean(commit)}",
     ]
     meta_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
