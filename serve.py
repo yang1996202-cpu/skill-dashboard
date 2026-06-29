@@ -26,6 +26,8 @@ from skilldash.routes.system import SystemRoutes
 # ── 运行态缓存(/api/targets 缓存;GitHub API 缓存在 skilldash.source_ops)──
 _targets_cache = None  # cached /api/targets response
 _targets_cache_ts = 0  # timestamp of last targets cache
+_source_aggregations_cache = None  # cached /api/source-aggregations response
+_source_aggregations_cache_ts = 0  # timestamp of last source-aggregations cache
 
 
 class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, SystemRoutes, BaseHTTPRequestHandler):
@@ -88,6 +90,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/index.html"):                 ("_serve_index", None),
         ("GET", "/api/history"):                ("_serve_history", None),
         ("GET", "/api/targets"):                ("_list_targets", None),
+        ("GET", "/api/source-aggregations"):    ("_source_aggregations", None),
         ("GET", "/api/cleanup-plan"):           ("_cleanup_plan", None),
         ("GET", "/api/cleanup-execution-plan"): ("_cleanup_execution_plan", None),
         ("GET", "/api/duplicate-decisions"):    ("_list_duplicate_decisions", None),
@@ -318,11 +321,32 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         _targets_cache = data
         _targets_cache_ts = time.time()
 
+    def _source_aggregations_cache_hit(self, force_refresh=False):
+        """Return deep-copied /api/source-aggregations cache if valid, else None."""
+        global _source_aggregations_cache, _source_aggregations_cache_ts
+        if _source_aggregations_cache and not force_refresh and (time.time() - _source_aggregations_cache_ts) < 180:
+            return json.loads(json.dumps(_source_aggregations_cache))
+        return None
+
+    def _source_aggregations_cache_store(self, data):
+        global _source_aggregations_cache, _source_aggregations_cache_ts
+        _source_aggregations_cache = data
+        _source_aggregations_cache_ts = time.time()
+
+    def _invalidate_source_aggregations_cache(self):
+        """Invalidate /api/source-aggregations cache (attach 补来源后调)."""
+        global _source_aggregations_cache, _source_aggregations_cache_ts
+        _source_aggregations_cache = None
+        _source_aggregations_cache_ts = 0
+
     def _invalidate_runtime_caches(self):
         """Invalidate filesystem-derived caches after moving/deleting skills."""
         global _targets_cache, _targets_cache_ts
+        global _source_aggregations_cache, _source_aggregations_cache_ts
         _targets_cache = None
         _targets_cache_ts = 0
+        _source_aggregations_cache = None
+        _source_aggregations_cache_ts = 0
         for cache_name in ("global-categories.json",):
             try:
                 (CACHE_DIR / cache_name).unlink()

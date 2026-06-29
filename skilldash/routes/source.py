@@ -31,7 +31,10 @@ from skilldash.host_inspectors import (
     load_mcp_inventory,
 )
 from skilldash.paths import CACHE_DIR, STATE_DIR
-from skilldash.source_ops import agent_name_for_target, install_skill, install_skill_npx
+from skilldash.source_ops import (
+    agent_name_for_target, install_skill, install_skill_npx,
+    detect_source_local, _build_owner_aggregations,
+)
 from skilldash.understanding import compact_understanding, understand_skill
 
 
@@ -562,6 +565,79 @@ class SourceRoutes:
         self._targets_cache_store(result)
         self._json_response(result)
 
+    def _source_aggregations(self):
+        """GET — 按 owner/repo 聚合有来源的 skill(只读,0 GitHub API)。
+
+        给「按作者/仓库聚合」视图用。只收 category∈{user,project}(同 scan.py),
+        每个 skill 调 detect_source_local 三信号;source=='unknown' 跳过。
+        3 分钟缓存,attach 补来源后失效。
+        """
+        query = parse_qs(urlparse(self.path).query)
+        force_refresh = query.get("refresh", ["0"])[0].lower() in ("1", "true", "yes")
+        cached = self._source_aggregations_cache_hit(force_refresh)
+        if cached is not None:
+            self._json_response(cached)
+            return
+
+        home = Path.home()
+        skill_entries = []
+        for skills_dir in _discover_skill_dirs():
+            governance = _classify_skill_dir_detail(skills_dir)
+            if governance.get("_buddy_hidden"):
+                continue
+            # shared-link 层(软链指向 ~/.agents/skills)跳过:真实 skill 已在目标层
+            # 计数,这里重复检测会让 vercel/npx 类 skill 虚高成"跨 N 应用"(同 _list_targets:468 口径)。
+            if governance.get("layer") == "shared-link":
+                continue
+            if governance.get("category", "") not in ("user", "project"):
+                continue
+            agent = _agent_from_path(str(skills_dir))
+            try:
+                children = list(skills_dir.iterdir())
+            except (PermissionError, OSError):
+                continue
+            for d in children:
+                if not _is_skill_entry(d, include_broken=True):
+                    continue
+                if d.is_symlink():
+                    continue  # 软链 skill 跳过:真实副本在目标目录计,避免软链重复撑高 agent_count
+                skill_md = d / "SKILL.md"
+                if not skill_md.exists():
+                    continue
+                name = d.name
+                kind = _skill_entry_kind(d)
+                description = ""
+                try:
+                    text = skill_md.read_text("utf-8", errors="ignore")[:2000]
+                    if text.startswith("---"):
+                        end = text.find("---", 3)
+                        if end > 0:
+                            for line in text[3:end].splitlines():
+                                line = line.strip()
+                                if line.startswith("description:"):
+                                    description = line.split(":", 1)[1].strip().strip("'\"")
+                                    break
+                except Exception:
+                    pass
+                info = detect_source_local(d)
+                skill_entries.append({
+                    "name": name,
+                    "dir": str(d),
+                    "rel": str(d).replace(str(home), "~"),
+                    "agent": agent,
+                    "kind": kind,
+                    "description": description,
+                    "source": info.get("source", "unknown"),
+                    "repo": info.get("repo", ""),
+                    "ref": info.get("ref", ""),
+                    "subdir": info.get("subdir", ""),
+                })
+
+        result = _build_owner_aggregations(skill_entries)
+        result["generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        self._source_aggregations_cache_store(result)
+        self._json_response(result)
+
     def _set_target(self):
         """Switch target — fast scan directly, no bash subprocess."""
         length = int(self.headers.get('Content-Length', 0))
@@ -1000,6 +1076,8 @@ class SourceRoutes:
             _upstream_hash_cache.pop(_hash_key(resolved), None)
             # 同步刷新扫描缓存,否则刷新页面读旧缓存 skill 又回「待补来源」、上游看不到
             self._patch_scan_cache_attach(resolved, repo)
+            # 失效按作者聚合缓存:补来源后切 by-author 视图立即看到该 skill
+            self._invalidate_source_aggregations_cache()
             self._json_response({"ok": True, "source": "steal-meta",
                                  "repo": repo, "subdir": subdir, "ref": ref, "url": url})
         except Exception as e:

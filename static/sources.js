@@ -56,6 +56,124 @@ function sourceMiniChip(label,title){
   return `<span class="source-mini-chip" title="${esc(title||label)}">${label}</span>`;
 }
 
+// ── 按作者/仓库聚合视图(by-author 轴,跟 by-agent 正交)──
+// 来源信号标签(steal-meta/git-remote/vercel-lock),by-author skill 行用
+const SOURCE_LABELS={'steal-meta':'Steal','git-remote':'Git','vercel-lock':'NPX','unknown':'未知'};
+let _authorAggCache=null,_authorAggCacheTs=0;
+const AUTHOR_AGG_TTL=2*60*1000; // 2 分钟前端缓存(toggle 重渲染命中,不重 fetch)
+let _authorExpandedOwner=null; // 单展开:当前展开的 owner
+let _authorExpandedRepos={}; // {owner: Set(repo)} 多展开的 repo
+
+async function renderSourcesByAuthor(){
+  const list=$('sources-list');
+  if(!list)return;
+  const headerHtml=`<div style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:8px">
+      <h3 style="font-size:15px;font-weight:600">👥 按作者 / 仓库聚合</h3>
+      <span style="font-size:11px;color:var(--text-muted)" id="author-agg-stats">加载中…</span>
+      <span style="flex:1"></span>
+      <div class="segmented-control">
+        <button class="btn btn-sm ${_sourceAxisMode==='by-agent'?'btn-primary':''}" onclick="setSourceAxisMode('by-agent')" title="按 Agent 应用分组(默认)">按应用</button>
+        <button class="btn btn-sm ${_sourceAxisMode==='by-author'?'btn-primary':''}" onclick="setSourceAxisMode('by-author')" title="按 GitHub 来源(作者/仓库)分组(当前)">按来源</button>
+      </div>
+    </div>
+    <div style="font-size:11px;color:var(--text-muted);margin-bottom:8px;padding:5px 10px;background:var(--bg-card-alt);border-radius:6px;border:1px solid var(--border-subtle)">只显示有 GitHub 来源的 skill(steal / git / npx 安装留痕)。本地自建或未补来源的不在此视图——去「按应用」视图或 skill 详情页补来源后会自动出现。</div>
+  </div>`;
+  list.innerHTML=headerHtml+`<div id="author-agg-body"><div style="padding:20px;color:var(--text-muted)">加载中…</div></div>`;
+
+  const now=Date.now();
+  let data;
+  if(_authorAggCache&&(now-_authorAggCacheTs)<AUTHOR_AGG_TTL){
+    data=_authorAggCache;
+  }else{
+    try{
+      const r=await fetch('/api/source-aggregations');
+      if(!r.ok)throw new Error('HTTP '+r.status);
+      data=await r.json();
+      _authorAggCache=data;_authorAggCacheTs=now;
+    }catch(e){
+      const b=$('author-agg-body');
+      if(b)b.innerHTML='<div style="padding:20px;color:var(--danger)">加载失败:'+esc(String(e.message||e))+'</div>';
+      return;
+    }
+  }
+  const statsEl=$('author-agg-stats');
+  if(statsEl)statsEl.textContent=`${data.total_owners} 个作者 · ${data.total_repos} 个仓库 · ${data.total_skills} 个 skill`;
+  const body=$('author-agg-body');
+  if(!body)return;
+  if(!data.owners||!data.owners.length){
+    body.innerHTML='<div style="padding:20px;color:var(--text-muted)">暂无带 GitHub 来源的 skill。装 skill(steal/npx)或详情页补来源后,这里会按作者聚合。</div>';
+    return;
+  }
+  body.innerHTML=data.owners.map(renderAuthorOwnerCard).join('');
+}
+
+function renderAuthorOwnerCard(o){
+  const expanded=_authorExpandedOwner===o.owner;
+  const arrow=expanded?'▼':'▶';
+  const ags=o.agents||[];
+  const agentsHtml=ags.slice(0,6).map(a=>sourceMiniChip(a,a)).join('');
+  const moreAgents=ags.length>6?sourceMiniChip(`+${ags.length-6}`,''):'';
+  return `<div class="src-card" style="margin-bottom:8px">
+    <div class="target-opt" style="cursor:pointer;padding:10px 14px" onclick="toggleAuthorOwner('${esc(o.owner)}')">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="src-arrow" style="display:inline-block">${arrow}</span>
+        <strong style="font-size:13px">${esc(o.owner)}</strong>
+        <span style="font-size:11px;color:var(--text-muted)">${o.skill_count} skill · ${o.repo_count} 个仓库 · 跨 ${o.agent_count} 个应用</span>
+        <span style="flex:1"></span>
+        <span class="source-dir-badges">${agentsHtml}${moreAgents}</span>
+      </div>
+    </div>
+    <div style="${expanded?'':'display:none'};padding:4px 0 8px">
+      ${(o.repos||[]).map(r=>renderAuthorRepoBlock(o.owner,r)).join('')}
+    </div>
+  </div>`;
+}
+
+function renderAuthorRepoBlock(owner,r){
+  const set=_authorExpandedRepos[owner]||new Set();
+  const expanded=set.has(r.repo);
+  const arrow=expanded?'▼':'▶';
+  return `<div style="margin:2px 0 2px 22px">
+    <div class="target-opt" style="cursor:pointer;padding:6px 12px" onclick="toggleAuthorRepo('${esc(owner)}','${esc(r.repo)}')">
+      <span class="src-arrow" style="display:inline-block">${arrow}</span>
+      <span style="font-family:var(--mono);font-size:12px;color:var(--accent)">${esc(r.repo)}</span>
+      <span style="font-size:11px;color:var(--text-muted)">· ${r.skill_count} skill</span>
+    </div>
+    <div style="${expanded?'':'display:none'};padding-left:24px">
+      ${(r.skills||[]).map(renderAuthorSkillRow).join('')}
+    </div>
+  </div>`;
+}
+
+function renderAuthorSkillRow(s){
+  const ags=s.agents||[];
+  const multi=ags.length>1;
+  const agentChip=sourceMiniChip(s.agent,s.agent+' (主来源目录)');
+  const extraChip=multi?sourceMiniChip(`+${ags.length-1} 应用`,'也装在: '+ags.filter(a=>a!==s.agent).join(', ')):'';
+  const srcChip=sourceMiniChip(SOURCE_LABELS[s.source]||s.source,'来源信号: '+s.source);
+  return `<div class="target-opt source-dir-row" style="padding:6px 14px 6px 48px;cursor:pointer" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}')" title="${esc(s.rel)}">
+    <div class="source-dir-main">
+      <div class="source-dir-titleline">
+        <span class="source-dir-title">${esc(s.name)}</span>
+        <span class="source-dir-badges">${agentChip}${extraChip}${srcChip}</span>
+      </div>
+      ${s.description?`<div class="source-dir-sub">${esc(s.description).slice(0,90)}</div>`:''}
+    </div>
+  </div>`;
+}
+
+function toggleAuthorOwner(owner){
+  _authorExpandedOwner=(_authorExpandedOwner===owner)?null:owner;
+  renderSourcesByAuthor();
+}
+function toggleAuthorRepo(owner,repo){
+  let set=_authorExpandedRepos[owner];
+  if(!set){set=new Set();_authorExpandedRepos[owner]=set;}
+  if(set.has(repo))set.delete(repo);else set.add(repo);
+  renderSourcesByAuthor();
+}
+
 function sourceDisplayTitle(t){
   if(t?.plugin_id)return t.plugin_id;
   return t?.rel||t?.path||'未知目录';
@@ -350,6 +468,7 @@ function showViewPreview(mode,btn){
 function hideViewPreview(){const c=document.getElementById('view-preview');if(c)c.classList.remove('show');}
 
 function renderSources(){
+  if(_sourceAxisMode==='by-author'){renderSourcesByAuthor();return}
   if(!targets.length){$('sources-list').innerHTML='';return}
   try{
   const curTarget=targets.find(t=>t.is_current);
@@ -369,6 +488,10 @@ function renderSources(){
       </div>
     </div>
     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div class="segmented-control">
+        <button class="btn btn-sm ${_sourceAxisMode==='by-agent'?'btn-primary':''}" onclick="setSourceAxisMode('by-agent')" title="按 Agent 应用分组(默认)">按应用</button>
+        <button class="btn btn-sm ${_sourceAxisMode==='by-author'?'btn-primary':''}" onclick="setSourceAxisMode('by-author')" title="按 GitHub 来源(作者/仓库)分组">按来源</button>
+      </div>
       <span style="font-size:11px;color:var(--text-muted)">当前: ${curTarget?curTarget.name:'-'}</span>
       <span style="flex:1"></span>
       <div class="segmented-control">

@@ -652,6 +652,103 @@ def detect_source_local(skill_dir):
     return {"source": "unknown", "repo": "", "ref": "", "subdir": ""}
 
 
+def _build_owner_aggregations(skill_entries):
+    """聚合 skill 来源为 owner→repo→skills 两层结构(纯函数,可单测)。
+
+    给「按作者/仓库聚合」只读视图用:把散在各 agent、来自同一 GitHub 来源的
+    skill,聚合成 owner 顶层卡 → repo 二级 → skill 行。
+
+    Args:
+        skill_entries: list of dict,每个至少含 {name, repo, source, agent}。
+            repo 是 "owner/repo"(detect_source_local 输出);source=='unknown'
+            / repo 为空 / repo 不含 '/' 的跳过。其余字段(description/dir/kind
+            等)原样透传到输出 skill 行。
+
+    Returns:
+        {
+          "owners": [
+            {"owner": str, "skill_count": int, "repo_count": int,
+             "agents": [str,...], "agent_count": int,
+             "repos": [
+                {"repo": str, "skill_count": int, "agents": [str,...],
+                 "skills": [<entry + "agents": [str,...]>, ...]}
+             ]}
+          ],
+          "total_skills": int, "total_owners": int, "total_repos": int
+        }
+
+    规则:
+      - source=='unknown' / repo 空 / repo 不含 '/' → 跳过
+      - owner = repo.split('/')[0]
+      - 去重键 (repo, name):同 repo 同名跨 agent 合并为 1 个 skill,
+        agents 累积去重;主 agent 取首次出现 entry.agent;dir 取首次(showSkill 用)
+      - owners 按 skill_count 降序;repo 内 skills 按 name;agents 排序去重
+    """
+    owners_map = {}  # owner -> {repo -> {name -> entry}}
+    for e in skill_entries:
+        if e.get("source") == "unknown":
+            continue
+        repo = e.get("repo", "")
+        if not repo or "/" not in repo:
+            continue
+        owner = repo.split("/", 1)[0]
+        name = e.get("name", "")
+        if not name:
+            continue
+        agent = e.get("agent", "")
+        name_map = owners_map.setdefault(owner, {}).setdefault(repo, {})
+        if name in name_map:
+            existing = name_map[name]
+            ag = set(existing.get("agents") or ([existing["agent"]] if existing.get("agent") else []))
+            if agent:
+                ag.add(agent)
+            existing["agents"] = sorted(ag)
+        else:
+            entry = dict(e)
+            entry["agents"] = sorted({agent}) if agent else []
+            name_map[name] = entry
+
+    owners = []
+    total_skills = 0
+    total_repos = 0
+    for owner, repo_map in owners_map.items():
+        repos = []
+        owner_agents = set()
+        owner_skill_count = 0
+        for repo, name_map in repo_map.items():
+            skills = sorted(name_map.values(), key=lambda x: x.get("name", ""))
+            repo_agents = set()
+            for s in skills:
+                repo_agents.update(s.get("agents") or [])
+            repo_agents.discard("")
+            owner_agents.update(repo_agents)
+            owner_skill_count += len(skills)
+            repos.append({
+                "repo": repo,
+                "skill_count": len(skills),
+                "agents": sorted(repo_agents),
+                "skills": skills,
+            })
+            total_repos += 1
+        total_skills += owner_skill_count
+        owners.append({
+            "owner": owner,
+            "skill_count": owner_skill_count,
+            "repo_count": len(repos),
+            "agents": sorted(owner_agents),
+            "agent_count": len(owner_agents),
+            "repos": sorted(repos, key=lambda x: (-x["skill_count"], x["repo"])),
+        })
+
+    owners.sort(key=lambda x: (-x["skill_count"], x["owner"]))
+    return {
+        "owners": owners,
+        "total_skills": total_skills,
+        "total_owners": len(owners),
+        "total_repos": total_repos,
+    }
+
+
 # ── GitHub API helpers with rate-limit protection ──
 _github_cache = {}  # (url,) -> (timestamp, result)
 _github_cache_ttl = 300  # 5 minutes

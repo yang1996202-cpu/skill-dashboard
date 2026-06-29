@@ -83,6 +83,13 @@ let _sourceViewMode=(()=>{
   return 'active';
 })(); // active | inventory | review | all
 let _expandedSourceAgent=null;
+// 分组轴:by-agent(默认,按 Agent 应用)/ by-author(按 GitHub 来源 owner→repo 聚合)。正交于 _sourceViewMode(筛选轴)。
+let _sourceAxisMode=(localStorage.getItem('sd-source-axis')==='by-author'?'by-author':'by-agent');
+function setSourceAxisMode(mode){
+  _sourceAxisMode=mode==='by-author'?'by-author':'by-agent';
+  localStorage.setItem('sd-source-axis',_sourceAxisMode);
+  if($('view-sources')&&$('view-sources').classList.contains('active'))renderSources();
+}
 
 const CAPABILITY_META={
   'active-user':{color:'var(--accent)',label:'用户自建',desc:'用户全局技能根，通常会进入该 Agent 的基础能力面。'},
