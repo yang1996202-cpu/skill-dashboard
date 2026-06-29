@@ -581,6 +581,7 @@ class SourceRoutes:
 
         home = Path.home()
         skill_entries = []
+        unknown_skills = []  # source=unknown 的 skill,单独收集喂「未知来源」桶
         for skills_dir in _discover_skill_dirs():
             governance = _classify_skill_dir_detail(skills_dir)
             if governance.get("_buddy_hidden"):
@@ -588,6 +589,10 @@ class SourceRoutes:
             # shared-link 层(软链指向 ~/.agents/skills)跳过:真实 skill 已在目标层
             # 计数,这里重复检测会让 vercel/npx 类 skill 虚高成"跨 N 应用"(同 _list_targets:468 口径)。
             if governance.get("layer") == "shared-link":
+                continue
+            # vendor-bundled(宿主预置 / optional-skills / migration archive)跳过:
+            # 不是用户装的,补来源无意义;其 category 常是 project 但 layer 暴露真相。
+            if governance.get("layer") == "vendor-bundled":
                 continue
             if governance.get("category", "") not in ("user", "project"):
                 continue
@@ -620,7 +625,7 @@ class SourceRoutes:
                 except Exception:
                     pass
                 info = detect_source_local(d)
-                skill_entries.append({
+                entry = {
                     "name": name,
                     "dir": str(d),
                     "rel": str(d).replace(str(home), "~"),
@@ -631,9 +636,25 @@ class SourceRoutes:
                     "repo": info.get("repo", ""),
                     "ref": info.get("ref", ""),
                     "subdir": info.get("subdir", ""),
-                })
+                }
+                if info.get("source") == "unknown":
+                    # 无来源 → 进「未知来源」桶。只收 active-root(全局用户根),排除
+                    # project-local(hf-case-video 等项目测试爆炸)+ vendor-bundled(顶部已排)。
+                    if governance.get("layer") == "active-root":
+                        unknown_skills.append({
+                            "name": name,
+                            "dir": str(d),
+                            "rel": str(d).replace(str(home), "~"),
+                            "agent": agent,
+                            "source": "unknown",
+                            "description": description,
+                        })
+                else:
+                    skill_entries.append(entry)
 
         result = _build_owner_aggregations(skill_entries)
+        result["unknown_skills"] = sorted(unknown_skills, key=lambda x: x["name"])
+        result["unknown_count"] = len(unknown_skills)
         result["generated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
         self._source_aggregations_cache_store(result)
         self._json_response(result)

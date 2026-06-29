@@ -63,6 +63,8 @@ let _authorAggCache=null,_authorAggCacheTs=0;
 const AUTHOR_AGG_TTL=2*60*1000; // 2 分钟前端缓存(toggle 重渲染命中,不重 fetch)
 let _authorExpandedOwner=null; // 单展开:当前展开的 owner
 let _authorExpandedRepos={}; // {owner: Set(repo)} 多展开的 repo
+let _authorExpandedUnknown=false; // 未知来源桶展开状态
+let _authorExpandedUnknownAgents={}; // 桶内按 agent 二级展开 {agent: true}
 
 async function renderSourcesByAuthor(){
   const list=$('sources-list');
@@ -98,14 +100,16 @@ async function renderSourcesByAuthor(){
     }
   }
   const statsEl=$('author-agg-stats');
-  if(statsEl)statsEl.textContent=`${data.total_owners} 个作者 · ${data.total_repos} 个仓库 · ${data.total_skills} 个 skill`;
+  if(statsEl)statsEl.textContent=`${data.total_owners} 个作者 · ${data.total_repos} 个仓库 · ${data.total_skills} 有来源${data.unknown_count?` + ${data.unknown_count} 未知`:''}`;
   const body=$('author-agg-body');
   if(!body)return;
-  if(!data.owners||!data.owners.length){
-    body.innerHTML='<div style="padding:20px;color:var(--text-muted)">暂无带 GitHub 来源的 skill。装 skill(steal/npx)或详情页补来源后,这里会按作者聚合。</div>';
+  const ownerHtml=(data.owners||[]).map(renderAuthorOwnerCard).join('');
+  const unkHtml=(data.unknown_skills&&data.unknown_skills.length)?renderUnknownBucket(data.unknown_skills):'';
+  if(!ownerHtml&&!unkHtml){
+    body.innerHTML='<div style="padding:20px;color:var(--text-muted)">暂无 skill。</div>';
     return;
   }
-  body.innerHTML=data.owners.map(renderAuthorOwnerCard).join('');
+  body.innerHTML=ownerHtml+unkHtml;
 }
 
 function renderAuthorOwnerCard(o){
@@ -171,6 +175,49 @@ function toggleAuthorRepo(owner,repo){
   let set=_authorExpandedRepos[owner];
   if(!set){set=new Set();_authorExpandedRepos[owner]=set;}
   if(set.has(repo))set.delete(repo);else set.add(repo);
+  renderSourcesByAuthor();
+}
+function toggleAuthorUnknown(){
+  _authorExpandedUnknown=!_authorExpandedUnknown;
+  renderSourcesByAuthor();
+}
+function renderUnknownBucket(skills){
+  const expanded=_authorExpandedUnknown;
+  const arrow=expanded?'▼':'▶';
+  const byAgent={};
+  for(const s of skills){(byAgent[s.agent]=byAgent[s.agent]||[]).push(s);}
+  const agents=Object.keys(byAgent).sort((a,b)=>byAgent[b].length-byAgent[a].length||a.localeCompare(b));
+  return `<div class="src-card" style="margin-bottom:8px;border:1px dashed var(--border-subtle)">
+    <div class="target-opt" style="cursor:pointer;padding:10px 14px" onclick="toggleAuthorUnknown()">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span class="src-arrow" style="display:inline-block">${arrow}</span>
+        <strong style="font-size:13px;color:var(--text-muted)">未知来源</strong>
+        <span style="font-size:11px;color:var(--text-muted)">${skills.length} 个 skill · 跨 ${agents.length} 个应用 · 本地自建/未补 · 点 skill 进详情补</span>
+      </div>
+    </div>
+    <div style="${expanded?'':'display:none'};padding:4px 0 8px">
+      ${agents.map(a=>renderUnknownAgentBlock(a,byAgent[a])).join('')}
+    </div>
+  </div>`;
+}
+function renderUnknownAgentBlock(agent,skills){
+  const expanded=(_authorExpandedUnknownAgents||{})[agent];
+  const arrow=expanded?'▼':'▶';
+  return `<div style="margin:2px 0 2px 12px">
+    <div class="target-opt" style="cursor:pointer;padding:6px 12px" onclick="toggleAuthorUnknownAgent('${esc(agent)}')">
+      <span class="src-arrow" style="display:inline-block">${arrow}</span>
+      <strong style="font-size:12px">${esc(agent)}</strong>
+      <span style="font-size:11px;color:var(--text-muted)">· ${skills.length} skill</span>
+    </div>
+    <div style="${expanded?'':'display:none'};padding-left:24px">
+      ${skills.map(renderAuthorSkillRow).join('')}
+    </div>
+  </div>`;
+}
+function toggleAuthorUnknownAgent(agent){
+  let set=_authorExpandedUnknownAgents;
+  if(!set){set={};_authorExpandedUnknownAgents=set;}
+  if(set[agent])delete set[agent];else set[agent]=true;
   renderSourcesByAuthor();
 }
 
