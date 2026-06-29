@@ -157,6 +157,8 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 原则：不要把所有 Agent 的私有逻辑塞进泛化扫描器；每个宿主用 adapter/inspector 把私有配置转成统一字段。
 
+**inspector 一律路径模式解析,禁止硬编码 marketplace/plugin 名单**——marketplace 从 `rel_parts[N]` 动态提取,`plugin_id=f"{plugin}@{marketplace}"`。这样同 Agent 新增 marketplace/plugin 自动按范式分组(零代码、零扫描);写成 `if marketplace=="xxx"` 硬编码会破坏自动覆盖,新增就得手动加。Codex/Claude/buddy/Copilot 四家 inspector 都遵守这条。只有"agent 大改目录结构"(退回 catalog 平铺,数据不丢)或"接全新 agent"(写一次 inspector)才需要动手。
+
 ### Host Profile：通用扫描与 Agent 范儿的结合层
 
 扫描管线分三层：
