@@ -715,13 +715,12 @@ def buddy_family_skill_context(dir_path) -> dict:
             if rel_parts[0] == "connectors-marketplace":
                 connector = _buddy_connector_name(rel_parts) or "connectors-marketplace"
                 package_root = root / "connectors-marketplace" / "connectors" / connector if connector != "connectors-marketplace" else root / "connectors-marketplace"
-                # 聚合根(marketplace 本身或 connectors 容器,无具体 connector)→ 隐藏,内容已被单个 connector 代表
+                # 聚合根(marketplace 本身或 connectors 容器)→ 保留显示:它带着未单独列出的 connector 总数,藏掉会丢总数
                 if connector == "connectors-marketplace":
                     return _buddy_base(
-                        spec, root, path, "buddy-connector-marketplace", "catalog", "Connector 市场聚合",
-                        f"~/{spec['dotdir']}/connectors-marketplace 聚合根,内容已被单个 connector 代表,隐藏。",
+                        spec, root, path, "buddy-connector-marketplace", "catalog", "Connector 市场汇总",
+                        f"~/{spec['dotdir']}/connectors-marketplace 汇总(connector 总数,部分未单独列出)。",
                         plugin_id=connector, plugin_name=connector, package_root=str(package_root),
-                        _buddy_hidden=True,
                     )
                 return _buddy_base(
                     spec,
@@ -751,13 +750,12 @@ def buddy_family_skill_context(dir_path) -> dict:
                     )
                 skill = _buddy_marketplace_skill_name(rel_parts) or "skills-marketplace"
                 package_root = root / "skills-marketplace" / "skills" / skill if skill != "skills-marketplace" else root / "skills-marketplace"
-                # 聚合根(skills-marketplace 本身或 skills 容器,无具体 skill)→ 隐藏,内容已被单个 skill 代表
+                # 聚合根(skills-marketplace 本身或 skills 容器)→ 保留显示:它带着未单独列出的技能总数(268 等),藏掉会丢总数
                 if len(rel_parts) < 3:
                     return _buddy_base(
-                        spec, root, path, "buddy-skill-marketplace", "catalog", "Skill 市场聚合",
-                        f"~/{spec['dotdir']}/skills-marketplace 聚合根,内容已被单个 skill 代表,隐藏。",
+                        spec, root, path, "buddy-skill-marketplace", "catalog", "Skill 市场汇总",
+                        f"~/{spec['dotdir']}/skills-marketplace 汇总(技能总数,部分未单独列出)。",
                         plugin_id=skill, plugin_name=skill, package_root=str(package_root),
-                        _buddy_hidden=True,
                     )
                 return _buddy_base(
                     spec,
