@@ -643,6 +643,23 @@ def _buddy_base(spec: dict, root: Path, path: Path, role, runtime_state, runtime
     }
 
 
+def _is_buddy_download_snapshot(marketplace: str) -> bool:
+    """CodeBuddy/WorkBuddy 从 codebuddy.cn 下载的市场快照,目录名形如
+    download_<source>_plugin-marketplace_<canonical>-<UUID>.<时间戳>-<hash>,
+    是 canonical marketplace 的下载缓存副本(内容重复)。识别它以归 cache,
+    避免污染 catalog 的 marketplace 分组。"""
+    if not marketplace.startswith("download_"):
+        return False
+    return bool(re.search(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", marketplace))
+
+
+def _buddy_snapshot_marketplace_alias(marketplace: str) -> str:
+    """从快照名抽 canonical marketplace,返回可读别名 '<canonical>（下载快照）'。
+    抽不到就返回通用 '下载快照'。"""
+    m = re.search(r"plugin-marketplace_(.+?)-[0-9a-f]{8}-[0-9a-f]{4}", marketplace)
+    return f"{m.group(1)}（下载快照）" if m else "下载快照"
+
+
 def buddy_family_skill_context(dir_path) -> dict:
     """Return runtime/source metadata for WorkBuddy/CodeBuddy skill directories."""
     path = Path(dir_path).expanduser()
@@ -740,6 +757,23 @@ def buddy_family_skill_context(dir_path) -> dict:
 
             if len(rel_parts) >= 3 and rel_parts[0] == "plugins" and rel_parts[1] == "marketplaces":
                 marketplace = rel_parts[2]
+                # 下载快照(codebuddy.cn 下载的 canonical 市场副本,UUID+时间戳缓存名)→ 归 cache,不污染 catalog 分组
+                if _is_buddy_download_snapshot(marketplace):
+                    alias = _buddy_snapshot_marketplace_alias(marketplace)
+                    plugin = rel_parts[4] if len(rel_parts) >= 5 and rel_parts[3] in ("plugins", "external_plugins") else ""
+                    return _buddy_base(
+                        spec,
+                        root,
+                        path,
+                        "buddy-cache",
+                        "cache",
+                        "下载快照(缓存)",
+                        f"~/{spec['dotdir']}/plugins/marketplaces/{marketplace} 是从 codebuddy.cn 下载的市场快照副本(UUID+时间戳缓存名),内容与 canonical 市场重复,归缓存。",
+                        plugin_id=f"{plugin}@{alias}" if plugin else alias,
+                        plugin_name=plugin,
+                        plugin_marketplace=alias,
+                        package_root=str(root / "plugins" / "marketplaces" / marketplace),
+                    )
                 plugin = ""
                 if len(rel_parts) >= 5 and rel_parts[3] in ("plugins", "external_plugins"):
                     plugin = rel_parts[4]
