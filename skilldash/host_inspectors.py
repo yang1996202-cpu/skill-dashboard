@@ -715,6 +715,14 @@ def buddy_family_skill_context(dir_path) -> dict:
             if rel_parts[0] == "connectors-marketplace":
                 connector = _buddy_connector_name(rel_parts) or "connectors-marketplace"
                 package_root = root / "connectors-marketplace" / "connectors" / connector if connector != "connectors-marketplace" else root / "connectors-marketplace"
+                # 聚合根(marketplace 本身或 connectors 容器,无具体 connector)→ 隐藏,内容已被单个 connector 代表
+                if connector == "connectors-marketplace":
+                    return _buddy_base(
+                        spec, root, path, "buddy-connector-marketplace", "catalog", "Connector 市场聚合",
+                        f"~/{spec['dotdir']}/connectors-marketplace 聚合根,内容已被单个 connector 代表,隐藏。",
+                        plugin_id=connector, plugin_name=connector, package_root=str(package_root),
+                        _buddy_hidden=True,
+                    )
                 return _buddy_base(
                     spec,
                     root,
@@ -723,8 +731,9 @@ def buddy_family_skill_context(dir_path) -> dict:
                     "catalog",
                     "Connector 市场",
                     f"~/{spec['dotdir']}/connectors-marketplace 是 {spec['host']} connector 货架目录，不等于当前已加载。",
-                    plugin_id=connector,
+                    plugin_id=f"{connector}@{spec['key']}-connectors-marketplace",
                     plugin_name=connector,
+                    plugin_marketplace=f"{spec['key']}-connectors-marketplace",
                     package_root=str(package_root),
                 )
 
@@ -742,6 +751,14 @@ def buddy_family_skill_context(dir_path) -> dict:
                     )
                 skill = _buddy_marketplace_skill_name(rel_parts) or "skills-marketplace"
                 package_root = root / "skills-marketplace" / "skills" / skill if skill != "skills-marketplace" else root / "skills-marketplace"
+                # 聚合根(skills-marketplace 本身或 skills 容器,无具体 skill)→ 隐藏,内容已被单个 skill 代表
+                if len(rel_parts) < 3:
+                    return _buddy_base(
+                        spec, root, path, "buddy-skill-marketplace", "catalog", "Skill 市场聚合",
+                        f"~/{spec['dotdir']}/skills-marketplace 聚合根,内容已被单个 skill 代表,隐藏。",
+                        plugin_id=skill, plugin_name=skill, package_root=str(package_root),
+                        _buddy_hidden=True,
+                    )
                 return _buddy_base(
                     spec,
                     root,
@@ -750,8 +767,9 @@ def buddy_family_skill_context(dir_path) -> dict:
                     "catalog",
                     "Skill 市场",
                     f"~/{spec['dotdir']}/skills-marketplace 是 {spec['host']} skill 货架目录，不等于当前上下文已加载。",
-                    plugin_id=skill,
+                    plugin_id=f"{skill}@{spec['key']}-skills-marketplace",
                     plugin_name=skill,
+                    plugin_marketplace=f"{spec['key']}-skills-marketplace",
                     package_root=str(package_root),
                 )
 
@@ -761,6 +779,15 @@ def buddy_family_skill_context(dir_path) -> dict:
                 if _is_buddy_download_snapshot(marketplace):
                     alias = _buddy_snapshot_marketplace_alias(marketplace)
                     plugin = rel_parts[4] if len(rel_parts) >= 5 and rel_parts[3] in ("plugins", "external_plugins") else ""
+                    # 快照的容器/根(external_plugins/、plugins/,plugin 空)→ 隐藏,内容已被单个插件代表
+                    if not plugin:
+                        return _buddy_base(
+                            spec, root, path, "buddy-cache", "cache", "下载快照容器",
+                            f"~/{spec['dotdir']}/plugins/marketplaces/{marketplace} 下载快照的组织目录,隐藏。",
+                            plugin_id=alias, plugin_name="", plugin_marketplace=alias,
+                            package_root=str(root / "plugins" / "marketplaces" / marketplace),
+                            _buddy_hidden=True,
+                        )
                     return _buddy_base(
                         spec,
                         root,
@@ -769,7 +796,7 @@ def buddy_family_skill_context(dir_path) -> dict:
                         "cache",
                         "下载快照(缓存)",
                         f"~/{spec['dotdir']}/plugins/marketplaces/{marketplace} 是从 codebuddy.cn 下载的市场快照副本(UUID+时间戳缓存名),内容与 canonical 市场重复,归缓存。",
-                        plugin_id=f"{plugin}@{alias}" if plugin else alias,
+                        plugin_id=f"{plugin}@{alias}",
                         plugin_name=plugin,
                         plugin_marketplace=alias,
                         package_root=str(root / "plugins" / "marketplaces" / marketplace),
@@ -777,7 +804,16 @@ def buddy_family_skill_context(dir_path) -> dict:
                 plugin = ""
                 if len(rel_parts) >= 5 and rel_parts[3] in ("plugins", "external_plugins"):
                     plugin = rel_parts[4]
-                plugin_id = f"{plugin}@{marketplace}" if plugin else marketplace
+                # 容器/根目录(marketplace 根、external_plugins/、plugins/ 子文件夹,plugin 空)→ 隐藏,内容已被单个插件代表
+                if not plugin:
+                    return _buddy_base(
+                        spec, root, path, "buddy-plugin-marketplace", "catalog", "插件市场容器",
+                        f"~/{spec['dotdir']}/plugins/marketplaces/{marketplace} 组织目录(external_plugins/plugins),内容已被单个插件代表,隐藏。",
+                        plugin_id=marketplace, plugin_name="", plugin_marketplace=marketplace,
+                        package_root=str(root / "plugins" / "marketplaces" / marketplace),
+                        _buddy_hidden=True,
+                    )
+                plugin_id = f"{plugin}@{marketplace}"
                 return _buddy_base(
                     spec,
                     root,

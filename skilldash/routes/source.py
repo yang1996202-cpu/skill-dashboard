@@ -459,6 +459,9 @@ class SourceRoutes:
             # Use shared agent detection
             agent = _agent_from_path(str(skills_dir))
             governance = _classify_skill_dir_detail(skills_dir)
+            # buddy 组织目录/聚合根(marketplace 容器、skills/connectors 聚合)→ 隐藏,不进 targets
+            if governance.get("_buddy_hidden"):
+                continue
             layer = governance.get("layer", "")
             # OpenClaw shared-link 层:软链指向 ~/.agents/skills,真实 skill 已在那里
             # 计数。这里只是展示链接层,不重复计数(避免 qiaomu/vercel/weread 列两份)。
