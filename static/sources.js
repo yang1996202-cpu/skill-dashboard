@@ -70,6 +70,13 @@ function sourceDisplaySub(t){
   return ev||sourceLayerLabel(t);
 }
 
+function marketplaceOf(t){
+  // plugin_id 形如 "hyperframes@openai-curated";取最后一个 @ 之后的 marketplace 名
+  const pid=t?.plugin_id||'';
+  if(!pid||!pid.includes('@'))return '';
+  return pid.slice(pid.lastIndexOf('@')+1);
+}
+
 function sourceSubLabel(t){
   const rel=t?.rel||'';
   if(rel.includes('/backups/'))return '备份';
@@ -474,10 +481,40 @@ function renderSources(){
             ${catHint?`<span class="source-cat-hint">${esc(catHint)}</span>`:''}
           </div>
           <div id="${catFoldId}" style="${expanded?'':'display:none'}">`;
-        catDirs.forEach(t=>{
-          const safeId='sd-'+Math.random().toString(36).slice(2,8);
-          h+=renderSourceDirRow(t,safeId,pad+16);
-        });
+        // ── marketplace 子分组:带 plugin_id(name@marketplace)的目录按 marketplace 叠一级折叠父级 ──
+        // 仅当 ≥2 个插件目录时才分组(避免单插件套个空父级);否则保持平铺。
+        // 自动覆盖 active-plugin / installed-disabled、Tier1/Tier2、库存视图(都走 renderCatBlock)。
+        const mktDirs=catDirs.filter(t=>marketplaceOf(t));
+        const plainDirs=catDirs.filter(t=>!marketplaceOf(t));
+        if(mktDirs.length>=2){
+          const mktGroups={};
+          mktDirs.forEach(t=>{const m=marketplaceOf(t);(mktGroups[m]=mktGroups[m]||[]).push(t)});
+          plainDirs.forEach(t=>{
+            const safeId='sd-'+Math.random().toString(36).slice(2,8);
+            h+=renderSourceDirRow(t,safeId,pad+16);
+          });
+          Object.keys(mktGroups).sort().forEach(m=>{
+            const gd=mktGroups[m];
+            const mktFoldId='mk-'+Math.random().toString(36).slice(2,8);
+            const mktCount=gd.reduce((s,d)=>s+(d.count||0),0);
+            h+=`<div style="border-top:1px solid var(--border-subtle)">
+              <div style="padding:4px 14px 4px ${pad+16}px;font-size:10px;font-weight:600;color:var(--text-muted);display:flex;align-items:center;gap:4px;background:var(--bg-card-alt);cursor:pointer;user-select:none" onclick="var b=document.getElementById('${mktFoldId}');var s=b.style.display;b.style.display=s==='none'?'':'none';this.querySelector('.mkt-arrow').style.transform=s==='none'?'rotate(90deg)':''">
+                <span class="mkt-arrow" style="font-size:8px;transition:transform .15s">▶</span>
+                <span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--text-muted);opacity:.5;flex-shrink:0"></span><span>${esc(m)}</span><span style="font-weight:400">(${gd.length} 目录${mktCount?` · ${mktCount} items`:''})</span>
+              </div>
+              <div id="${mktFoldId}" style="display:none">`;
+            gd.forEach(t=>{
+              const safeId='sd-'+Math.random().toString(36).slice(2,8);
+              h+=renderSourceDirRow(t,safeId,pad+32);
+            });
+            h+=`</div></div>`;
+          });
+        }else{
+          catDirs.forEach(t=>{
+            const safeId='sd-'+Math.random().toString(36).slice(2,8);
+            h+=renderSourceDirRow(t,safeId,pad+16);
+          });
+        }
         h+=`</div></div>`;
       };
       if(activeCatKeys.length<=1&&!hasCommands&&!showTier1Head){
