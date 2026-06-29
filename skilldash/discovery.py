@@ -489,6 +489,8 @@ def _classify_skill_dir_detail(dir_path):
             mark("plugin-package", "observe", f"{plugin_context.get('host', 'Buddy')} connector skill package", "marketplace")
         elif role in ("workbuddy-marketplace", "workbuddy-connector-marketplace", "buddy-marketplace", "buddy-connector-marketplace", "buddy-skill-marketplace", "buddy-plugin-marketplace"):
             mark("plugin-marketplace", "observe", f"{plugin_context.get('host', 'Buddy')} marketplace catalogue", "marketplace")
+        elif role in ("copilot-agent-plugin", "copilot-agent-plugin-root"):
+            mark("plugin-marketplace", "observe", "GitHub Copilot agent-plugin marketplace catalogue", "marketplace")
         elif role in ("workbuddy-cache", "workbuddy-artifact", "buddy-cache", "buddy-artifact"):
             mark("plugin-cache", "observe", f"{plugin_context.get('host', 'Buddy')} cache/artifact", "cache")
         elif role == "codex-system-skill":

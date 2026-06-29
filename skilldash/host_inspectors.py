@@ -1434,10 +1434,89 @@ def _openclaw_bundled_skill_roots() -> list[Path]:
     return roots
 
 
+def _copilot_base(role, runtime_state, runtime_label, runtime_reason, marketplace, package_root, **extra) -> dict:
+    """Copilot agent-plugins governance dict 基础构造(同构 _buddy_base,不带 buddy spec)。
+
+    Copilot agent-plugins 跟 Codex/Claude plugin 同源(开放 Agent Skill 规范),
+    但装在 ~/.vscode/agent-plugins/ 下,有自己的 host 标识,不走 buddy spec。
+    """
+    return {
+        "package_role": role,
+        "runtime_state": runtime_state,
+        "runtime_label": runtime_label,
+        "runtime_reason": runtime_reason,
+        "plugin_id": extra.get("plugin_id", ""),
+        "plugin_name": extra.get("plugin_name", ""),
+        "plugin_marketplace": marketplace,
+        "plugin_version": extra.get("plugin_version", ""),
+        "plugin_scope": "vscode",
+        "package_root": package_root,
+        "loaded_elsewhere": False,
+        "enabled_by_host": runtime_state in ("user-root", "builtin", "enabled", "loaded"),
+        "host": "GitHub Copilot",
+        "host_family": "copilot-agent-plugins",
+        "host_config_path": str(Path.home() / ".vscode" / "agent-plugins" / "installed.json"),
+    }
+
+
+def copilot_agent_plugins_context(dir_path) -> dict:
+    """Return runtime/source metadata for GitHub Copilot agent-plugin skill dirs.
+
+    Copilot agent-plugins 装在 ~/.vscode/agent-plugins/github.com/<owner>/<repo>/...
+    下。每个 <owner>/<repo> 是一个 marketplace(独立 git clone):
+      - github.com/<owner>/<repo>/plugins/<plugin>/skills → 具体插件技能
+      - github.com/<owner>/<repo>/<plugin>/skills         → 无 plugins 中间层(如 nowledge-co/community)
+      - github.com/<owner>/<repo>/skills                   → marketplace 根聚合(带未单独列出的总数)
+    注入 plugin_id=f"{plugin}@{owner}/{repo}" 让前端 renderCatBlock 按
+    <owner>/<repo> 叠 marketplace 折叠父级(跟 buddy 同构)。根聚合用裸名
+    plugin_id(不带 @)平铺显示,保留总数——藏掉会丢未枚举的总数。
+    """
+    path = Path(dir_path).expanduser()
+    home = Path.home()
+    root = home / ".vscode" / "agent-plugins"
+    rel_parts = _path_relative_parts(path, root)
+
+    # 必须落在 ~/.vscode/agent-plugins/github.com/<owner>/<repo>/... 下
+    if len(rel_parts) < 4 or rel_parts[0] != "github.com":
+        return {}
+
+    owner, repo = rel_parts[1], rel_parts[2]
+    marketplace = f"{owner}/{repo}"
+    repo_root = str(root / "github.com" / owner / repo)
+
+    # marketplace 根聚合(带总数,平铺汇总,不参与分组)
+    if len(rel_parts) == 4 and rel_parts[3] == "skills":
+        return _copilot_base(
+            "copilot-agent-plugin-root", "catalog", "市场根汇总",
+            f"~/.vscode/agent-plugins/github.com/{marketplace}/skills 是该 marketplace 的根技能目录(汇总,部分技能未单独列出)。",
+            marketplace, f"{repo_root}/skills",
+            plugin_id=marketplace,
+            plugin_name=repo,
+        )
+
+    # 具体 plugin(有 plugins 中间层)
+    if len(rel_parts) == 6 and rel_parts[3] == "plugins" and rel_parts[5] == "skills":
+        plugin = rel_parts[4]
+    # 具体 plugin(无 plugins 中间层)
+    elif len(rel_parts) == 5 and rel_parts[4] == "skills" and rel_parts[3] != "plugins":
+        plugin = rel_parts[3]
+    else:
+        return {}
+
+    return _copilot_base(
+        "copilot-agent-plugin", "catalog", "Copilot 插件技能",
+        f"~/.vscode/agent-plugins/github.com/{marketplace}/{plugin}/skills 是 GitHub Copilot agent-plugin marketplace 货架,不等于当前已加载。",
+        marketplace, str(path),
+        plugin_id=f"{plugin}@{marketplace}",
+        plugin_name=plugin,
+    )
+
+
 def plugin_context_for_dir(dir_path) -> dict:
     """Return normalized host runtime metadata for a skill directory.
 
     Each host adapter keeps its private parsing rules, but the returned shape is
     shared by the dashboard UI and cleanup governance code.
     """
-    return claude_plugin_context(dir_path) or codex_plugin_context(dir_path) or buddy_family_skill_context(dir_path)
+    return (claude_plugin_context(dir_path) or codex_plugin_context(dir_path)
+            or buddy_family_skill_context(dir_path) or copilot_agent_plugins_context(dir_path))
