@@ -625,9 +625,11 @@ class SourceRoutes:
                 except Exception:
                     pass
                 info = detect_source_local(d)
+                parent_dir = str(skills_dir)
                 entry = {
                     "name": name,
                     "dir": str(d),
+                    "parent_dir": parent_dir,
                     "rel": str(d).replace(str(home), "~"),
                     "agent": agent,
                     "kind": kind,
@@ -644,6 +646,7 @@ class SourceRoutes:
                         unknown_skills.append({
                             "name": name,
                             "dir": str(d),
+                            "parent_dir": parent_dir,
                             "rel": str(d).replace(str(home), "~"),
                             "agent": agent,
                             "source": "unknown",

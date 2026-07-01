@@ -156,7 +156,10 @@ function renderAuthorSkillRow(s){
   const agentChip=sourceMiniChip(s.agent,s.agent+' (主来源目录)');
   const extraChip=multi?sourceMiniChip(`+${ags.length-1} 应用`,'也装在: '+ags.filter(a=>a!==s.agent).join(', ')):'';
   const srcChip=sourceMiniChip(SOURCE_LABELS[s.source]||s.source,'来源信号: '+s.source);
-  return `<div class="target-opt source-dir-row" style="padding:6px 14px 6px 48px;cursor:pointer" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}')" title="${esc(s.rel)}">
+  // /api/preview 约定 dir 为 skill 父目录;by-author 条目 s.dir 是 skill 目录本身,
+  // 因此优先用后端透传的 parent_dir(与 /api/search-skills 一致)。
+  const previewDir=s.parent_dir||s.dir;
+  return `<div class="target-opt source-dir-row" style="padding:6px 14px 6px 48px;cursor:pointer" onclick="showSkill('${esc(s.name)}','${esc(previewDir)}')" title="${esc(s.rel)}">
     <div class="source-dir-main">
       <div class="source-dir-titleline">
         <span class="source-dir-title">${esc(s.name)}</span>

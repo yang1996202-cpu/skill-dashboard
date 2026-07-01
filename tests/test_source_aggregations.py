@@ -97,6 +97,16 @@ class TestBuildOwnerAggregations(unittest.TestCase):
         self.assertEqual(s["description"], "hello")
         self.assertEqual(s["kind"], "builtin")
 
+    def test_parent_dir_preserved(self):
+        # by-author 视图用 parent_dir 调 /api/preview(dir 约定为 skill 父目录)
+        r = _build_owner_aggregations([
+            self._e("a", "mattpocock/skills", "Claude Code", parent_dir="/x/skills"),
+        ])
+        s = r["owners"][0]["repos"][0]["skills"][0]
+        self.assertEqual(s["parent_dir"], "/x/skills")
+        # dir 仍是 skill 目录本身(attach-source 等写操作需要)
+        self.assertEqual(s["dir"], "/x/a")
+
 
 if __name__ == "__main__":
     unittest.main()
