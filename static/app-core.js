@@ -1,4 +1,4 @@
-let scan=null,health=null,skills=[],installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null;
+let scan=null,health=null,skills=[],installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null,opStats=null;
 const $=id=>document.getElementById(id);
 let categoryOverrides={};
 function loadCategoryOverrides(){
@@ -100,7 +100,7 @@ const CAPABILITY_META={
   'source-cache':{color:'var(--text-muted)',label:'仅缓存',desc:'本地缓存、旧包或备份，不等于当前上下文能力。'},
   'source-catalog':{color:'var(--amber)',label:'市场目录',desc:'marketplace/catalog 货架目录，只作为来源材料。'},
   'review-copy':{color:'var(--purple)',label:'导入/副本',desc:'跨 Agent 复制或导入目录，需要复核。'},
-  'project-local':{color:'#4E7A8C',label:'项目级',desc:'项目内技能目录，是否加载取决于宿主和当前项目。'},
+  'project-local':{color:'#4E7A8C',label:'项目集',desc:'按项目/工作流组织的技能目录，文件夹名即项目名。'},
   commands:{color:'#B89B3A',label:'命令',desc:'命令目录，和 skills 分开统计。'},
   unknown:{color:'var(--text-muted)',label:'未知',desc:'只确认文件存在，未识别运行态。'},
 };
@@ -345,6 +345,8 @@ async function loadData(){
   fetch('/api/mcp-inventory').then(r=>r.json()).catch(()=>null).then(d=>{
     if(d){mcpInventory=d;renderStats();renderWorkbench();if(typeof renderSources==='function')renderSources();}
   });
+  // Load operation stats (skill install/update/delete counts)
+  fetch('/api/operation-stats').then(r=>r.json()).catch(()=>null).then(d=>{if(d){opStats=d;renderStats();}});
 }
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
@@ -486,6 +488,13 @@ function renderStats(){
     ${item(globalSkills,'skills',{title:'当前可用来源的去重 skill 数（active-only，不含市场/缓存）'})}
     ${item(actionable,'待复核',{click:"goView('issues')",danger:true,title:'同名、上游过时、内容变更等待复核线索（点击查看）'})}
     ${item(deleted,'累计删除',{click:"goView('trash')",accent:true,title:'累计移入垃圾站的 skill 总数（点击查看垃圾站）'})}
+    ${(opStats?.recent)?(()=>{
+      const r=opStats.recent;
+      const t=opStats.totals;
+      const weekInst=r.install||0,weekUpd=r.update||0,weekDel=r.move_to_trash||0;
+      const tInst=t.install||0,tUpd=t.update||0,tDel=t.move_to_trash||0;
+      return item(`${weekInst}装 · ${weekUpd}更 · ${weekDel}删`,'本周操作',{click:"goView('history')",title:`本周: 安装${weekInst} · 更新${weekUpd} · 删除${weekDel}\n全量: 安装${tInst} · 更新${tUpd} · 删除${tDel}`});
+    })():''}
   </div>`;
 }
 

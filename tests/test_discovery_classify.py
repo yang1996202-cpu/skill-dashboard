@@ -60,9 +60,18 @@ class TestUserLevelSkill(unittest.TestCase):
     def test_non_dot_prefixed_is_not_user_level(self):
         self.assertFalse(_is_user_level_skill(f"{HOME}/AI-Skills"))
 
-    def test_nested_under_agent_is_not_user_level(self):
-        # ~/.claude/skills/mkt is depth 3, not the user-level root
-        self.assertFalse(_is_user_level_skill(f"{HOME}/.claude/skills/mkt"))
+    def test_nested_under_agent_is_user_level(self):
+        # ~/.<agent>/skills/<分类> 是 agent 用户根下的子分类目录,user-level
+        # (如 ~/.hermes/skills/creative)。废弃旧约束"恰好两层才算",
+        # 否则 hermes 这类把 SKILL.md 放在 skills/<分类>/ 下层的 agent 会被
+        # 误判成 project-local。
+        self.assertTrue(_is_user_level_skill(f"{HOME}/.claude/skills/mkt"))
+        self.assertTrue(_is_user_level_skill(f"{HOME}/.hermes/skills/creative"))
+
+    def test_nested_under_agent_hidden_subdir_not_user_level(self):
+        # agent 根下的隐藏子目录(如 .cache/.snapshots)不算 user-level,
+        # 这些是缓存/快照,走 cache 分支。
+        self.assertFalse(_is_user_level_skill(f"{HOME}/.claude/skills/.cache"))
 
     def test_outside_home_is_not_user_level(self):
         self.assertFalse(_is_user_level_skill("/tmp/skills"))

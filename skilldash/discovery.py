@@ -174,31 +174,38 @@ def _is_in_git_repo(dir_path):
 
 def _is_user_level_skill(dir_path):
     """Check if directory is a user-level (global) skill directory.
-    
-    User-level means: located at ~/.xxx/skills/ (directly under home directory)
-    
+
+    User-level means: located at ~/.<agent>/skills/ or a sub-category under it.
+    ~/.<agent>/skills/ 是 agent 用户技能根；hermes 等把 SKILL.md 放在
+    ~/.<agent>/skills/<分类>/ 下层,这些子分类目录同样是用户级(不是项目级)。
+
     Examples:
-    - ~/.claude/skills/      → user-level ✅
-    - ~/.kiro/skills/        → user-level ✅
-    - ~/AI-Skills/           → NOT user-level ❌ (not under ~/.<agent>/)
-    - ~/projects/app/.claude/skills/ → NOT user-level ❌ (not directly under home)
+    - ~/.claude/skills/        → user-level ✅ (根,2 段)
+    - ~/.kiro/skills/          → user-level ✅ (根,2 段)
+    - ~/.hermes/skills/creative → user-level ✅ (agent 用户根下的子分类,≥2 段)
+    - ~/AI-Skills/             → NOT user-level ❌ (rel_parts[0] 非 dot 开头)
+    - ~/projects/app/.claude/skills/ → NOT user-level ❌ (不在 home 直下)
     """
     try:
         home = Path.home()
         path = Path(dir_path).resolve()
-        
+
         # Must be relative to home
         rel_parts = path.relative_to(home).parts
-        
-        # User-level pattern: ~/.agent/skills/ (exactly 2 levels deep)
-        # rel_parts[0] must be a dot-prefixed directory (agent name)
-        # rel_parts[1] must be "skills"
-        if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
+
+        # User-level pattern: ~/.<agent>/skills/ 或其子分类目录
+        # rel_parts[0] 必须是 dot-prefixed(agent 名,排除 ".." 上跳)
+        # rel_parts[1] 必须是 "skills"(agent 根 skills 目录)
+        # 后续段可选(<分类>/<子分类>),均非 dot 开头(防误吞 plugin/cache 子目录)
+        if (len(rel_parts) >= 2
+                and rel_parts[0].startswith(".") and not rel_parts[0].startswith("..")
+                and rel_parts[1] == "skills"
+                and all(not p.startswith(".") for p in rel_parts[2:])):
             return True
-            
+
     except Exception:
         pass
-    
+
     return False
 
 
@@ -401,11 +408,17 @@ def _classify_skill_dir_detail(dir_path):
         mark("vendor-bundled", "observe",
              "OpenClaw npm bundled skills (vendor shipped)", "marketplace")
 
-    # Exact agent root at home level: ~/.claude/skills or ~/.agents/skills
-    if len(rel_parts) == 2 and rel_parts[0].startswith(".") and rel_parts[1] == "skills":
-        # OpenClaw shared-link 已在上面 mark 过,这里跳过(避免被 active-root 覆盖)
-        if layer != "shared-link":
-            mark("active-root", "manage", "agent root skills directory", "user")
+    # Agent user-level skills root: ~/.<agent>/skills 或其子分类目录
+    # (~/.hermes/skills/<分类> 这种 agent 用户根下的子分类也属于 user-level,
+    #  与 _is_user_level_skill 同口径;嵌套子分类不再是 project-local)。
+    if (len(rel_parts) >= 2
+            and rel_parts[0].startswith(".") and not rel_parts[0].startswith("..")
+            and rel_parts[1] == "skills"
+            and all(not p.startswith(".") for p in rel_parts[2:])):
+        # OpenClaw shared-link / workspace / bundled 已在上面 mark 过,这里跳过
+        # (避免被 active-root 覆盖;它们的 rel_parts[1] 不是 skills,本就不命中,此判断冗余但无害)
+        if layer not in ("shared-link", "agent-installed", "vendor-bundled"):
+            mark("active-root", "manage", "agent user-level skills directory", "user")
 
     # User-level non-agent collections fall through to "project" in the inlined category logic.
     # No special handling needed here

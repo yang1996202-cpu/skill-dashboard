@@ -230,16 +230,24 @@ class ScanRoutes:
         # 收集每个目录的 skill 名单。上游检测要跨目录全并发——串行打 GitHub API
         # 时 146 目录累计 70s+，浏览器 fetch 挂太久会 Failed to fetch。
         dir_skill_map = {}
+        structure_issues = []  # 断链(broken_symlink/broken_skill_link),前端「🔴 损坏」tab 消费
         for tdir in valid_dirs:
             names = []
             try:
                 for d in sorted(tdir.iterdir()):
-                    if (d.is_dir() or d.is_symlink()) and (d / "SKILL.md").exists():
+                    if not _is_skill_entry(d, include_broken=True):
+                        continue
+                    kind = _skill_entry_kind(d)
+                    if kind in ("broken_symlink", "broken_skill_link"):
+                        structure_issues.append({"name": d.name, "kind": kind, "dir": str(tdir / d.name)})
+                        continue  # 断链读不到 SKILL.md，不进 dir_skill_map(上游/同名检测无意义)
+                    if (d / "SKILL.md").exists():
                         names.append(d.name)
             except Exception:
                 continue
             if names:
                 dir_skill_map[tdir] = names
+        result["structure_issues"] = structure_issues
 
         # 扫前计费提示:upstream 检测会打 GitHub API,给用户知情。
         # estimate = 将查 upstream 的 skill 总数(仅当用户勾了 upstream);

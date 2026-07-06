@@ -561,7 +561,13 @@ def _check_upstream_status_raw(skill_dir):
         result.update({"status": "unknown", "error": "来源记录不完整"})
         return result
 
-    latest = _github_latest_commit(repo, ref, subdir)
+    # latest_commit 取 ref HEAD(不传 subdir)。
+    # installed_commit 装的是 ref HEAD(git rev-parse HEAD),latest 也用 ref HEAD 才是
+    # 同维度比对。若传 subdir,_github_latest_commit 走 commits?path=<subdir>,返回的是
+    # "最近一次改动子路径的 commit"(可能早于 ref HEAD 且 SHA 不同),和 installed_commit
+    # 维度错配,会永久误判 outdated(本地已是最新仍显示过时),并让 update 死循环
+    # (update 拉 ref HEAD,latest 又永远停在子路径旧 commit)。
+    latest = _github_latest_commit(repo, ref)
     if not latest:
         result.update({"status": "unknown", "installed_commit": installed_commit, "latest_commit": "", "error": "GitHub API 查询失败"})
         return result
@@ -924,8 +930,18 @@ def update_skill(skill_name, target_path):
     """Update a skill by re-installing from its tracked upstream source.
     Resolves symlinks to the canonical copy and understands Vercel skills lock.
     Returns: {"ok": bool, "name": str, "output": str, "error": str}
+
+    target_path 语义:skills 父目录(后端拼 `Path(target_path)/skill_name` 得 skill 目录)。
+    容错:若 caller 误传 skill 完整路径(末段 == skill_name 且目录含 SKILL.md),
+    自动取 parent,避免拼成 `<skill_dir>/<skill_name>` 读不到 .skill-source.env
+    而误报「没有找到上游来源记录」(issues 视图点「更新」曾传 canonical_dir 触发此 bug)。
     """
-    skill_dir = Path(target_path) / skill_name
+    target = Path(target_path).expanduser()
+    # 容错:caller 传了 skill 完整路径而非 skills 父目录
+    if target.name == skill_name and (target / "SKILL.md").exists():
+        target = target.parent
+    target_path = str(target)
+    skill_dir = target / skill_name
 
     # If the entry is a symlink, update the canonical copy it points to.
     if skill_dir.is_symlink():

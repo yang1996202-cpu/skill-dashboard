@@ -6,12 +6,56 @@ self._json_response / self.send_error / self.headers / self.rfile
 由 DashboardHandler 基类提供。
 """
 import json
+import time
+from collections import Counter
+from datetime import datetime, timedelta
 
 from skilldash.paths import STATE_DIR
 
 
 class SystemRoutes:
     """history / openapi 等 system 级路由 handler。"""
+
+    def _serve_operation_stats(self):
+        """Aggregate operation counts from full history.jsonl (not truncated)."""
+        hist_file = STATE_DIR / "history.jsonl"
+        try:
+            lines = hist_file.read_text(encoding="utf-8").strip().split("\n")
+        except FileNotFoundError:
+            self._json_response({"totals": {}, "recent": {}, "since": None})
+            return
+        totals = Counter()
+        recent = Counter()
+        now = datetime.now()
+        week_ago = now - timedelta(days=7)
+        earliest = None
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            op = entry.get("op", "")
+            if entry.get("status") != "ok":
+                continue
+            totals[op] += 1
+            ts_str = entry.get("ts", "")
+            if ts_str:
+                try:
+                    ts = datetime.strptime(ts_str, "%Y-%m-%dT%H:%M:%S")
+                    if earliest is None or ts < earliest:
+                        earliest = ts
+                    if ts >= week_ago:
+                        recent[op] += 1
+                except ValueError:
+                    pass
+        self._json_response({
+            "totals": dict(totals),
+            "recent": dict(recent),
+            "since": earliest.strftime("%Y-%m-%d") if earliest else None,
+        })
 
     def _serve_history(self):
         hist_file = STATE_DIR / "history.jsonl"

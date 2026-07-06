@@ -15,6 +15,7 @@ from urllib.parse import urlparse, parse_qs
 
 from skilldash.content_hash import record_content_hash
 from skilldash.discovery import _agent_from_path, _is_skill_entry
+from skilldash.paths import CACHE_DIR
 from skilldash.source_ops import check_upstream_status, create_snapshot, update_skill
 
 
@@ -272,6 +273,47 @@ class SkillRoutes:
             status=status,
             detail={"name": name, "target": target, "error": result.get("error", "")},
         )
+        # 更新成功后 patch scan-result.json 缓存里的 upstream_sources 这条,
+        # 否则刷新页面读旧缓存,skill 仍显示「过时」(明明已更新到最新)。
+        # 复用 check_upstream_status 拿真实最新状态(installed/latest/status),
+        # 不手动拼字段(避免和真实检测对不上)。复用 attach 的 patch 模式但改 upstream 字段。
+        if status == "ok":
+            self._patch_scan_cache_update(name, target)
+
+    def _patch_scan_cache_update(self, name, target):
+        """update 成功后 patch scan-result.json 的 upstream_sources 这条,
+        否则刷新页面读旧缓存的 installed_commit/latest_commit/status,
+        skill 仍显示「过时」明明已更新到最新(死循环表象)。
+
+        复用 check_upstream_status 拿真实最新状态(installed/latest/status/ahead_by),
+        不手动拼字段。与 _patch_scan_cache_attach 对称:attach 加来源时 patch,
+        update 改版本时也 patch。scan-result.json 不存在则跳过(下次扫描自然产出)。
+        """
+        try:
+            cf = CACHE_DIR / "scan-result.json"
+            if not cf.exists():
+                return
+            skill_dir = Path(target).expanduser().resolve() / name
+            up = check_upstream_status(skill_dir)
+            data = json.loads(cf.read_text("utf-8"))
+            parent = str(skill_dir.parent)
+            changed = False
+            for u in data.get("upstream_sources", []):
+                if u.get("name") == name and u.get("dir") == parent:
+                    u["status"] = up.get("status", "unknown")
+                    u["installed_commit"] = up.get("installed_commit", "")
+                    u["latest_commit"] = up.get("latest_commit", "")
+                    u["ahead_by"] = up.get("ahead_by", 0)
+                    u["source"] = up.get("source", u.get("source", "steal-meta"))
+                    u["repo"] = up.get("repo", u.get("repo", ""))
+                    u["is_symlink"] = up.get("is_symlink", False)
+                    u["canonical_dir"] = up.get("canonical_dir", str(skill_dir))
+                    changed = True
+                    break
+            if changed:
+                cf.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
+        except Exception:
+            pass
 
     def _fix_skill(self, name):
         """Fix a skill issue."""

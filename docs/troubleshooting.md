@@ -254,7 +254,7 @@ if(!scan?.sources?.length){
 ### 权限问题
 
 - **只读目录**：`/api/copy-skill` 写入目标目录时权限不足 → 需要在后端捕获 `PermissionError` 返回友好错误
-- **symlink 指向不存在的目标**：`broken_symlink` 检测在 `_fast_scan` 中已处理，但某些 agent（如 CC-Switch 的备份目录）可能存在循环链接
+- **symlink 指向不存在的目标**：`broken_symlink` / `broken_skill_link` 在 `_fast_scan` 和 `/api/scan-run` 都检测——后者把断链产进 `structure_issues` 字段，前端「问题与整理」→「🔴 损坏」tab 消费。某些 agent（如 CC-Switch 备份目录）可能有循环链接
 
 ### GitHub API 限流
 
