@@ -775,11 +775,14 @@ function renderIssues(){
 
   // ── 内容类型计数：按问题类型分，不再按运行态 view 过滤 ──
   const sameNameGroups=sameName.filter(dup=>dup.locations.length>=2);
+  // 同内容副本:SKILL.md hash 完全相同的跨目录副本(如被广播装到多个 agent 根)。可手动删副本保留本体。
+  const identicalGroups=(globalOverlap?.duplicates_identical||[]).filter(d=>d.locations?.length>=2);
   const changedSkills=changes?.changed||[];
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
   const issueTabs=[
     {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length},
+    {key:'identical',emoji:'♻️',label:'同内容副本',count:identicalGroups.length,title:'SKILL.md 内容 hash 完全相同的跨目录副本(如被广播装到多个 agent 根的 skill)'},
     {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length},
     {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length},
   ];
@@ -811,6 +814,7 @@ function renderIssues(){
   const LIMIT=12;
   const slc=(a)=>_issueShowAll?a:a.slice(0,LIMIT);
   const visibleSameName=slc(sameNameGroups);
+  const visibleIdentical=slc(identicalGroups);
   const visibleChanges=changes?{...changes,changed:slc(changedSkills)}:null;
 
   // 缓存新鲜度：区分"扫描数据时间"和"预案生成时间"；两者不同日说明扫描失败了用旧缓存
@@ -905,6 +909,43 @@ function renderIssues(){
       </div>`;
     });
 
+    h+=`</div></section>`;
+  }
+
+  // ── Identical(同内容副本)section:同 SKILL.md hash 的跨目录副本,手动删副本保留本体 ──
+  if(_issueTypeTab==='identical'&&visibleIdentical.length){
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>♻️ 同内容副本</h3><p>SKILL.md 内容完全相同(同 hash)的跨目录副本,多是被广播装到多个 agent 根的 skill。手动勾选要删的副本,保留一个本体。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${visibleIdentical.length} 组</span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div></div>
+      <div class="issue-card-grid">`;
+    visibleIdentical.forEach(dup=>{
+      const locs=dup.locations;
+      const hash=locs[0]?.hash||'';
+      const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px">跨 ${dup.agent_count} Agent</span>`:'';
+      const hashBadge=hash?`<span style="font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="SKILL.md 内容 hash(所有副本相同)">hash ${hash}</span>`:'';
+      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
+          <span style="font-size:10px;color:var(--text-muted)">▶</span>
+          <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${locs.length} 个副本</span>
+          ${crossAgent}
+          ${hashBadge}
+        </div>
+        <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
+          ${locs.map(loc=>{
+            const sn=loc.name||dup.name;
+            const sKey=sn+'|'+loc.dir;
+            return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+              ${issueDirBadge(loc.dir)}
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+              <div style="min-width:0">
+                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
+                ${renderIssuePath(loc.dir)}
+              </div>
+              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
+            </div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    });
     h+=`</div></section>`;
   }
 
