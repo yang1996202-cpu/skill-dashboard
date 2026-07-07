@@ -1,5 +1,5 @@
 // Issue view state
-let _issueTypeTab='same-name'; // 'same-name' | 'upstream' | 'changes' | 'broken'
+let _issueTypeTab='same-name'; // 'same-name' | 'changes' | 'broken' (upstream/recover 已拆到「上游检测」视图)
 
 // layer → 安全边界色。boundary 决定治理卡头部配色（保护/复核·可清理/只观察/隐藏）。
 // 详细解释文案随卡片降噪移除；判定链在 discovery.py + cleanup.py，前端只取 boundary 上色。
@@ -34,7 +34,6 @@ const boundaryLabel=(a)=>{
 };
 const fmtScanTime=(t)=>t?t.replace('T',' ').slice(0,16):'';
 let _execShowAll=false; // executionPlan 各阶段目录的展开状态（独立于同名 tab 的 _issueShowAll）
-let _upShowAll=false; // 上游 tab「待比对」列表展开状态（独立，避免与同名 tab 的 _issueShowAll 串）
 
 // Scan scope persisted across sessions —— 多选 toggle(Set)。
 // scope 跟能力来源页视图映照:current=只扫当前目录 / active=扫「当前可用」
@@ -272,22 +271,8 @@ function renderScanConfig(){
   if(scanResult){
     const scopeLabelMap={current:'当前目录',active:'当前可用',inventory:'来源库存',review:'待复核',all:'全部目录',daily:'当前可用',deep:'当前可用'};
     const scopeLabel=scopeLabelMap[scanResult.scope]||scanResult.scope||'当前可用';
-    const tokenOk=scanResult.github_token_configured;
-    const est=scanResult.upstream_api_estimate||0;
-    const rl=scanResult.github_rate_limit||{};
-    // 上游检测计费提示:仅当本次扫描勾了 upstream(estimate>0)才显示
-    let apiHint='';
-    if(est>0){
-      const quota=tokenOk?'5000 次/小时':'60 次/小时';
-      apiHint=`<span style="color:var(--amber);margin-left:8px" title="upstream 检测对每个 skill 调 GitHub API">上游检测: ${est} 个 skill ≈ ${est} 次 API（${quota}）</span>`;
-      if(rl.limited){
-        apiHint+=`<span style="color:var(--red);margin-left:8px" title="已触发 GitHub 限流">限流中，约 ${rl.reset_in_sec?Math.ceil(rl.reset_in_sec/60):0} 分钟后重置</span>`;
-      }
-    }
     statusHtml=`<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:6px 0;font-size:11px;color:var(--text-muted)">
       <span>扫描：${scopeLabel} · ${scanResult.scanned_dirs} 目录 · ${(scanResult.duration_ms/1000).toFixed(1)}s</span>
-      ${tokenOk?`<span style="color:var(--green);margin-left:8px" title="已配置 GITHUB_TOKEN，额度 5000 次/小时">🔐 Token 已配置</span>`:`<span style="color:var(--amber);margin-left:8px" title="未配置 GITHUB_TOKEN，GitHub API 未认证额度 60 次/小时">⚠ 未配置 Token</span>`}
-      ${apiHint}
       ${scanResult.lint?.warnings?.length?`<span style="color:var(--red);margin-left:8px">${scanResult.lint.warnings.length} 个数据异常</span>`:''}
     </div>`;
   }
@@ -319,7 +304,6 @@ function renderScanConfig(){
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           ${checkBox('same-name','同名','跨目录同名 skill')}
-          ${checkBox('upstream','上游 (API)','检查是否有上游新版本（消耗 GitHub API，未认证 60 次/小时）')}
           ${checkBox('content-changes','变更','检测本地内容改动')}
         </div>
       </div>
@@ -786,21 +770,13 @@ function renderIssues(){
 
   // ── 内容类型计数：按问题类型分，不再按运行态 view 过滤 ──
   const sameNameGroups=sameName.filter(dup=>dup.locations.length>=2);
-  const upstreamAll=upstreams.filter(s=>s.repo);
   const changedSkills=changes?.changed||[];
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
-  // 待补来源:三信号(steal-meta / .git remote / .skill-lock)全空的 skill。
-  // 数据来自扫描的 source_status(后端 detect_source_local,0 GitHub API,默认扫描即产出)。
-  // 点「补来源」直接打开 skill 详情的补来源面板,按 SKILL.md 内容搜回上游。
-  const recoverDirs=(health?.source_status||[]).filter(s=>s.source==='unknown');
-
   const issueTabs=[
     {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length},
-    {key:'upstream',emoji:'🔗',label:'上游',count:upstreamAll.length},
     {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length},
     {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length},
-    {key:'recover',emoji:'◆',label:'待补来源',title:'没有任何上游来源留痕的 skill(steal-meta/.git/lock 三信号全空),点补来源按内容搜回上游',count:recoverDirs.length},
   ];
   const govBuckets=computeGovernBuckets();
   // frozen tab(不动:锁定/观察/缓存)只在 all scope 显示 —— 非 all 时
@@ -830,7 +806,6 @@ function renderIssues(){
   const LIMIT=12;
   const slc=(a)=>_issueShowAll?a:a.slice(0,LIMIT);
   const visibleSameName=slc(sameNameGroups);
-  const visibleUpstreams=slc(upstreamAll);
   const visibleChanges=changes?{...changes,changed:slc(changedSkills)}:null;
 
   // 缓存新鲜度：区分"扫描数据时间"和"预案生成时间"；两者不同日说明扫描失败了用旧缓存
@@ -878,92 +853,6 @@ function renderIssues(){
     }else{
       h+=`<div class="notice-line"><span>显示前 ${LIMIT} / 共 ${totalForTab} 条</span><button class="btn btn-sm btn-primary" onclick="_issueShowAll=true;renderIssues()">显示全部 ${totalForTab}</button></div>`;
     }
-  }
-
-  // ── Upstream section ──
-  // 本地独立检测（.git remote / .skill-source.env / lock）不依赖 GitHub API，
-  // 未配 token 时为 status=unknown 但带 repo。这里一并展示，让没配 token 的用户
-  // 也能看到"哪些 skill 有可追踪来源"；只有 status=outdated 才标"过时"。
-  const upstreamDetected=visibleUpstreams;
-  if(_issueTypeTab==='upstream'&&upstreamDetected.length){
-    const outdated=upstreamDetected.filter(s=>s.status==='outdated');
-    const pendingCompare=upstreamDetected.filter(s=>s.status!=='outdated');
-    const headTag=[outdated.length&&`${outdated.length} 个过时`,pendingCompare.length&&`${pendingCompare.length} 个已最新/待比对`].filter(Boolean).join(' · ')||'无过时';
-    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>🔗 上游追踪</h3><p>只提示可复核更新，不自动改文件。未配置 token 时仅展示检测到的来源。</p></div><span>${headTag}</span></div>`;
-    h+=`<div class="card issue-list-card">`;
-    if(outdated.length){
-      const SOURCE_LABEL={
-        'steal-meta':['Steal安装','通过 Skill Dashboard 从 GitHub 安装'],
-        'git-remote':['Git仓库','目录本身是一个 Git 仓库，可 git pull'],
-        'vercel-lock':['NPX/Vercel','通过 npx skills add 安装，记录在 ~/.agents/.skill-lock.json'],
-        'unknown':['未知','无法识别上游来源']
-      };
-      // 先按 canonical_dir 去重(合并 symlink 副本,避免 N 个相同更新按钮)
-      const upstreamGroups={};
-      outdated.forEach(s=>{
-        const key=s.canonical_dir||s.dir;
-        if(!upstreamGroups[key]){
-          upstreamGroups[key]={...s, copies:[]};
-        }
-        upstreamGroups[key].copies.push({dir:s.dir,is_symlink:s.is_symlink,link_target:s.link_target});
-      });
-      // 再按应用(agent)分组,套折叠卡——用户要"按应用展开看哪些 skill 要更新"。
-      const upByAgent={};
-      Object.values(upstreamGroups).forEach(s=>{
-        const agent=_dirCategory(s.dir);
-        (upByAgent[agent]=upByAgent[agent]||[]).push(s);
-      });
-      h+=`<div class="issue-card-grid">`;
-      Object.entries(upByAgent).forEach(([agent,skills])=>{
-        const cm=CAT_META[agent]||CAT_META.unknown;
-        h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
-          <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.up-body');var on=b.style.display==='none';b.style.display=on?'block':'none';this.querySelector('.up-arrow').textContent=on?'▼':'▶'">
-            <span class="up-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
-            <span style="font-size:13px;font-weight:600">${cm?.name||agent}</span>
-            <span style="font-size:11px;color:var(--red);background:var(--bg-card);padding:1px 6px;border-radius:999px">${skills.length} 个过时</span>
-          </div>
-          <div class="up-body" style="display:none;padding:6px 12px 10px">
-            ${skills.map(s=>{
-              const [sourceLabel,sourceTitle]=SOURCE_LABEL[s.source||'unknown']||SOURCE_LABEL['unknown'];
-              const canonical=s.canonical_dir||s.dir;
-              const updateLabel=s.source==='vercel-lock'?'NPX 更新':s.source==='git-remote'?'Git 更新':'更新';
-              const copyCount=s.copies.length;
-              const copyHint=copyCount>1?`&#10;共 ${copyCount} 个副本: ${s.copies.map(c=>c.dir.replace(/^\/Users\/[^/]+/,'~')).join(', ')}`:'';
-              return `<div class="issue-row">
-                ${issueDirBadge(canonical)}
-                <div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span>${copyCount>1?`<span style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);padding:1px 5px;border-radius:999px" title="${esc(copyHint)}">+${copyCount-1} 副本</span>`:''}</div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div><div style="font-size:10px;color:var(--text-muted);font-family:monospace" title="当前版本 → 上游最新版本">${s.installed_commit?.slice(0,8)||'?'} → ${s.latest_commit?.slice(0,8)||'?'}</div>${renderIssuePath(canonical)}</div>
-                <span style="font-size:11px;color:var(--red)">⚠ 过时</span>
-                <span style="font-size:10px;color:var(--text-muted);white-space:nowrap" title="${esc(sourceTitle)}${copyHint}">${sourceLabel}</span>
-                <button class="btn btn-sm" onclick="updateUpstream('${esc(s.name)}',{target:this},'${esc(canonical)}')">${updateLabel}</button>
-              </div>`;
-            }).join('')}
-          </div>
-        </div>`;
-      });
-      h+=`</div>`;
-    }
-    if(pendingCompare.length){
-      const upLim=_upShowAll?pendingCompare.length:Math.min(LIMIT,pendingCompare.length);
-      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden;margin-top:10px">
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.up-pend-body');var on=b.style.display==='none';b.style.display=on?'block':'none';this.querySelector('.up-pend-arrow').textContent=on?'▼':'▶'">
-          <span class="up-pend-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
-          <span style="font-size:13px;font-weight:600">已最新 / 待比对</span>
-          <span style="font-size:11px;color:var(--text-muted);background:var(--bg-card);padding:1px 6px;border-radius:999px">${pendingCompare.length} 个</span>
-        </div>
-        <div class="up-pend-body" style="display:none;padding:6px 12px 10px">`;
-      pendingCompare.slice(0,upLim).forEach(s=>{
-        const canonical=s.canonical_dir||s.dir;
-        const isCurrent=s.status==='current';
-        h+=`<div class="issue-row">${issueDirBadge(canonical)}<div style="flex:1;min-width:0"><div style="display:flex;align-items:center;gap:6px"><span style="font-size:13px;font-weight:500">${s.name}</span></div><div style="font-size:11px;color:var(--text-muted)">${s.repo}</div>${renderIssuePath(canonical)}</div><span style="font-size:11px;color:${isCurrent?'var(--green)':'var(--text-muted)'}">${isCurrent?'✓ 已最新':'待比对'}</span></div>`;
-      });
-      if(pendingCompare.length>LIMIT){
-        h+=_upShowAll
-          ?`<div class="notice-line"><span>显示全部 ${pendingCompare.length} 个</span><button class="btn btn-sm" onclick="_upShowAll=false;renderIssues()">只看前 ${LIMIT}</button></div>`
-          :`<div class="notice-line"><span>显示前 ${LIMIT} / 共 ${pendingCompare.length} 个</span><button class="btn btn-sm btn-primary" onclick="_upShowAll=true;renderIssues()">显示全部 ${pendingCompare.length}</button></div>`;
-      }
-      h+=`</div></div>`;
-    }
-    h+=`</div></section>`;
   }
 
   // ── Same-name section ──
@@ -1042,64 +931,8 @@ function renderIssues(){
     h+=`</div></section>`;
   }
 
-  // ── Recover(待补来源)section:按目录分组,卡内 skill 懒展开 ──
-  if(_issueTypeTab==='recover'&&recoverDirs.length){
-    // 按 dir 分组,目录按 unknown skill 数降序。卡内 skill **懒展开**——初始只渲染
-    // 卡头(目录+count),点开才渲染 skill 行。否则 active scope 几百 skill 全量进
-    // display:none body(每卡),12 卡 = 几千行 DOM 每次重渲染,浏览器卡死点不动。
-    const recoverGroups={};
-    recoverDirs.forEach(s=>{(recoverGroups[s.dir]=recoverGroups[s.dir]||[]).push(s);});
-    const recoverGroupList=Object.entries(recoverGroups)
-      .map(([dir,skills])=>({dir,skills}))
-      .sort((a,b)=>b.skills.length-a.skills.length);
-    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3 style="color:var(--amber)">◆ 待补来源</h3><p>这些 skill 没有任何上游来源留痕（steal-meta / .git / lock 三信号全空）。按目录分组,展开点「补来源」按 SKILL.md 内容搜回上游仓库。</p></div><span>${recoverDirs.length} skill · ${recoverGroupList.length} 目录</span></div>`;
-    h+=`<div class="issue-card-grid">`;
-    const gLim=_issueShowAll?recoverGroupList.length:Math.min(LIMIT,recoverGroupList.length);
-    recoverGroupList.slice(0,gLim).forEach((g,i)=>{
-      const gid='rc'+i+'-'+Math.random().toString(36).slice(2,6);
-      _rcGroupData[gid]=g.skills; // 存数据,展开时取(不初始渲染 DOM)
-      const shortDir=(g.dir||'').replace(/^\/Users\/[^/]+/,'~');
-      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
-        <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="toggleRecoverGroup('${gid}',this)">
-          <span class="rc-arrow" style="font-size:10px;color:var(--text-muted)">▶</span>
-          ${issueDirBadge(g.dir)}
-          <span style="flex:1;min-width:0;font-size:12px;font-weight:600;font-family:var(--mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(g.dir)}">${esc(shortDir)}</span>
-          <span style="font-size:11px;color:var(--text-muted);flex-shrink:0">${g.skills.length} skill</span>
-        </div>
-        <div id="rcbody-${gid}" class="issue-group-body" style="display:none;padding:6px 12px 10px"></div>
-      </div>`;
-    });
-    h+=`</div></section>`;
-    if(recoverGroupList.length>LIMIT){
-      h+=_issueShowAll
-        ?`<div class="notice-line"><span>显示全部 ${recoverGroupList.length} 个目录</span><button class="btn btn-sm" onclick="_issueShowAll=false;renderIssues()">只看前 ${LIMIT}</button></div>`
-        :`<div class="notice-line"><span>显示前 ${LIMIT} / 共 ${recoverGroupList.length} 个目录(${recoverDirs.length} skill)</span><button class="btn btn-sm btn-primary" onclick="_issueShowAll=true;renderIssues()">显示全部</button></div>`;
-    }
-  }
-
   h+=planHtml;
   $('issues-list').innerHTML=h;
-}
-
-// recover 目录卡懒展开:点卡头才渲染该目录的 skill 行,避免 active scope 几百 skill
-// 全量进 display:none body 卡死浏览器。_rcGroupData 存每卡 skill 数据(renderIssues 填)。
-const _rcGroupData={};
-function toggleRecoverGroup(gid,headerEl){
-  const body=document.getElementById('rcbody-'+gid);
-  if(!body)return;
-  const arrow=headerEl.querySelector('.rc-arrow');
-  const on=body.style.display==='none';
-  body.style.display=on?'block':'none';
-  if(arrow)arrow.textContent=on?'▼':'▶';
-  // 懒展开:首次展开才渲染 skill 行,避免初始全量 DOM 卡死
-  if(on&&!body.dataset.filled){
-    body.dataset.filled='1';
-    const skills=_rcGroupData[gid]||[];
-    body.innerHTML=skills.map(s=>`<div style="display:flex;align-items:center;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle)">
-      <span style="flex:1;min-width:0;font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.name)}" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}')">${escapeHtml(s.name)}</span>
-      <button class="btn btn-sm" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}',{autoExpandRecovery:true})" title="按 SKILL.md 内容搜回上游来源" style="font-size:9px;padding:2px 6px;color:var(--amber);border-color:var(--amber)">补来源</button>
-    </div>`).join('');
-  }
 }
 
 async function fixSkill(name,action,btn){

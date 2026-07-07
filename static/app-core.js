@@ -39,12 +39,15 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',issues:'问题与整理',sources:'能力来源',trash:'垃圾站',history:'操作日志'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',sources:'能力来源',upstream:'上游检测',issues:'问题与整理',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
   if(v==='sources'){
     renderSources();
     updateTargetSelector(false,'full');
+  }
+  if(v==='upstream' && typeof renderUpstreamView==='function'){
+    renderUpstreamView();
   }
 }
 function goView(v){
@@ -396,7 +399,8 @@ function getTriageMetrics(){
   const upstreams=health?.upstream_sources||[];
   const outdated=upstreams.filter(s=>s.status==='outdated').length;
   const changes=health?.content_changes?.changed?.length||0;
-  const actionable=sameName+outdated+changes;
+  // actionable 不含 outdated:上游过时已拆到「上游检测」菜单 + badge-upstream,不重复计入 issues badge。
+  const actionable=sameName+changes;
   const observed=sameName+upstreams.length+changes;
   return {
     sameName,upstreams,outdated,changes,
@@ -425,12 +429,14 @@ function updateDiagBadges(){
   if(!scanResult&&!health){
     $('badge-health').textContent='-';
     $('badge-issues').textContent='—';
+    const bu=$('badge-upstream');if(bu)bu.textContent='-';
     return;
   }
   const h=health;
   $('badge-health').textContent=h?.health_score?`${h.health_score.score}/100`:'-';
   const m=getTriageMetrics();
   $('badge-issues').textContent=m.actionable||'—';
+  const bu=$('badge-upstream');if(bu)bu.textContent=m.outdated||'—';
 }
 
 function renderTarget(){
@@ -486,7 +492,8 @@ function renderStats(){
     <span class="gstat-label">全局</span>
     ${item(gTargets,'应用',{click:"goView('sources')",title:'已发现的 Agent/应用分组数（点击查看能力来源）'})}
     ${item(globalSkills,'skills',{title:'当前可用来源的去重 skill 数（active-only，不含市场/缓存）'})}
-    ${item(actionable,'待复核',{click:"goView('issues')",danger:true,title:'同名、上游过时、内容变更等待复核线索（点击查看）'})}
+    ${item(actionable,'待复核',{click:"goView('issues')",danger:true,title:'同名、内容变更等待复核线索（点击查看）；上游过时已拆到「上游检测」菜单'})}
+    ${item(m.outdated,'上游过时',{click:"goView('upstream')",danger:true,title:'检测到上游仓库有新版本的 skill（点击进上游检测）'})}
     ${item(deleted,'累计删除',{click:"goView('trash')",accent:true,title:'累计移入垃圾站的 skill 总数（点击查看垃圾站）'})}
     ${(opStats?.recent)?(()=>{
       const r=opStats.recent;

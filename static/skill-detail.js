@@ -181,6 +181,7 @@ function _recoverMarkSolved(){
     health.upstream_sources=health.upstream_sources.filter(s=>s.name!==nm);
     health.upstream_sources.push({name:nm,dir:skillDir,repo,status:'unknown',source:'steal-meta',canonical_dir:skillDir});
   }
+  if(typeof renderUpstreamView==='function') renderUpstreamView();
   if(typeof renderIssues==='function') renderIssues();
 }
 async function doAttachSource(i){

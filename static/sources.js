@@ -945,22 +945,10 @@ function renderBrowseDir(path,itemList,container){
     const selKey=path+'::'+s.name;
     const isBroken=s.kind==='broken_symlink'||s.kind==='broken_skill_link';
     const kindLabel=s.kind==='broken_symlink'?'断链':(s.kind==='broken_skill_link'?'目录壳':'');
-    // 能力桶判 unknown/review-copy → 行内加"补来源" badge,点击直达补来源面板
-    // _dirTarget miss 时返回字符串 'unknown'(非 target 对象),用 has-path 守卫避免误判
-    let canRecoverSource=false;
-    if(!isBroken&&typeof sourceCapabilityBucket==='function'&&typeof _dirTarget==='function'){
-      const _t=_dirTarget(path);
-      if(_t&&typeof _t==='object'&&_t.path){
-        const bucket=sourceCapabilityBucket(_t);
-        canRecoverSource=bucket==='unknown'||bucket==='review-copy';
-      }
-    }
-    const recoverBadge=canRecoverSource?`<span onclick="event.stopPropagation();showSkill('${esc(s.name)}','${esc(path)}',{autoExpandRecovery:true})" title="此 skill 来源未知,点击补上游" style="font-size:9px;color:var(--amber);background:var(--amber-bg);border:1px solid color-mix(in srgb,var(--amber) 35%,transparent);border-radius:999px;padding:1px 6px;cursor:pointer;white-space:nowrap">补来源</span>`:'';
     const itemDesc=s.description?`<div style="font-size:10px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.description)}</div>`:'';
     h+=`<div style="display:flex;align-items:center;gap:6px;padding:3px 0;${isInstalled?'color:var(--green)':''}">
       <input type="checkbox" class="src-skill-check" data-path="${esc(path)}" data-name="${esc(s.name)}" ${srcSelectedSkills.has(selKey)?'checked':''} onchange="toggleSrcSkill(this)" style="cursor:pointer">
       <span style="flex:1;min-width:0;overflow:hidden;${isBroken?'color:var(--text-muted)':'cursor:pointer;color:var(--accent)'}" onclick="${isCommands||isBroken?'':`showSkill('${esc(s.name)}','${esc(path)}')`}"><span style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>${itemDesc}</span>
-      ${recoverBadge}
       ${kindLabel?`<span style="font-size:9px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 35%,transparent);border-radius:999px;padding:1px 5px">${kindLabel}</span>`:''}
       ${!isCurrentTarget&&!isInstalled&&!isCommands&&!isBroken?`<button class="btn btn-sm" onclick="stealFromSource('${esc(path)}','${esc(s.name)}')" title="以 ${copyMode==='symlink'?'链接':'复制'} 方式同步到当前目录" style="font-size:9px;padding:2px 6px">同步到当前目录</button>`:''}
       ${!isCurrentTarget&&!isInstalled&&!isCommands&&isBroken?'<span style="font-size:9px;color:var(--text-muted)">断链·无法同步</span>':''}
