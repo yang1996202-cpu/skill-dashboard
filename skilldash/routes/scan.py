@@ -226,14 +226,22 @@ class ScanRoutes:
         checks = body.get("checks", ["same-name", "content-changes"])
 
         # Validate directories
+        # 备份/快照目录不当 skill 扫:.snapshots 是更新前的副本,永远"过时"且无意义检测
+        _SKIP_SIGS = (".snapshots", "backup", "plugins-backup", "skill-backups")
         valid_dirs = []
         for d in directories:
             p = Path(d).expanduser().resolve()
-            if p.is_dir() and p.is_relative_to(home):
-                valid_dirs.append(p)
+            if not (p.is_dir() and p.is_relative_to(home)):
+                continue
+            if any(sig in str(p) for sig in _SKIP_SIGS):
+                continue
+            valid_dirs.append(p)
         if not valid_dirs:
             self._json_response({"error": "没有有效的 skill 目录"}, status=400)
             return
+
+        # 记一次"整理"动作(治理成效"整理次数"= scan_run 操作数)
+        self._log_history("scan_run", count=len(valid_dirs), source="scan_run", status="ok", detail={"scope": requested_scope, "checks": checks, "dirs": len(valid_dirs)})
 
         t0 = time.time()
         result = {

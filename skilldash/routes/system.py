@@ -9,6 +9,7 @@ import json
 import time
 from collections import Counter
 from datetime import datetime, timedelta
+from urllib.parse import urlparse, parse_qs
 
 from skilldash.paths import STATE_DIR
 
@@ -57,19 +58,83 @@ class SystemRoutes:
             "since": earliest.strftime("%Y-%m-%d") if earliest else None,
         })
 
+    def _serve_governance_stats(self):
+        """治理成效:从全量 history.jsonl 聚合,给仪表盘「治理成果」组用。
+
+        - cleanup_total / cleanup_by_reason: move_to_trash 的 count 累加(不限 status,
+          与 trash-stats.deleted_total 同口径),按 detail.reason 分桶;无 reason 归
+          uncategorized(早期未分类)。
+        - update/install/copy/attach: 对应 op 的 count 累加(处理的 skill 个数)。
+        - scan_total: scan_run 操作次数(= 点了多少次"开始整理")。
+        reason 是 2026-07 才加的埋点,历史 319 次 move_to_trash 无 reason → 全归 uncategorized。
+        """
+        hist_file = STATE_DIR / "history.jsonl"
+        cleanup_by_reason = Counter()
+        cleanup_total = 0
+        update_total = install_total = copy_total = attach_total = 0
+        scan_total = 0
+        try:
+            for line in hist_file.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                op = e.get("op", "")
+                cnt = e.get("count") or 0
+                detail = e.get("detail") or {}
+                if op == "move_to_trash":
+                    cleanup_total += cnt
+                    cleanup_by_reason[detail.get("reason") or "uncategorized"] += cnt
+                elif op == "update":
+                    update_total += cnt
+                elif op == "install":
+                    install_total += cnt
+                elif op == "copy":
+                    copy_total += cnt
+                elif op == "attach_source":
+                    attach_total += cnt
+                elif op == "scan_run":
+                    scan_total += 1
+        except FileNotFoundError:
+            pass
+        self._json_response({
+            "cleanup_total": cleanup_total,
+            "cleanup_by_reason": dict(cleanup_by_reason),
+            "update_total": update_total,
+            "install_total": install_total,
+            "copy_total": copy_total,
+            "attach_total": attach_total,
+            "scan_total": scan_total,
+        })
+
     def _serve_history(self):
         hist_file = STATE_DIR / "history.jsonl"
+        query = parse_qs(urlparse(self.path).query)
+        try:
+            limit = max(1, min(500, int(query.get("limit", ["50"])[0])))
+        except Exception:
+            limit = 50
+        hide = set(filter(None, query.get("hide", [""])[0].split(",")))
         try:
             lines = hist_file.read_text(encoding="utf-8").strip().split("\n")
             entries = []
-            for line in lines[-50:]:
+            for line in reversed(lines):  # 从最新往回取,先过滤后截断,避免噪音挤掉有用记录
                 line = line.strip()
-                if line:
-                    try:
-                        entries.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-            self._json_response(entries)
+                if not line:
+                    continue
+                try:
+                    e = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if e.get("op") in hide:
+                    continue
+                entries.append(e)
+                if len(entries) >= limit:
+                    break
+            self._json_response(list(reversed(entries)))  # 反转回旧→新,兼容前端 .reverse()
         except FileNotFoundError:
             self._json_response([])
 

@@ -96,6 +96,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/duplicate-decisions"):    ("_list_duplicate_decisions", None),
         ("GET", "/api/fast-scan"):              ("_fast_scan", None),
         ("GET", "/api/operation-stats"):        ("_serve_operation_stats", None),
+        ("GET", "/api/governance-stats"):       ("_serve_governance_stats", None),
         ("GET", "/api/openapi"):                ("_openapi", None),
         ("GET", "/api/understand"):             ("_serve_understanding", None),
         ("GET", "/api/source/skills"):          ("_list_source_skills", None),

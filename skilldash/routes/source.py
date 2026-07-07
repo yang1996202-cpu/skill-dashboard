@@ -1039,6 +1039,24 @@ class SourceRoutes:
                 if len(new_arr) != len(arr):
                     data[key] = new_arr
                     changed = True
+            # structure_issues(损坏链接等):dir 是 skill 完整路径(含 name),与
+            # source_status 的 dir(父目录)语义不同——用 dir.parent 反推父目录对账。
+            # parent 是普通目录,resolve 不跟随 symlink,与 pairs 口径一致。
+            si = data.get("structure_issues", [])
+            if si:
+                new_si = []
+                for s in si:
+                    sdir = s.get("dir", "")
+                    try:
+                        spar = str(Path(sdir).parent.resolve()) if sdir else ""
+                    except Exception:
+                        spar = ""
+                    if (s.get("name"), spar) in pairs:
+                        changed = True
+                        continue
+                    new_si.append(s)
+                if len(new_si) != len(si):
+                    data["structure_issues"] = new_si
             if changed:
                 cf.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
         except Exception:
@@ -1102,6 +1120,7 @@ class SourceRoutes:
             self._patch_scan_cache_attach(resolved, repo)
             # 失效按作者聚合缓存:补来源后切 by-author 视图立即看到该 skill
             self._invalidate_source_aggregations_cache()
+            self._log_history("attach_source", paths=[str(resolved)], count=1, source="attach_source", status="ok", detail={"name": resolved.name, "repo": repo})
             self._json_response({"ok": True, "source": "steal-meta",
                                  "repo": repo, "subdir": subdir, "ref": ref, "url": url})
         except Exception as e:

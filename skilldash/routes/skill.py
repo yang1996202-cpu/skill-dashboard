@@ -110,18 +110,26 @@ class SkillRoutes:
         """Move a skill to trash. If ?target= is given, delete from that dir."""
         query = parse_qs(urlparse(self.path).query)
         target = query.get("target", [""])[0] or None
+        reason = query.get("reason", [""])[0] or ""  # 删除原因:broken/same-name/identical/changed/空=未分类(治理成效按此聚合)
         if target:
-            target_path = Path(target).expanduser().resolve()
-            # Validate target is under home directory
-            if not target_path.is_relative_to(Path.home()):
+            raw = Path(target).expanduser()
+            # 安全校验:规范化 .. 后必须在 home 下;不跟随 symlink(broken symlink 的断目标
+            # 可能不在 home,但我们移的是 symlink 本体,本体路径在 home 下即安全)
+            norm = Path(os.path.normpath(str(raw)))
+            if not norm.is_relative_to(Path.home()):
                 self._json_response({"error": "target must be under home directory"}, status=400)
                 return
-            skill_dir = target_path / name
+            # target 语义两可:同名/同内容传父目录(要拼 name);损坏链接传 skill 完整路径
+            # (broken symlink 本体,已含 name)。先认 target 本身是不是 skill entry,是就直接用。
+            if _is_skill_entry(raw, include_broken=True):
+                skill_dir = raw
+            else:
+                skill_dir = raw / name
             if _is_skill_entry(skill_dir, include_broken=True):
                 try:
                     dest = self._trash_dir(skill_dir)
                     self._patch_scan_cache_remove([(name, str(skill_dir.parent))])
-                    self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "target": target})
+                    self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "target": target, "reason": reason})
                     self._json_response({"ok": True, "name": name, "trashed": str(dest)})
                 except Exception as e:
                     self._json_response({"error": str(e)}, status=500)
@@ -136,7 +144,7 @@ class SkillRoutes:
         try:
             dest = self._trash_dir(skill_dir)
             self._patch_scan_cache_remove([(name, str(skill_dir.parent))])
-            self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name})
+            self._log_history("move_to_trash", paths=[str(skill_dir)], count=1, source="delete_skill", status="ok", detail={"name": name, "reason": reason})
             self._json_response({"ok": True, "name": name, "trashed": str(dest)})
         except Exception as e:
             self._json_response({"error": str(e)}, status=500)

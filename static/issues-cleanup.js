@@ -376,6 +376,8 @@ async function runScan(scope,opts={}){
     }
     const scopeTag=[..._scanScope].sort().join(',')||'active';
     const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name','content-changes'];
+    const _startBtn=$('cleanup-start-btn');
+    if(_startBtn)_startBtn.textContent=`⏳ 扫描 ${directories.length} 个目录(跨目录算同名重复较慢,可能几十秒,请耐心等)...`;
     const r=await fetch('/api/scan-run',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -895,14 +897,14 @@ function renderIssues(){
             const needSrc=_bucket==='unknown'||_bucket==='review-copy';
             return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
               ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除" style="cursor:pointer">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" data-sreason="same-name" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除" style="cursor:pointer">
               <div style="min-width:0">
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 ${renderIssuePath(loc.dir)}
               </div>
               <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}',{autoExpandRecovery:true})" title="按内容搜回上游来源" style="font-size:9px;padding:2px 6px;${needSrc?'color:var(--amber);border-color:var(--amber)':''}">补来源</button>
               <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" title="删除此目录的 skill(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}','same-name')" title="删除此目录的 skill(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -934,13 +936,13 @@ function renderIssues(){
             const sKey=sn+'|'+loc.dir;
             return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
               ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除(保留没勾的作本体)" style="cursor:pointer">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" data-sreason="identical" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除(保留没勾的作本体)" style="cursor:pointer">
               <div style="min-width:0">
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 ${renderIssuePath(loc.dir)}
               </div>
               <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" title="删除此目录的副本(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}','identical')" title="删除此目录的副本(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -958,7 +960,7 @@ function renderIssues(){
       h += `<div class="issue-row">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${issue.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">${kindLabel} · ${issue.dir ? issue.dir.replace(/^\/Users\/[^/]+/, '~') : ''}</div></div>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this,'${esc(issue.dir||'')}')" title="删除此断链(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button></div>`;
+        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this,'${esc(issue.dir||'')}','broken')" title="删除此断链(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button></div>`;
     });
     h += `</div></section>`;
   }
@@ -1004,10 +1006,11 @@ async function rehashSkill(name,btn){
   catch(e){toast('更新失败','error')}finally{btn.disabled=false;btn.textContent='重新记录'}
 }
 
-async function deleteSkill(name,btn,target){
+async function deleteSkill(name,btn,target,reason){
   if(!confirm(`确认删除 skill "${name}"？`))return;
   if(btn){btn.disabled=true;btn.textContent='删除中...';}
-  const url=target?`/api/skill/${name}?target=${encodeURIComponent(target)}`:`/api/skill/${name}`;
+  const _q=[target&&`target=${encodeURIComponent(target)}`,reason&&`reason=${encodeURIComponent(reason)}`].filter(Boolean).join('&');
+  const url=_q?`/api/skill/${name}?${_q}`:`/api/skill/${name}`;
   try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();
     if(d.ok){
       toast(`已删除 ${name}`);
@@ -1028,7 +1031,7 @@ async function deleteAllBroken(){
   if(!confirm(`确认删除全部 ${broken.length} 个损坏链接(symlink 断链)?\n\n将移到回收站,可恢复。`))return
   let ok=0,fail=0;
   for(const i of broken){
-    const url=i.dir?`/api/skill/${i.name}?target=${encodeURIComponent(i.dir)}`:`/api/skill/${i.name}`;
+    const url=i.dir?`/api/skill/${i.name}?target=${encodeURIComponent(i.dir)}&reason=broken`:`/api/skill/${i.name}?reason=broken`;
     try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
     catch{fail++;}
   }

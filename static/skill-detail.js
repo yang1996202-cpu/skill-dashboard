@@ -287,7 +287,8 @@ async function deleteSelectedIssues(){
   for(const cb of checks){
     const name=cb.dataset.sname;
     const dir=cb.dataset.sdir;
-    const url=dir?`/api/skill/${name}?target=${encodeURIComponent(dir)}`:`/api/skill/${name}`;
+    const reason=cb.dataset.sreason||'';
+    const url=dir?`/api/skill/${name}?target=${encodeURIComponent(dir)}${reason?`&reason=${reason}`:''}`:`/api/skill/${name}${reason?`?reason=${reason}`:''}`;
     try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
     catch{fail++;}
   }

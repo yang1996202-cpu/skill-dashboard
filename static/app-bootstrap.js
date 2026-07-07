@@ -383,12 +383,13 @@ const HISTORY_STATUS_LABELS={
   failed:'失败',
   blocked:'被阻止'
 };
+let _historyHideSwitch=true;
 async function loadHistory(){
   const list=$('history-list');
   if(!list)return;
   list.innerHTML='<div class="empty" style="padding:30px 0">加载中...</div>';
   try{
-    const rows=await fetch('/api/history').then(r=>r.json()).catch(()=>[]);
+    const rows=await fetch(`/api/history?limit=200${_historyHideSwitch?'&hide=switch_target':''}`).then(r=>r.json()).catch(()=>[]);
     if(!rows||!rows.length){
       list.innerHTML='<div class="empty" style="padding:30px 0">暂无操作记录</div>';
       return;
@@ -410,7 +411,7 @@ async function loadHistory(){
         ${detail}
       </div>`;
     }).join('');
-    list.innerHTML=`<div style="margin-bottom:12px;font-size:12px;color:var(--text-muted)">最近 ${rows.length} 条操作记录（最多保留 50 条）</div>${html}`;
+    list.innerHTML=`<div style="margin-bottom:12px;font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:8px;flex-wrap:wrap"><span>最近 ${rows.length} 条${_historyHideSwitch?' · 已隐藏切目录':''}</span><button class="btn btn-sm" onclick="_historyHideSwitch=${!_historyHideSwitch};loadHistory()">${_historyHideSwitch?'显示切目录':'隐藏切目录'}</button></div>${html}`;
   }catch(e){
     list.innerHTML='<div class="empty" style="padding:30px 0;color:var(--red)">加载失败：'+escapeHtml(e.message)+'</div>';
   }

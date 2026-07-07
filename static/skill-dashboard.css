@@ -87,9 +87,10 @@ body{font-family:var(--font);background:var(--bg);color:var(--text);line-height:
 .cap-strip{display:flex;flex-wrap:wrap;gap:6px;margin:12px 0 0;cursor:pointer}
 .cap-chip{font-size:11px;font-family:var(--mono);color:var(--text-dim);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:6px;padding:3px 8px;font-variant-numeric:tabular-nums;transition:border-color .15s ease}
 .cap-strip:hover .cap-chip{border-color:color-mix(in srgb,var(--accent) 30%,var(--border-subtle))}
-.dash-global-strip{display:flex;align-items:center;gap:24px;flex-wrap:wrap;padding:14px 18px;margin-bottom:12px}
-.gstat-label{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.06em;font-weight:600;padding-right:14px;border-right:1px solid var(--border-subtle)}
-.gstat{display:flex;align-items:baseline;gap:6px}
+.dash-global-strip{display:flex;align-items:baseline;gap:22px;flex-wrap:wrap;padding:14px 18px;margin-bottom:12px}
+.gstat-grouplabel{font-size:11px;color:var(--accent);text-transform:uppercase;letter-spacing:.06em;font-weight:700;white-space:nowrap}
+.gstat-sep{width:1px;height:20px;background:var(--border-subtle);align-self:center;flex-shrink:0}
+.gstat{display:inline-flex;align-items:baseline;gap:6px;white-space:nowrap}
 .gstat.clickable{cursor:pointer}
 .gstat-val{font-size:20px;font-weight:600;font-variant-numeric:tabular-nums;letter-spacing:-.02em;transition:color .15s ease}
 .gstat-lbl{font-size:11px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}

@@ -1,4 +1,4 @@
-let scan=null,health=null,skills=[],installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null,opStats=null;
+let scan=null,health=null,skills=[],installedPlugins=[],enabledPlugins=[],knownMarketplaces=[],mcpInventory=null,opStats=null,govStats=null;
 const $=id=>document.getElementById(id);
 let categoryOverrides={};
 function loadCategoryOverrides(){
@@ -361,6 +361,8 @@ async function loadData(){
   });
   // Load operation stats (skill install/update/delete counts)
   fetch('/api/operation-stats').then(r=>r.json()).catch(()=>null).then(d=>{if(d){opStats=d;renderStats();}});
+  // Load governance stats (治理成效:按 reason 的清理量 + 各动作累计,仪表盘「治理成果」组用)
+  fetch('/api/governance-stats').then(r=>r.json()).catch(()=>null).then(d=>{if(d){govStats=d;renderStats();}});
 }
 
 // JS-side keyword classification (mirrors nlp.sh taxonomy)
@@ -491,28 +493,17 @@ function renderStats(){
   const el=$('dash-global');
   if(!el)return;
   const gTargets=targetGroups.length||globalStats?.targets_scanned||0;
-  const m=getTriageMetrics();
-  const actionable=(scanResult||health)?m.actionable:0;
   const globalSkills=globalStats?.unique_skills||0;
-  const deleted=deletedStats?.deleted_total??0;
-  const item=(val,lbl,opts={})=>`<div class="gstat${opts.click?' clickable':''}"${opts.click?` onclick="${opts.click}"`:''} title="${opts.title||''}">
-    <span class="gstat-val"${opts.danger&&val>0?' style="color:var(--red)"':''}${opts.accent?' style="color:var(--accent)"':''}>${val}</span>
-    <span class="gstat-lbl">${lbl}</span>
-  </div>`;
+  const g=govStats||{};
+  const cbr=g.cleanup_by_reason||{};
+  const broken=cbr['broken']||0,sameName=cbr['same-name']||0,identical=cbr['identical']||0,uncategorized=cbr['uncategorized']||0;
+  const cleanupTotal=g.cleanup_total||0;
+  // label 在前、val 在后(根治旧版「值在前 label 在后」+裸标题「全局」造成的视觉错位)
+  const item=(lbl,val,opts={})=>`<div class="gstat${opts.click?' clickable':''}"${opts.click?` onclick="${opts.click}"`:''} title="${opts.title||''}"><span class="gstat-lbl">${lbl}</span><span class="gstat-val"${opts.danger&&val>0?' style="color:var(--red)"':''}${opts.accent?' style="color:var(--accent)"':''}>${val}</span></div>`;
+  // 清理 hover 明细:列非零的 reason;含「历史未分类」(2026-07 reason 埋点前的删除),让 total 能对上账
+  const cleanupParts=[broken&&`损坏 ${broken}`,sameName&&`同名 ${sameName}`,identical&&`副本 ${identical}`,uncategorized&&`历史未分类 ${uncategorized}`].filter(Boolean);
   el.innerHTML=`<div class="card dash-global-strip">
-    <span class="gstat-label">全局</span>
-    ${item(gTargets,'应用',{click:"goView('sources')",title:'已发现的 Agent/应用分组数（点击查看能力来源）'})}
-    ${item(globalSkills,'skills',{title:'当前可用来源的去重 skill 数（active-only，不含市场/缓存）'})}
-    ${item(actionable,'待复核',{click:"goView('issues')",danger:true,title:'同名、内容变更等待复核线索（点击查看）；上游过时已拆到「上游检测」菜单'})}
-    ${item(m.outdated,'上游过时',{click:"goView('upstream')",danger:true,title:'检测到上游仓库有新版本的 skill（点击进上游检测）'})}
-    ${item(deleted,'累计删除',{click:"goView('trash')",accent:true,title:'累计移入垃圾站的 skill 总数（点击查看垃圾站）'})}
-    ${(opStats?.recent)?(()=>{
-      const r=opStats.recent;
-      const t=opStats.totals;
-      const weekInst=r.install||0,weekUpd=r.update||0,weekDel=r.move_to_trash||0;
-      const tInst=t.install||0,tUpd=t.update||0,tDel=t.move_to_trash||0;
-      return item(`${weekInst}装 · ${weekUpd}更 · ${weekDel}删`,'本周操作',{click:"goView('history')",title:`本周: 安装${weekInst} · 更新${weekUpd} · 删除${weekDel}\n全量: 安装${tInst} · 更新${tUpd} · 删除${tDel}`});
-    })():''}
+    <span class="gstat-grouplabel">资产规模</span>${item('skill',globalSkills,{click:"goView('sources')",title:'当前可用来源的去重 skill 数(active-only,不含市场/缓存)'})}${item('应用',gTargets,{click:"goView('sources')",title:'已发现的 Agent/应用分组数(点击查看能力来源)'})}<span class="gstat-sep"></span><span class="gstat-grouplabel">治理成果</span>${item('清理',cleanupTotal,{click:"goView('trash')",accent:true,title:`累计移入垃圾站的 skill 总数${cleanupParts.length?'\n'+cleanupParts.join('\n'):''}`})}${item('更新上游',g.update_total||0,{title:'从上游拉取新版本的 skill 数(天然对应「上游过时」处理量)'})}${item('安装',g.install_total||0,{title:'steal / npx 安装的新 skill 数'})}${item('同步',g.copy_total||0,{title:'复制/同步到当前目录的 skill 数'})}${item('补来源',g.attach_total||0,{title:'给 unknown skill 补上游来源的次数'})}${item('整理',g.scan_total||0,{title:'点了多少次「开始整理」'})}
   </div>`;
 }
 

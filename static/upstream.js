@@ -11,9 +11,17 @@ const _rcGroupData={};       // recover 目录卡懒展开数据(renderUpstreamV
 // 保持 scanResult 完整(切去 issues 页数据还在,不污染)。runScan deferRender 跳过 renderIssues。
 async function runUpstreamScan(opts={}){
   const checks=[...new Set([...(_scanChecks||[]),'upstream'])];
-  await runScan(null,{...opts,checks,deferRender:true,preserveIssueView:true});
-  renderUpstreamView();
-  updateDiagBadges();
+  const btn=$('upstream-scan-btn');
+  const oldText=btn?btn.textContent:'';
+  if(btn){btn.disabled=true;btn.textContent='⏳ 检测中(打 GitHub API,可能几十秒)...';}
+  try{
+    await runScan(null,{...opts,checks,deferRender:true,preserveIssueView:true});
+    renderUpstreamView();
+    updateDiagBadges();
+  }catch(e){
+    if(btn){btn.disabled=false;btn.textContent=oldText;}
+    throw e;
+  }
 }
 
 // 扫描配置区:scope 复用全局 _scanScope(与 issues 页共享);upstream 固定跑(本视图主功能)。
@@ -46,7 +54,7 @@ function renderUpstreamScanConfig(){
   }
   return `<div class="card" style="border-left:3px solid var(--accent);margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-      <button class="btn btn-primary" onclick="runUpstreamScan()" title="扫描选中范围,检测上游新版本 + 列出待补来源">🔍 开始上游检测</button>
+      <button class="btn btn-primary" id="upstream-scan-btn" onclick="runUpstreamScan()" title="扫描选中范围,检测上游新版本 + 列出待补来源">🔍 开始上游检测</button>
       <button class="btn btn-sm" onclick="clearUpstreamCache()" title="清空上游检测缓存(24h 短路缓存),下次检测每个 skill 都走真实 GitHub API。已检测过没变的 skill 默认不烧 API,缓存可强制重查">🗑 清缓存</button>
       <span style="font-size:11px;color:var(--text-muted)">扫描选中范围,检测上游新版本 + 列出待补来源 skill。已检测过、SKILL.md 没变的 skill 24h 内不重复烧 API(缓存落盘,重启不丢)。</span>
       <div style="display:flex;gap:4px;align-items:center;margin-left:auto" title="扫描范围跟能力来源页视图映照">
