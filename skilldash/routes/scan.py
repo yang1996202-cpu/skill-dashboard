@@ -78,10 +78,28 @@ class ScanRoutes:
 
     def _fast_scan(self):
         """Direct Python directory scan — milliseconds instead of bash subprocess."""
-        target = self._current_target()
-        target_dir = Path(target)
+        # ?path= 临时扫指定目录(不切 target,便于快速预览项目级 skill);
+        # 没传则用 current_target(原行为)。
+        query = parse_qs(urlparse(self.path).query)
+        path_arg = query.get("path", [""])[0]
+        if path_arg:
+            home_str = str(Path.home())
+            path_arg = path_arg.replace("${HOME}", home_str).replace("$HOME", home_str)
+            if path_arg.startswith("~"):
+                path_arg = str(Path.home() / path_arg[2:])
+            try:
+                target_dir = Path(path_arg).resolve()
+            except Exception:
+                self._json_response({"error": f"invalid path: {path_arg}"}, status=400)
+                return
+            if not target_dir.is_relative_to(Path.home()):
+                self._json_response({"error": "path must be under home directory"}, status=403)
+                return
+        else:
+            target = self._current_target()
+            target_dir = Path(target)
         if not target_dir.is_dir():
-            self._json_response({"error": f"not a dir: {target}"}, status=400)
+            self._json_response({"error": f"not a dir: {target_dir}"}, status=400)
             return
 
         start = time.time()
