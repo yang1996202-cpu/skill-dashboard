@@ -81,6 +81,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/targets` | GET | 列出所有发现的 skill 目录（按 Agent 分组）；后端 3 分钟缓存，前端 `fetchTargets()` 另有 3 分钟内存缓存 |
 | `/api/scan-run` | POST | **二哥扫描**：用户选目录 + 分析类型，返回分析结果；默认 checks 不含 upstream（upstream 烧 GitHub API，用户主动勾才查）；返回 `upstream_api_estimate`（将查 upstream 的 skill 总数，仅当 `checks` 含 upstream 时非零）和 `github_rate_limit`（限流轮廓）；`source_status`（每技能来源 `{name, dir, source, repo}`，跟随选定范围，只收 `category=user/project`，喂「待补来源」tab，0 API）|
 | `/api/scan-result` | GET | 读取缓存的扫描结果 |
+| `/api/upstream-cache/clear` | POST | 清空 upstream hash 缓存（内存 + 盘 `.data/state/upstream-hash-cache.json`），强制下次「开始上游检测」走真实 GitHub API（不受 24h 短路）；前端「上游检测」页「🗑 清缓存」按钮 |
 | `/api/global-stats` | GET | 当前可用来源的分类分布（active-only，排除市场/缓存/已安装未启用；5 分钟缓存） |
 | `/api/history` | GET | 操作历史记录 |
 | `/api/target` | POST | 切换当前目标库 |
@@ -191,7 +192,9 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 辅助函数 `_find_same_name_duplicates(dirs)` 接受 Path 列表参数，被 cleanup 和扫描复用。
 
-**upstream 的 API 消耗优化**（source_ops.py）：`check_upstream_status` 是包装层，调真实查询（`_check_upstream_status_raw`）前先用 content_hash 短路——本地 SKILL.md 内容 hash 自上次 upstream 检测后未变 → 24h 内复用上次结果（`_upstream_hash_cache`，复用结果带 `upstream_cached:true` 标记），跳过重复 GitHub 查询。hash 变化或缓存过期走真实查询并回写缓存。短路面 key 用 `_hash_key(skill_dir)`（与 `record_content_hash` 同 key），跨 agent 不串。底层还保留 `_github_cache`(5 分钟 TTL) + `_github_rate_limit_reset`(限流检测) + `GITHUB_TOKEN` 加载（常量，Track B import 用，别动）。
+**upstream 的 API 消耗优化**（source_ops.py）：`check_upstream_status` 是包装层，调真实查询（`_check_upstream_status_raw`）前先用 content_hash 短路——本地 SKILL.md 内容 hash 自上次 upstream 检测后未变 → 24h 内复用上次结果（`_upstream_hash_cache`，复用结果带 `upstream_cached:true` 标记），跳过重复 GitHub 查询。hash 变化或缓存过期走真实查询并回写缓存。短路面 key 用 `_hash_key(skill_dir)`（与 `record_content_hash` 同 key），跨 agent 不串。**`_upstream_hash_cache` 落盘到 `.data/state/upstream-hash-cache.json`（启动 `_load_upstream_hash_cache` 加载），server 重启不丢**；要强制重查走 `POST /api/upstream-cache/clear`（前端「上游检测」页「🗑 清缓存」）。底层还保留 `_github_cache`(5 分钟 TTL) + `_github_rate_limit_reset`(限流检测) + `GITHUB_TOKEN` 加载（常量，Track B import 用，别动）。
+
+**issues 页 scan 不跑 upstream（踩坑）**：upstream 已迁到「上游检测」视图，issues 页「开始整理」(`startCleanupFlow`) 的 `checks` 强制过滤 `upstream`，`_scanChecks` 初始化也过滤 localStorage 残留——否则旧版勾过 upstream 的 `sd-scan-checks` 会让 issues 页偷跑 upstream（实测 1023 次 API + 限流 + 卡 17s）。**别把 upstream 复选框加回 issues 页扫描配置**。
 
 `/api/global-stats` 的 `unique_skills`/`category_distribution` 是 **active-only 口径**：`_scan_global_categories`(discovery.py) 用 `_target_is_active(detail)` 按 `runtime_state`(user-root/builtin/enabled/loaded/connector) + `category=user` + `layer=vendor-bundled` 过滤 tdir，排除 marketplace/cache/installed-disabled，与前端 `sourceCapabilityBucket`(app-core.js) 同口径。改前是全域含库存灌水。
 
@@ -204,6 +207,10 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - 保留副本仍存在，且执行前 hash 没有变化
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
+
+**前端 issues 页另有两条不依赖 cleanup plan 的清理入口**（因为 active-root 间副本被 `_duplicate_action_kind` 标 multi_agent 不进 trash 候选，得靠用户手动）：
+- 「同内容副本」tab：展示 `duplicates_identical`（`overlap.py::_find_same_name_duplicates` 产出的同 hash 跨目录副本，实测被 trae/CodeBuddy/gemini 广播装到几十个 agent 根）。每行复用 `deleteSkill(name,btn,dir)` 软删（移入 trash 可恢复）+ 「删除选中」批量。
+- 「损坏」tab：「全部删除」按钮 → `deleteAllBroken()` 批量删全部 `broken_symlink`（symlink 目标被删/移动的断链）。
 
 ### 安装拦截:默认项目级,全局需确认
 
@@ -326,16 +333,15 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 - **重构必须删旧**：新旧实现并存是 stale-contract bug 根源（`_classify_skill_dir` 老五分类曾因此被误当 UI 契约测试）。重构到新实现后必须删旧函数，别留半死的过渡态。
 - **僵尸路由判定**：后端路由定义 vs 前端 fetch 端点交叉对比，零前端调用即僵尸。删路由/死代码后必须同步 CLAUDE.md / AGENTS.md 的 API 表与文件结构。
 - **测试**：零依赖项目用 stdlib `unittest`，不引入 pytest；改分类 / hash / 路径判定后跑 `python3 -m unittest discover -s tests -t .`。
-- **本地前端验证 → 走 `/browse`**：browse CLI 不在 PATH，先设 `B=/Users/yang/projects/gstack-offline/.claude/skills/gstack/browse/dist/browse`（编译产物；`[ -x "$B" ]` 不通过就 `cd ~/projects/gstack-offline/.claude/skills/gstack/browse && ./setup`，~10s 需 bun）。然后 `$B goto http://localhost:3457` → `$B snapshot -i` 拿 `@e` 引用 → `$B click @e30`（别猜 CSS selector）→ `$B js "..."` 断言 / `$B console` 抓报错 / `$B screenshot <path>` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。browse 不可用时 fallback `NODE_PATH=/Users/yang/.npm-global/lib/node_modules node <script>`（playwright）。**验证不烧 GitHub API**：upstream/上游渲染用 mock 注入 `$B js 'health={upstream_sources:[{name,dir,repo,status}]};_issueTypeTab="upstream";renderIssues()'`，绝不 `runScan(all,upstream)` 烧配额（曾因此一次烧 4000+ API，用户被迫覆盖）。
+- **本地前端验证 → 走 `/browse`**：browse CLI 不在 PATH，先设 `B=/Users/yang/projects/gstack-offline/.claude/skills/gstack/browse/dist/browse`（编译产物；`[ -x "$B" ]` 不通过就 `cd ~/projects/gstack-offline/.claude/skills/gstack/browse && ./setup`，~10s 需 bun）。然后 `$B goto http://localhost:3457` → `$B snapshot -i` 拿 `@e` 引用 → `$B click @e30`（别猜 CSS selector）→ `$B js "..."` 断言 / `$B console` 抓报错 / `$B screenshot <path>` + Read PNG。**诊断"页面动不了"先 tail serve 日志**（`/tmp/sd-serve.log`）查后端 500，再上前端验证——别一上来猜前端卡。browse 不可用时 fallback `NODE_PATH=/Users/yang/.npm-global/lib/node_modules node <script>`（playwright）。**验证不烧 GitHub API**：upstream/上游渲染用 mock 注入 `$B js 'health={upstream_sources:[{name,dir,repo,status}]};renderUpstreamView()'`（upstream tab 已迁到「上游检测」视图，用 `_upstreamTab` + `renderUpstreamView`，不再是 issues 页的 `_issueTypeTab`），绝不 `runScan(all,upstream)` 烧配额（曾因此一次烧 4000+ API，用户被迫覆盖）。
 - **调试纪律：先报根因证据，再改代码（杜绝猜测性修复）**：任何 bug 改代码前，先单独一行报 `根因=<一句话> 证据=<日志行 / 探测结果 / file:line>`。拿不出证据 → 不许改，先加诊断 log 或直接探测。两层互锁：①机械层（无取舍，卡死猜测）= 改前必报根因证据；②取舍层（被①兜住）= bug 落在黑盒环节（外部 API / 缓存命中 / 限流 / 异步 / 前端吞后端信号）且瞪代码说不出根因，才加 log/探测；普通 UI/显示 bug 看代码 + console 就够。诊断 log 写 `.data/<domain>.log`（已 gitignore），记输入/中间状态/输出，纯增量不影响业务。反例(2026-06-28 code-search"全不一致")：光看代码会猜"hash 太严"去放宽，第一层逼报证据 → 3 次 python 探测定位真因是 GitHub 对长中文片段召回 0（片段策略问题，非 hash）。
 - **前端缓存诊断（2026-06-28 反复出现，纪律）**：改前端后用户报"没生效 / 还旧行为"，**优先怀疑浏览器缓存，别猜业务 bug**。cache-busting（`?v=mtime`）+ HTML `no-cache` 已配，但浏览器 tab 可能没重载 HTML → 跑旧 JS。诊断：browse 新会话验证 serve 吐新 JS work（grep/curl 确认新字段在）→ 就是用户 tab 跑旧 JS。解决：让用户**关 tab 重开 `http://localhost:3457`** 或 **Cmd+Shift+R 硬刷新**（普通刷新依赖浏览器拿新 HTML，可能不够）。反例：recovery panel 改 `rec-manual-status` 就近显示，用户报"还在上方" = tab 跑旧 JS（无 rec-manual-status → fallback 上方），browse 新会话验证 work，关 tab 重开解决。
 
 ## 下一步方向
 
-**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装 + code search 通用层 + 补来源入口已全部落地（§5/6/7）；**待做**：真实 GitHub Code Search 命中率实测（依赖片段质量 + /search/code 10 次/分配额）。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读旁观（§8；steal 装进去实测可工作 + 留痕正常，与 app 版本管理并存的冲突未实测）。
+**来源恢复（给 unknown skill 补上游）**：设计见 `docs/source-recovery.md`。blob/合集勾选/npx 安装 + code search 通用层 + 补来源入口已全部落地（§5/6/7）；**待做**：真实 GitHub Code Search 命中率实测（依赖片段质量 + /search/code 10 次/分配额）。WorkBuddy/CodeBuddy 等 app 自管宿主 dashboard 只读旁观（§8；steal 装进去实测可工作 + 留痕正常，与 app 版本管理并存的冲突未实测）补来源入口现归「上游检测」视图（recover tab），不再在 issues 页。
 
 **"问题与整理"页的扫描规则与展示优化**：
-- 当前 `checks` 控制已上线，后续可按检查项分别渲染卡片、避免空状态
 - 二哥扫描的规则调优（同名检测、上游比对策略、内容变更证据）
 - 问题页的删除操作与能力来源页的分类删除联动
 
