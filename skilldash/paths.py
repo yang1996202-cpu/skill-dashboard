@@ -15,6 +15,7 @@ STATIC_DIR = BASE_DIR / "static"
 CACHE_DIR = BASE_DIR / ".data" / "cache"
 DUPLICATE_DECISIONS_FILE = STATE_DIR / "duplicate-decisions.json"
 CONTENT_HASH_FILE = STATE_DIR / "content-hashes.json"
+UPSTREAM_HASH_CACHE_FILE = STATE_DIR / "upstream-hash-cache.json"
 
 
 def _cache_path(target_path):

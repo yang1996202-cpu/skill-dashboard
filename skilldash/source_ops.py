@@ -23,7 +23,7 @@ import urllib.request
 from pathlib import Path
 
 from .content_hash import _hash_key, _load_content_hashes, record_content_hash
-from .paths import BASE_DIR
+from .paths import BASE_DIR, UPSTREAM_HASH_CACHE_FILE
 
 
 # ── GitHub URL parsing ──
@@ -464,6 +464,7 @@ def check_upstream_status(skill_dir):
         result = _check_upstream_status_raw(skill_dir)
         if current_hash and stored_hash == current_hash:
             _upstream_hash_cache[key] = (now, result)
+            _save_upstream_hash_cache()
         return result
     return _check_upstream_status_raw(skill_dir)
 
@@ -763,8 +764,48 @@ _github_rate_limit_reset = 0  # timestamp when rate limit resets; 0 means not li
 # content_hash 短路缓存:skill 的 SKILL.md 内容 hash 自上次 upstream 检测后未变 →
 # 24h 内跳过重复 GitHub 查询。key 用 _hash_key(skill_dir) 保证跨 agent 不串。
 # value: (checked_at_ts, last_result_dict)
+# 落盘到 UPSTREAM_HASH_CACHE_FILE,server 重启不丢(用户可接受 24h 内不重查 API)。
 _upstream_hash_cache = {}
 _upstream_hash_cache_ttl = 86400  # 24h
+
+
+def _load_upstream_hash_cache():
+    """启动时从盘加载 upstream hash 缓存,server 重启不丢。"""
+    if UPSTREAM_HASH_CACHE_FILE.exists():
+        try:
+            data = json.loads(UPSTREAM_HASH_CACHE_FILE.read_text("utf-8"))
+            # 盘上格式 {key: [ts, result]} → 内存 (ts, result)
+            return {k: (v[0], v[1]) for k, v in data.items()
+                    if isinstance(v, list) and len(v) == 2}
+        except Exception:
+            return {}
+    return {}
+
+
+def _save_upstream_hash_cache():
+    """原子落盘 upstream hash 缓存。"""
+    try:
+        UPSTREAM_HASH_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = UPSTREAM_HASH_CACHE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(
+            {k: [v[0], v[1]] for k, v in _upstream_hash_cache.items()},
+            ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(UPSTREAM_HASH_CACHE_FILE)
+    except Exception:
+        pass
+
+
+def clear_upstream_hash_cache():
+    """清空 upstream hash 缓存(内存 + 盘)。强制下次检测走真实 GitHub API。"""
+    _upstream_hash_cache.clear()
+    try:
+        UPSTREAM_HASH_CACHE_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+# 启动时加载落盘缓存
+_upstream_hash_cache = _load_upstream_hash_cache()
 
 
 def get_github_rate_limit():

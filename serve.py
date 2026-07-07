@@ -110,6 +110,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/preview"):                ("_preview_route", None),
         ("POST", "/api/target"):                ("_set_target", None),
         ("POST", "/api/scan-run"):              ("_run_scan", None),
+        ("POST", "/api/upstream-cache/clear"):  ("_clear_upstream_cache", None),
         ("POST", "/api/cleanup-execute"):       ("_cleanup_execute", None),
         ("POST", "/api/duplicate-decision"):    ("_duplicate_decision", None),
         ("POST", "/api/steal"):                 ("_steal_skill", None),

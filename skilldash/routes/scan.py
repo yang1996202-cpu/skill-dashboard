@@ -29,6 +29,7 @@ from skilldash.paths import CACHE_DIR
 from skilldash.source_ops import (
     GITHUB_TOKEN,
     check_upstream_status,
+    clear_upstream_hash_cache,
     detect_source_local,
     get_github_rate_limit,
 )
@@ -36,6 +37,13 @@ from skilldash.understanding import compact_understanding, understand_skill
 
 
 class ScanRoutes:
+
+    def _clear_upstream_cache(self):
+        """POST /api/upstream-cache/clear — 强制清空 upstream hash 缓存,
+        下次「开始上游检测」对每个 skill 都走真实 GitHub API(不受 24h 短路)。
+        """
+        clear_upstream_hash_cache()
+        self._json_response({"ok": True, "msg": "upstream hash 缓存已清空"})
 
     def _global_stats(self):
         self._json_response(_scan_global_categories())

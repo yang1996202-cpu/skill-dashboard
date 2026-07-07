@@ -46,8 +46,9 @@ function renderUpstreamScanConfig(){
   }
   return `<div class="card" style="border-left:3px solid var(--accent);margin-bottom:12px">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-      <button class="btn btn-primary" onclick="runUpstreamScan()">🔍 开始上游检测</button>
-      <span style="font-size:11px;color:var(--text-muted)">扫描选中范围,检测上游新版本 + 列出待补来源 skill。上游检测消耗 GitHub API(未认证 60 次/小时)。</span>
+      <button class="btn btn-primary" onclick="runUpstreamScan()" title="扫描选中范围,检测上游新版本 + 列出待补来源">🔍 开始上游检测</button>
+      <button class="btn btn-sm" onclick="clearUpstreamCache()" title="清空上游检测缓存(24h 短路缓存),下次检测每个 skill 都走真实 GitHub API。已检测过没变的 skill 默认不烧 API,缓存可强制重查">🗑 清缓存</button>
+      <span style="font-size:11px;color:var(--text-muted)">扫描选中范围,检测上游新版本 + 列出待补来源 skill。已检测过、SKILL.md 没变的 skill 24h 内不重复烧 API(缓存落盘,重启不丢)。</span>
       <div style="display:flex;gap:4px;align-items:center;margin-left:auto" title="扫描范围跟能力来源页视图映照">
         ${scopeBtn('current','当前目录','只扫当前 target 目录')}
         ${scopeBtn('active','当前可用','映照「能力来源 → 当前可用」')}
@@ -234,4 +235,14 @@ function toggleRecoverGroup(gid,headerEl){
       <button class="btn btn-sm" onclick="showSkill('${esc(s.name)}','${esc(s.dir)}',{autoExpandRecovery:true})" title="按 SKILL.md 内容搜回上游来源" style="font-size:9px;padding:2px 6px;color:var(--amber);border-color:var(--amber)">补来源</button>
     </div>`).join('');
   }
+}
+
+// 强制清空 upstream hash 缓存(内存 + 落盘),下次「开始上游检测」每个 skill 都走真实 GitHub API。
+async function clearUpstreamCache(){
+  if(!confirm('清空上游检测缓存?\n\n下次「开始上游检测」会对每个 skill 走真实 GitHub API(不受 24h 短路),消耗 API 额度。\n\n用于:怀疑缓存结果过期、或上游已更新但本地缓存还显示"已最新"时强制重查。'))return;
+  try{
+    const r=await fetch('/api/upstream-cache/clear',{method:'POST'}).then(r=>r.json());
+    if(r.ok){toast('上游检测缓存已清空,下次检测走真实 API');}
+    else{toast(r.error||'清缓存失败','error');}
+  }catch(e){toast('清缓存失败: '+e.message,'error');}
 }
