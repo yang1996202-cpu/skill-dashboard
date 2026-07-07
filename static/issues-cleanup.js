@@ -200,7 +200,9 @@ function filterGroupsByView(groups,viewMode){
     'all':()=>true,
   }[viewMode]||sourceIsActive;
   const filtered=groups.map(g=>{
-    const dirs=g.dirs.filter(predicate);
+    // 当前目录始终保留:切换进来的 target 即便不在当前视图桶(如 project-local
+    // 不在 active 视图)也可见,避免"切了却在能力来源页消失"的反直觉。
+    const dirs=g.dirs.filter(t=>predicate(t)||t?.is_current);
     return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+(d.count||0),0)};
   }).filter(g=>g.dirs.length);
   return filtered;

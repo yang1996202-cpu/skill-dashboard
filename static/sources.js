@@ -617,7 +617,9 @@ function renderSources(){
       }
       // ── 两级重组:active 主体 vs inactive 扩展 ──
       // Tier 1 = skill 主体(extension_type ∈ skill/builtin/plugin/connector + commands)
-      const activeCatOrder=['active-user','active-system','active-plugin','active-connector','installed-disabled'];
+      // project-local 入白名单:filterGroupsByView 已把非 current 的 project-local 过滤掉,
+      // 这里只会渲染 is_current 的那一个(切换进来的项目目录),避免"切了却在能力来源页消失"。
+      const activeCatOrder=['active-user','active-system','active-plugin','active-connector','installed-disabled','project-local'];
       const activeByCat={};
       tiers.active.forEach(t=>{
         const c=sourceCapabilityBucket(t);
