@@ -305,9 +305,6 @@ function renderScanConfig(){
           ${scopeBtn('active','当前可用','映照「能力来源 → 当前可用」:已启用插件/连接器/用户根/系统内置')}
           ${scopeBtn('review','待复核','映照「能力来源 → 待复核」:导入副本/项目级/未知')}
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-          ${checkBox('same-name','同名','跨目录同名 skill')}
-        </div>
       </div>
     </div>
     <div style="font-size:11px;color:var(--text-muted);margin-bottom:6px">
@@ -344,7 +341,8 @@ function setCleanupLoading(active,step=1){
 async function startCleanupFlow(){
   setCleanupLoading(true,1);
   try{
-    // issues 页不跑 upstream(已迁「上游检测」视图);过滤 _scanChecks 残留,避免偷跑 GitHub API 拖慢。
+    // 健康检测:① runScan 检测同名/副本/断链;② runExecutionPlan 生成「可移垃圾站」候选(备份/快照等目录级垃圾),
+    // 和检测 tab 一起出。review(待你看)tab 已删,不会再冒 400+ 条。
     const checks=[..._scanChecks].filter(c=>c!=='upstream');
     if(checks.length){
       await runScan(null,{silent:true,deferRender:true,checks});
@@ -352,10 +350,10 @@ async function startCleanupFlow(){
     setCleanupLoading(true,2);
     await runCleanupPlan(null,{deferRender:true});
     await runExecutionPlan('declutter',{silent:true});
-    toast('整理完成：已生成可处理建议');
+    toast('检测完成:同名/副本/断链 + 可清理目录');
   }catch(e){
     if(cleanupPlan)renderIssues();
-    toast('整理失败: '+e.message,'error');
+    toast('检测失败: '+e.message,'error');
   }finally{
     setCleanupLoading(false);
   }
@@ -799,10 +797,9 @@ function renderIssues(){
   // 这些目录本来就不该出现在治理结果里,展示出来纯困惑。
   const showFrozen=_scanScope.has('all');
   const governTabs=executionPlan?[
-    {key:'trash',emoji:'🗑️',label:'可移垃圾站',title:'hash 一致的重复 skill / 候选目录副本',count:govBuckets.trash.length},
-    {key:'review',emoji:'🔎',label:'待你看',title:'导入副本 / 项目级 / 未知来源,需你判断',count:govBuckets.review.length},
+    {key:'trash',emoji:'🗑️',label:'可移垃圾站',title:'自动识别的可清理目录(备份/快照/同内容副本等),勾选移入垃圾站可恢复',count:govBuckets.trash.length},
     ...(showFrozen?[{key:'frozen',emoji:'🔒',label:'不动',title:'保护区 / 市场货架 / 缓存,只读不动',count:govBuckets.frozen.length}]:[]),
-  ]:[];
+  ]:[];  // review(待你看)已删:400+ 导入副本/多端部署看不过来,该判断的同名/副本 tab 已覆盖
   const allTabs=[...issueTabs,...governTabs];
   // tab 不存在才回退;count=0 也允许切(下方有空状态提示)。
   // 不能弹回——弹回会让用户点了同名/变更却高亮跳走,以为"点不动"。
@@ -893,27 +890,7 @@ function renderIssues(){
           ${crossAgent}
           <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" title="并排对比各目录的 SKILL.md 内容,判断是否冗余" style="font-size:9px;padding:2px 8px">并排对比</button>
         </div>
-        <div id="${uid}" class="issue-group-body" style="display:none;padding:6px 12px 10px">
-          ${locs.map(loc=>{
-            const sn=loc.name||dup.name;
-            const sKey=sn+'|'+loc.dir;
-            // unknown skill 判断:dir 推不出活跃能力桶 → 高亮"补来源"按钮
-            const _t=_dirTarget(loc.dir);
-            const _bucket=_t?sourceCapabilityBucket(_t):'unknown';
-            const needSrc=_bucket==='unknown'||_bucket==='review-copy';
-            return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
-              ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" data-sreason="same-name" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除" style="cursor:pointer">
-              <div style="min-width:0">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
-                ${renderIssuePath(loc.dir)}
-              </div>
-              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}',{autoExpandRecovery:true})" title="按内容搜回上游来源" style="font-size:9px;padding:2px 6px;${needSrc?'color:var(--amber);border-color:var(--amber)':''}">补来源</button>
-              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}','same-name')" title="删除此目录的 skill(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
-            </div>`;
-          }).join('')}
-        </div>
+        <div id="${uid}" class="issue-group-body" style="display:none;padding:6px 12px 10px">${renderLocsByAgent(dup,locs,{reason:'same-name',showSource:true,showName:true})}</div>
       </div>`;
     });
 
@@ -929,30 +906,14 @@ function renderIssues(){
       const hash=locs[0]?.hash||'';
       const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="这个 skill 出现在 ${dup.agent_count} 个 Agent 的目录里(全是同一份内容)">跨 ${dup.agent_count} Agent</span>`:'';
       const hashBadge=hash?`<span style="font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="SKILL.md 内容 hash(所有副本相同)">hash ${hash}</span>`:'';
-      h+=`<div data-ident-card style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
           <span style="font-size:10px;color:var(--text-muted)">▶</span>
           <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${locs.length} 个副本</span>
           ${crossAgent}
           ${hashBadge}
-          <button class="btn btn-sm" onclick="event.stopPropagation();selectIdenticalExceptFirst(this)" title="勾选该组所有副本、保留第一个作本体(你可再手动勾选调整保留哪个),然后点上方「删除选中」" style="font-size:9px;padding:2px 6px">除本体全选</button>
         </div>
-        <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
-          ${locs.map(loc=>{
-            const sn=loc.name||dup.name;
-            const sKey=sn+'|'+loc.dir;
-            return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
-              ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" data-sreason="identical" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除(保留没勾的作本体)" style="cursor:pointer">
-              <div style="min-width:0">
-                <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
-                ${renderIssuePath(loc.dir)}
-              </div>
-              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}','identical')" title="删除此目录的副本(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
-            </div>`;
-          }).join('')}
-        </div>
+        <div class="issue-group-body" style="display:none;padding:6px 12px 10px">${renderLocsByAgent(dup,locs)}</div>
       </div>`;
     });
     h+=`</div></section>`;
@@ -1045,21 +1006,44 @@ async function deleteAllBroken(){
   toast(`已删除 ${ok} 个损坏链接${fail>0?`,${fail} 个失败`:''}`);
   invalidateTargetsCache();clearGlobalSearchCache();await loadData();
 }
-// 同内容副本组「除本体全选」:展开该组 + 勾选除第一个外的所有副本(首个当本体保留),
-// 用户可再手动调整勾选,然后点「删除选中」批量删。本体默认取首个,不自动猜项目级/最佳本体。
-function selectIdenticalExceptFirst(btn){
-  const card=btn.closest('[data-ident-card]');
-  if(!card)return;
-  const body=card.querySelector('.issue-group-body');
-  if(!body)return;
-  body.style.display='block';
-  const checks=[...body.querySelectorAll('.issue-check')];
-  if(checks.length<2){toast('该组不足 2 个副本','error');return;}
-  checks.forEach((c,i)=>{
-    if(i===0){c.checked=false;_issueSelected.delete(c.dataset.skey);}
-    else{c.checked=true;_issueSelected.add(c.dataset.skey);}
-  });
-  toast(`已选 ${checks.length-1} 个副本(保留首个作本体),可再手调后点「删除选中」`);
+// skill 副本组按 Agent 折叠渲染(同名/同内容复用):N 副本 → N 个 Agent 折叠项(默认收起),展开勾选删。
+// opts.reason: 删除原因(identical/same-name);opts.showSource: 显「补来源」(同名 unknown 高亮);opts.showName: 显 skill 名(同名)。
+function renderLocsByAgent(dup,locs,opts={}){
+  const reason=opts.reason||'identical';
+  const byAgent={};
+  locs.forEach(loc=>{const a=loc.agent||'未知';(byAgent[a]=byAgent[a]||[]).push(loc);});
+  return Object.keys(byAgent).sort((a,b)=>byAgent[b].length-byAgent[a].length).map(ag=>{
+    const agLocs=byAgent[ag];
+    const foldId='ag-'+Math.random().toString(36).slice(2,8);
+    const cols=opts.showSource?'auto auto minmax(0,1fr) auto auto auto':'auto auto minmax(0,1fr) auto auto';
+    const rows=agLocs.map(loc=>{
+      const sn=loc.name||dup.name;
+      const sKey=sn+'|'+loc.dir;
+      let srcBtn='';
+      if(opts.showSource){
+        const _t=_dirTarget(loc.dir);const _b=_t?sourceCapabilityBucket(_t):'unknown';
+        const ns=_b==='unknown'||_b==='review-copy';
+        srcBtn=`<button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}',{autoExpandRecovery:true})" title="按内容搜回上游来源" style="font-size:9px;padding:2px 6px;${ns?'color:var(--amber);border-color:var(--amber)':''}">补来源</button>`;
+      }
+      const nameCell=opts.showName?`<span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${esc(sn)}</span>`:'';
+      return `<div style="display:grid;grid-template-columns:${cols};gap:6px;padding:4px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
+        ${issueDirBadge(loc.dir)}
+        <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" data-sreason="${reason}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除" style="cursor:pointer">
+        <div style="min-width:0">${nameCell}${renderIssuePath(loc.dir)}</div>
+        ${srcBtn}
+        <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看" style="font-size:9px;padding:2px 6px">查看</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}','${reason}')" title="删除(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
+      </div>`;
+    }).join('');
+    return `<div style="border:1px solid var(--border-subtle);border-radius:6px;margin-bottom:6px;overflow:hidden">
+      <div style="display:flex;align-items:center;gap:6px;padding:5px 10px;background:var(--bg-card-alt);cursor:pointer;font-size:11px" onclick="var b=document.getElementById('${foldId}');b.style.display=b.style.display==='none'?'block':'none'">
+        <span style="font-size:8px;color:var(--text-muted)">▶</span>
+        <span style="font-weight:600;color:var(--text)">${esc(ag)}</span>
+        <span style="color:var(--text-muted)">${agLocs.length} 副本</span>
+      </div>
+      <div id="${foldId}" style="display:none;padding:4px 10px">${rows}</div>
+    </div>`;
+  }).join('');
 }
 async function batchDeleteNames(names,label,targets){
   if(!names||!names.length)return;

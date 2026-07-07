@@ -635,7 +635,7 @@ function renderIssuePath(path){
   const p=absolutePathLabel(path);
   if(!p)return '';
   return `<div style="display:flex;align-items:center;gap:6px;min-width:0;margin-top:2px">
-    <code style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:4px;padding:1px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:420px" title="${esc(p)}">${escapeHtml(p)}</code>
+    <code style="font-size:10px;color:var(--text-muted);background:var(--bg-card-alt);border:1px solid var(--border-subtle);border-radius:4px;padding:1px 4px;white-space:normal;word-break:break-all" title="${esc(p)}">${escapeHtml(p)}</code>
     <button class="btn btn-sm" onclick="event.stopPropagation();copyPath('${esc(p)}')" style="font-size:9px;padding:1px 5px">复制路径</button>
   </div>`;
 }

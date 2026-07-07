@@ -38,6 +38,7 @@ def _find_same_name_duplicates(dirs):
             all_skills[name].append({
                 "dir": dir_path,
                 "agent": _agent_from_path(dir_path),
+                "is_symlink": d.is_symlink(),  # 本体判定用:软链当副本、实体当本体(删软链不丢数据)
             })
 
     duplicates_identical = []
