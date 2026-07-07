@@ -34,7 +34,7 @@ function renderUpstreamScanConfig(){
   const scopeBtn=(scope,label,title)=>{
     const active=_scanScope.has(scope);
     const check=active?'<span style="display:inline-block;width:10px;height:10px;border:1.5px solid currentColor;border-radius:2px;position:relative;vertical-align:-1px;margin-right:3px"><span style="position:absolute;left:1px;top:-2px;font-size:9px;line-height:1">✓</span></span>':'<span style="display:inline-block;width:10px;height:10px;border:1.5px solid var(--text-muted);border-radius:2px;vertical-align:-1px;margin-right:3px"></span>';
-    return `<button class="btn btn-sm ${active?'btn-primary':''}" onclick="setScanScope('${scope}');renderUpstreamScanConfig()" title="${esc(title)}" style="${active?'':'background:var(--bg-card-alt);color:var(--text-muted)'}">${check}${label}</button>`;
+    return `<button class="btn btn-sm ${active?'btn-primary':''}" onclick="setScanScope('${scope}');renderUpstreamView()" title="${esc(title)}" style="${active?'':'background:var(--bg-card-alt);color:var(--text-muted)'}">${check}${label}</button>`;
   };
   let statusHtml='';
   if(scanResult){

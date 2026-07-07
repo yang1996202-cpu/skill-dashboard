@@ -951,14 +951,14 @@ function renderIssues(){
 
   // ── Broken symlinks section ──
   if (_issueTypeTab==='broken' && brokenLinks.length) {
-    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 或 SKILL.md 链接指向的目标已不存在。</p></div><span>${brokenLinks.length} 个</span></div>
+    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 指向的目标已不存在(原目标被删或移动位置)。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${brokenLinks.length} 个</span><button class="btn btn-sm btn-danger" onclick="deleteAllBroken()" style="font-size:10px;padding:2px 8px">全部删除</button></div></div>
       <div class="card issue-list-card">`;
     brokenLinks.forEach(issue => {
       const kindLabel=issue.kind==='broken_skill_link'?'目录壳':'断链';
       h += `<div class="issue-row">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${issue.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">${kindLabel} · ${issue.dir ? issue.dir.replace(/^\/Users\/[^/]+/, '~') : ''}</div></div>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this)">删除</button></div>`;
+        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this,'${esc(issue.dir||'')}')" style="font-size:9px;padding:2px 6px">删</button></div>`;
     });
     h += `</div></section>`;
   }
@@ -1022,6 +1022,19 @@ async function deleteSkill(name,btn,target){
   catch(e){toast('删除失败','error')}finally{if(btn){btn.disabled=false;btn.textContent='删除';}}
 }
 
+async function deleteAllBroken(){
+  const broken=(scanResult?.structure_issues||[]).filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
+  if(!broken.length){toast('没有损坏链接','error');return}
+  if(!confirm(`确认删除全部 ${broken.length} 个损坏链接(symlink 断链)?\n\n将移到回收站,可恢复。`))return
+  let ok=0,fail=0;
+  for(const i of broken){
+    const url=i.dir?`/api/skill/${i.name}?target=${encodeURIComponent(i.dir)}`:`/api/skill/${i.name}`;
+    try{const r=await fetch(url,{method:'DELETE'});const d=await r.json();d.ok?ok++:fail++;}
+    catch{fail++;}
+  }
+  toast(`已删除 ${ok} 个损坏链接${fail>0?`,${fail} 个失败`:''}`);
+  invalidateTargetsCache();clearGlobalSearchCache();await loadData();
+}
 async function batchDeleteNames(names,label,targets){
   if(!names||!names.length)return;
   if(!confirm(`确认批量删除 ${names.length} 个${label?`「${label}」`:''} skill？\n\n将移到回收站：\n${names.join(', ')}`))return;
