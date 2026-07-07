@@ -1,4 +1,4 @@
-// ── 上游检测视图(从「问题与整理」独立出来的一级菜单) ──
+// ── 上游检测视图(从「健康检测」独立出来的一级菜单) ──
 // 集中两件事:① 上游检测(查上游新版本,消耗 GitHub API)② 待补来源(三信号全空的 skill,补上游)。
 // 数据复用全局 health/scanResult(由 runScan 填充),后端接口不变。
 // 旧入口(issues 页 upstream/recover tab、sources 页补来源 badge)已删,只留本视图。

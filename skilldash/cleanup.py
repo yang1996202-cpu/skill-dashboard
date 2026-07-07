@@ -94,7 +94,7 @@ def build_cleanup_plan(current_target, scope="daily", restrict_dirs=None):
     recommended next state, but it does not declare anything directly deletable.
 
     restrict_dirs: 可选的目录路径集合(字符串)。命中时只看这些目录(再做 daily/deep
-    过滤),让"问题与整理"治理 tab 尊重用户选的扫描范围,不再全量 daily。
+    过滤),让"健康检测"治理 tab 尊重用户选的扫描范围,不再全量 daily。
     为空/None 时维持原行为(全量 _discover_skill_dirs)。
     """
     started = time.time()

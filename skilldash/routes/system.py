@@ -71,6 +71,7 @@ class SystemRoutes:
         hist_file = STATE_DIR / "history.jsonl"
         cleanup_by_reason = Counter()
         cleanup_total = 0
+        broken_total = 0  # 断链(broken symlink)清理单独统计——不是删 skill,是清坏链接
         update_total = install_total = copy_total = attach_total = 0
         scan_total = 0
         try:
@@ -86,8 +87,12 @@ class SystemRoutes:
                 cnt = e.get("count") or 0
                 detail = e.get("detail") or {}
                 if op == "move_to_trash":
-                    cleanup_total += cnt
-                    cleanup_by_reason[detail.get("reason") or "uncategorized"] += cnt
+                    reason = detail.get("reason") or "uncategorized"
+                    if reason == "broken":
+                        broken_total += cnt  # 断链单独,不混进 skill 删除
+                    else:
+                        cleanup_total += cnt
+                        cleanup_by_reason[reason] += cnt
                 elif op == "update":
                     update_total += cnt
                 elif op == "install":
@@ -103,6 +108,7 @@ class SystemRoutes:
         self._json_response({
             "cleanup_total": cleanup_total,
             "cleanup_by_reason": dict(cleanup_by_reason),
+            "broken_total": broken_total,
             "update_total": update_total,
             "install_total": install_total,
             "copy_total": copy_total,

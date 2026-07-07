@@ -39,7 +39,7 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',sources:'能力来源',upstream:'上游检测',issues:'问题与整理',trash:'垃圾站',history:'操作日志'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',sources:'能力来源',upstream:'上游检测',issues:'健康检测',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
   if(v==='sources'){
@@ -496,14 +496,15 @@ function renderStats(){
   const globalSkills=globalStats?.unique_skills||0;
   const g=govStats||{};
   const cbr=g.cleanup_by_reason||{};
-  const broken=cbr['broken']||0,sameName=cbr['same-name']||0,identical=cbr['identical']||0,uncategorized=cbr['uncategorized']||0;
+  const sameName=cbr['same-name']||0,identical=cbr['identical']||0,uncategorized=cbr['uncategorized']||0;
   const cleanupTotal=g.cleanup_total||0;
+  const broken=g.broken_total||0;  // 断链单独统计(不是删 skill,是清坏链接),不混进清理
   // label 在前、val 在后(根治旧版「值在前 label 在后」+裸标题「全局」造成的视觉错位)
   const item=(lbl,val,opts={})=>`<div class="gstat${opts.click?' clickable':''}"${opts.click?` onclick="${opts.click}"`:''} title="${opts.title||''}"><span class="gstat-lbl">${lbl}</span><span class="gstat-val"${opts.danger&&val>0?' style="color:var(--red)"':''}${opts.accent?' style="color:var(--accent)"':''}>${val}</span></div>`;
-  // 清理 hover 明细:列非零的 reason;含「历史未分类」(2026-07 reason 埋点前的删除),让 total 能对上账
-  const cleanupParts=[broken&&`损坏 ${broken}`,sameName&&`同名 ${sameName}`,identical&&`副本 ${identical}`,uncategorized&&`历史未分类 ${uncategorized}`].filter(Boolean);
+  // 清理 hover 只列 skill 删除的 reason(断链单独成项,不在这)
+  const cleanupParts=[sameName&&`同名 ${sameName}`,identical&&`副本 ${identical}`,uncategorized&&`历史未分类 ${uncategorized}`].filter(Boolean);
   el.innerHTML=`<div class="card dash-global-strip">
-    <span class="gstat-grouplabel">资产规模</span>${item('skill',globalSkills,{click:"goView('sources')",title:'当前可用来源的去重 skill 数(active-only,不含市场/缓存)'})}${item('应用',gTargets,{click:"goView('sources')",title:'已发现的 Agent/应用分组数(点击查看能力来源)'})}<span class="gstat-sep"></span><span class="gstat-grouplabel">治理成果</span>${item('清理',cleanupTotal,{click:"goView('trash')",accent:true,title:`累计移入垃圾站的 skill 总数${cleanupParts.length?'\n'+cleanupParts.join('\n'):''}`})}${item('更新上游',g.update_total||0,{title:'从上游拉取新版本的 skill 数(天然对应「上游过时」处理量)'})}${item('安装',g.install_total||0,{title:'steal / npx 安装的新 skill 数'})}${item('同步',g.copy_total||0,{title:'复制/同步到当前目录的 skill 数'})}${item('补来源',g.attach_total||0,{title:'给 unknown skill 补上游来源的次数'})}${item('整理',g.scan_total||0,{title:'点了多少次「开始整理」'})}
+    <span class="gstat-grouplabel">资产规模</span>${item('skill',globalSkills,{click:"goView('sources')",title:'当前可用来源的去重 skill 数(active-only,不含市场/缓存)'})}${item('应用',gTargets,{click:"goView('sources')",title:'已发现的 Agent/应用分组数(点击查看能力来源)'})}<span class="gstat-sep"></span><span class="gstat-grouplabel">治理成果</span>${item('清理',cleanupTotal,{click:"goView('trash')",accent:true,title:`累计删掉的 skill 数${cleanupParts.length?'\n'+cleanupParts.join('\n'):''}`})}${item('断链',broken,{click:"goView('trash')",title:'清掉的断链(symlink 坏链接)数——不是删 skill,是清残留垃圾'})}${item('更新上游',g.update_total||0,{title:'从上游拉取新版本的 skill 数(天然对应「上游过时」处理量)'})}${item('安装',g.install_total||0,{title:'steal / npx 安装的新 skill 数'})}${item('同步',g.copy_total||0,{title:'复制/同步到当前目录的 skill 数'})}${item('补来源',g.attach_total||0,{title:'给 unknown skill 补上游来源的次数'})}${item('健康检测',g.scan_total||0,{title:'点了多少次「开始检测」'})}
   </div>`;
 }
 

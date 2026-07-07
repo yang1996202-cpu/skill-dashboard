@@ -54,7 +54,7 @@ let _scanScope=(()=>{
     try{
       const arr=JSON.parse(saved);
       if(Array.isArray(arr)){
-        const migrated=arr.map(_migrateScanScope).filter(Boolean);
+        const migrated=arr.map(_migrateScanScope).filter(Boolean).filter(s=>s!=='inventory');  // inventory(库存)不该在这扫——货架删不动/不该删,归能力来源页浏览
         return new Set(migrated.length?migrated:['active','review']);
       }
     }catch{}
@@ -84,10 +84,10 @@ let _scanChecks=(()=>{
     const saved=localStorage.getItem('sd-scan-checks');
     if(saved){
       const arr=JSON.parse(saved);
-      if(Array.isArray(arr)) return arr.filter(c=>c!=='upstream');
+      if(Array.isArray(arr)) return arr.filter(c=>c!=='upstream'&&c!=='content-changes');  // 变更 tab 已删,不检测 content-changes
     }
   }catch{}
-  return ['same-name','content-changes'];
+  return ['same-name'];
 })();
 function toggleScanCheck(key,checked){
   const set=new Set(_scanChecks);
@@ -297,18 +297,16 @@ function renderScanConfig(){
   // + all(全量档)。多选 toggle。
   el.innerHTML=`<div class="card" style="border-left:3px solid var(--accent)">
     <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px">
-      <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始整理</button>
-      <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始,自动扫描并生成处理建议。</span>
+      <button class="btn btn-primary" id="cleanup-start-btn" onclick="startCleanupFlow()">开始检测</button>
+      <span style="font-size:11px;color:var(--text-muted)">勾选检查项后点开始,扫描同名/副本/断链并生成处理建议(库存不在本页扫)。</span>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-left:auto;align-items:center">
         <div style="display:flex;gap:4px;align-items:center;padding-right:8px;border-right:1px solid var(--border-subtle)" title="扫描范围跟能力来源页视图映照">
           ${scopeBtn('current','当前目录','只扫当前 target 目录')}
           ${scopeBtn('active','当前可用','映照「能力来源 → 当前可用」:已启用插件/连接器/用户根/系统内置')}
-          ${scopeBtn('inventory','来源库存','映照「能力来源 → 来源库存」:市场目录/缓存/已装未启用')}
           ${scopeBtn('review','待复核','映照「能力来源 → 待复核」:导入副本/项目级/未知')}
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           ${checkBox('same-name','同名','跨目录同名 skill')}
-          ${checkBox('content-changes','变更','检测本地内容改动')}
         </div>
       </div>
     </div>
@@ -375,7 +373,7 @@ async function runScan(scope,opts={}){
       return;
     }
     const scopeTag=[..._scanScope].sort().join(',')||'active';
-    const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name','content-changes'];
+    const checks=(opts.checks&&opts.checks.length)?opts.checks:['same-name'];
     const _startBtn=$('cleanup-start-btn');
     if(_startBtn)_startBtn.textContent=`⏳ 扫描 ${directories.length} 个目录(跨目录算同名重复较慢,可能几十秒,请耐心等)...`;
     const r=await fetch('/api/scan-run',{
@@ -701,18 +699,18 @@ function restoreAllCleanupCandidates(){
 }
 
 async function refreshIssuesAfterDelete(changedPaths=[],opts={}){
-  // scope 参数忽略(runScan/runCleanupPlan 内部用 _scanScope 多选自治)。
+  // 根因(2026-07-08):删除后界面不更新,旧版靠 runScan 全量重扫(几十秒,用户以为卡死/没更新;
+  // runScan silent 失败还会静默用旧 scanResult)。改为:后端 _patch_scan_cache_remove 删后已精准
+  // 清 scan-result(duplicates/structure_issues/source_status/upstream_sources),前端直接重读
+  // patched cache(loadCachedScanResult 内含 renderIssues)→ 即时看到副本消失,不跑慢扫描。
+  // 仅治理 tab(有 executionPlan)才重算 plan(那本就慢,且用户在治理 tab 预期)。
   const strategy=opts.strategy||executionPlan?.strategy||'declutter';
-  const hadCleanupPlan=!!cleanupPlan||!!executionPlan;
   const hadExecutionPlan=!!executionPlan;
   const tabBefore=_issueTypeTab;
   const showAllBefore=_issueShowAll;
   await loadTrash();
   await refreshAfterDelete(changedPaths||[]);
-  if(hadCleanupPlan){
-    await runCleanupPlan(null,{silent:true,deferRender:true});
-  }
-  await runScan(null,{silent:true,deferRender:true,preserveIssueView:true});
+  await loadCachedScanResult();  // 重读已 patch 的 cache + 渲染(副本即时消失)
   _issueTypeTab=tabBefore;
   _issueShowAll=showAllBefore;
   if(hadExecutionPlan){
@@ -776,17 +774,25 @@ function renderIssues(){
   }
 
   // ── 内容类型计数：按问题类型分，不再按运行态 view 过滤 ──
-  const sameNameGroups=sameName.filter(dup=>dup.locations.length>=2);
+  // 排除宿主管桶(vendor builtin / 市场目录 / 缓存)的副本:这些是宿主装 skill 的方式
+  // (每模型/每 app 各一份,如 trae medea/default/thetis、buddy official 多宿主),
+  // 用户在 dashboard 删不动也不该删(删了破坏宿主或宿主自动恢复,docs/source-recovery §8)。
+  // 只留用户自管桶(active-user/-plugin/-connector/project-local/review-copy)的副本让用户处理。
+  const VENDOR_BUCKETS=new Set(['active-system','source-catalog','source-cache']);
+  const filterVendorLocs=(locs)=>(locs||[]).filter(loc=>{
+    const _t=_dirTarget(loc.dir); const _b=_t?sourceCapabilityBucket(_t):'unknown';
+    return !VENDOR_BUCKETS.has(_b);
+  });
+  const sameNameGroups=sameName.map(d=>({...d,locations:filterVendorLocs(d.locations)})).filter(d=>d.locations.length>=2);
   // 同内容副本:SKILL.md hash 完全相同的跨目录副本(如被广播装到多个 agent 根)。可手动删副本保留本体。
-  const identicalGroups=(globalOverlap?.duplicates_identical||[]).filter(d=>d.locations?.length>=2);
+  const identicalGroups=(globalOverlap?.duplicates_identical||[]).map(d=>({...d,locations:filterVendorLocs(d.locations)})).filter(d=>d.locations.length>=2);
   const changedSkills=changes?.changed||[];
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
   const issueTabs=[
     {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length,title:'同名 skill,但内容可能不同(不同版本/定制),不能盲删;跨 Agent 同名多为正常多端部署,单 Agent 内重复才需核查'},
     {key:'identical',emoji:'♻️',label:'同内容副本',count:identicalGroups.length,title:'同名 + 内容完全相同(同 hash)的跨目录副本,多是被广播装到多个 agent 根的冗余,可删副本留本体(移入垃圾站可恢复)'},
-    {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length,title:'SKILL.md 内容与安装时记录的哈希不同(本地改过),可重新记录新哈希'},
-    {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length,title:'symlink 指向的目标已不存在(原目标被删或移动位置),可一键全删(移入垃圾站可恢复)'},
+    {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length,title:'断了的 symlink(指向目标已不存在),残留垃圾,可一键全删(移入垃圾站可恢复);清断链不丢能力'},
   ];
   const govBuckets=computeGovernBuckets();
   // frozen tab(不动:锁定/观察/缓存)只在 all scope 显示 —— 非 all 时
@@ -923,12 +929,13 @@ function renderIssues(){
       const hash=locs[0]?.hash||'';
       const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="这个 skill 出现在 ${dup.agent_count} 个 Agent 的目录里(全是同一份内容)">跨 ${dup.agent_count} Agent</span>`:'';
       const hashBadge=hash?`<span style="font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="SKILL.md 内容 hash(所有副本相同)">hash ${hash}</span>`:'';
-      h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
+      h+=`<div data-ident-card style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
           <span style="font-size:10px;color:var(--text-muted)">▶</span>
           <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${locs.length} 个副本</span>
           ${crossAgent}
           ${hashBadge}
+          <button class="btn btn-sm" onclick="event.stopPropagation();selectIdenticalExceptFirst(this)" title="勾选该组所有副本、保留第一个作本体(你可再手动勾选调整保留哪个),然后点上方「删除选中」" style="font-size:9px;padding:2px 6px">除本体全选</button>
         </div>
         <div class="issue-group-body" style="display:none;padding:6px 12px 10px">
           ${locs.map(loc=>{
@@ -953,7 +960,7 @@ function renderIssues(){
 
   // ── Broken symlinks section ──
   if (_issueTypeTab==='broken' && brokenLinks.length) {
-    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 指向的目标已不存在(原目标被删或移动位置)。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${brokenLinks.length} 个</span><button class="btn btn-sm btn-danger" onclick="deleteAllBroken()" title="一键删除全部 ${brokenLinks.length} 个损坏链接(symlink 断链),移入垃圾站可恢复" style="font-size:10px;padding:2px 8px">全部删除</button></div></div>
+    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些是断了的 symlink(快捷方式指向的目标已不存在——原 skill 被删或移走了),属于残留垃圾,可放心一键全删。删是移入垃圾站,可恢复。和「同内容副本」不同:断链不是 skill、是坏链接,清它不丢任何能力(真实 skill 已不在)。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${brokenLinks.length} 个</span><button class="btn btn-sm btn-danger" onclick="deleteAllBroken()" title="一键删除全部 ${brokenLinks.length} 个损坏链接(symlink 断链),移入垃圾站可恢复" style="font-size:10px;padding:2px 8px">全部删除</button></div></div>
       <div class="card issue-list-card">`;
     brokenLinks.forEach(issue => {
       const kindLabel=issue.kind==='broken_skill_link'?'目录壳':'断链';
@@ -1037,6 +1044,22 @@ async function deleteAllBroken(){
   }
   toast(`已删除 ${ok} 个损坏链接${fail>0?`,${fail} 个失败`:''}`);
   invalidateTargetsCache();clearGlobalSearchCache();await loadData();
+}
+// 同内容副本组「除本体全选」:展开该组 + 勾选除第一个外的所有副本(首个当本体保留),
+// 用户可再手动调整勾选,然后点「删除选中」批量删。本体默认取首个,不自动猜项目级/最佳本体。
+function selectIdenticalExceptFirst(btn){
+  const card=btn.closest('[data-ident-card]');
+  if(!card)return;
+  const body=card.querySelector('.issue-group-body');
+  if(!body)return;
+  body.style.display='block';
+  const checks=[...body.querySelectorAll('.issue-check')];
+  if(checks.length<2){toast('该组不足 2 个副本','error');return;}
+  checks.forEach((c,i)=>{
+    if(i===0){c.checked=false;_issueSelected.delete(c.dataset.skey);}
+    else{c.checked=true;_issueSelected.add(c.dataset.skey);}
+  });
+  toast(`已选 ${checks.length-1} 个副本(保留首个作本体),可再手调后点「删除选中」`);
 }
 async function batchDeleteNames(names,label,targets){
   if(!names||!names.length)return;

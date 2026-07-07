@@ -1007,7 +1007,7 @@ class SourceRoutes:
             pass
 
     def _patch_scan_cache_remove(self, items):
-        """删除 skill 后从 scan-result.json 剔除该 skill,否则「问题与整理」页
+        """删除 skill 后从 scan-result.json 剔除该 skill,否则「健康检测」页
         残留已删 skill 的 source_status/upstream_sources(要等下次扫描才清)。
 
         与 _patch_scan_cache_attach 对称:attach 加来源时 patch 进缓存,删除时剔除。
@@ -1057,6 +1057,31 @@ class SourceRoutes:
                     new_si.append(s)
                 if len(new_si) != len(si):
                     data["structure_issues"] = new_si
+            # duplicates(同名/同内容副本):location.dir 是父目录,组名在 grp.name
+            # (location.name 为 None)。删 (name, parent) → 从匹配组移除该 location;
+            # 剩余 <2 个的组解散(不再是重复)。不清的话删完副本界面残留(duplicates 没更新)。
+            for dkey in ("duplicates_same_name", "duplicates_identical"):
+                darr = data.get(dkey, [])
+                if not darr:
+                    continue
+                new_darr = []
+                for grp in darr:
+                    gname = grp.get("name")
+                    new_locs = []
+                    for l in grp.get("locations", []):
+                        ldir = l.get("dir", "")
+                        try:
+                            lpar = str(Path(ldir).expanduser().resolve()) if ldir else ""
+                        except Exception:
+                            lpar = ""
+                        if (gname, lpar) not in pairs:
+                            new_locs.append(l)
+                    if len(new_locs) >= 2:
+                        grp["locations"] = new_locs
+                        new_darr.append(grp)
+                if len(new_darr) != len(darr):
+                    data[dkey] = new_darr
+                    changed = True
             if changed:
                 cf.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
         except Exception:
