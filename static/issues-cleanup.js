@@ -77,11 +77,15 @@ function setScanScope(scope){
 }
 
 // Scan check types persisted across sessions
-// 默认不含 upstream:upstream 烧 GitHub API(未认证 60 次/小时),用户主动勾才查。
+// 默认不含 upstream:upstream 已迁到「上游检测」视图,issues 页不该跑(烧 GitHub API + 慢)。
+// 过滤 localStorage 残留的 upstream(用户在旧版 issues 页勾过会留在 sd-scan-checks)。
 let _scanChecks=(()=>{
   try{
     const saved=localStorage.getItem('sd-scan-checks');
-    if(saved) return JSON.parse(saved);
+    if(saved){
+      const arr=JSON.parse(saved);
+      if(Array.isArray(arr)) return arr.filter(c=>c!=='upstream');
+    }
   }catch{}
   return ['same-name','content-changes'];
 })();
@@ -342,7 +346,8 @@ function setCleanupLoading(active,step=1){
 async function startCleanupFlow(){
   setCleanupLoading(true,1);
   try{
-    const checks=[..._scanChecks];
+    // issues 页不跑 upstream(已迁「上游检测」视图);过滤 _scanChecks 残留,避免偷跑 GitHub API 拖慢。
+    const checks=[..._scanChecks].filter(c=>c!=='upstream');
     if(checks.length){
       await runScan(null,{silent:true,deferRender:true,checks});
     }
