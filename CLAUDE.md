@@ -205,6 +205,14 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
 
+### 安装拦截:默认项目级,全局需确认
+
+装 skill 默认装**项目级目录**(`~/projects/<proj>/.<agent>/skills/`),装**全局根**(`~/.<agent>/skills/`、`~/.agents/skills/`)会广播到该 agent 所有项目,且容易在多个 agent 根产生内容相同的重复副本(曾发生过:外部工具一次广播把 23 个 skill 复制成 5 份散到 5 个 agent 根,`~/.agents/skills` 47 项里 45 项是副本,收拾很麻烦)。
+
+工具层拦截(已实现,`app-core.js::confirmInstallGlobal` + `isGlobalSkillRoot`):`doSteal` / `doStealInstall` / `doNpxInstall` / `stealFromSource` 四个安装入口在装之前判断当前 target 的 `sourceCapabilityBucket`——若为 `active-user`(即全局用户根),弹 `confirm` 让用户确认;项目级(`project-local`)直接放行。批量同步入口(`copySelectedToCurrent`)的确认文案额外追加全局根警告。判定只认 `active-user` 桶,不硬编码路径名单,跟分类口径同源。
+
+用 skill-dashboard 装 skill 时也遵守同一条:默认装项目级,装全局前必须找用户确认,不静默装 `~/.<agent>/skills` 或 `~/.agents/skills`。
+
 ### 垃圾站按操作打包(kind:package)
 
 一次移入操作(`_cleanup_execute` 请求 / `batch_delete`)涉及 ≥2 个 skill 时聚成一个 trash 包(`kind:package`),`.trash-meta.json` 记 `skills:[{name,original_path,sub}]`;同名 skill(多版本快照)用 `sub`(`name__<i>`)区分。前端两级展示(包→展开 skill,`togglePkgCard`)。单 skill 删除保持单条(`kind:skill`,`_trash_dir` 保留给 `_delete_skill`)。包恢复 per-skill 回 `original_path` + failed 收集(200+failed,非整体 409)。`/api/trash/stats` 读全量 `history.jsonl` 聚合累计删除。实现都在 `routes/cleanup.py`。

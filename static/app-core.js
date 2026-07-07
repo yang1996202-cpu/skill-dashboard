@@ -139,6 +139,17 @@ function sourceCapabilityBucket(t){
 
 function capabilityMeta(key){return CAPABILITY_META[key]||CAPABILITY_META.unknown}
 
+// 装到全局根(~/.<agent>/skills、~/.agents/skills)会广播到该 agent 所有项目,
+// 易造成跨 agent 重复副本。装 skill 前用此判断,全局根需用户确认;项目级直接放行。
+function isGlobalSkillRoot(target){
+  if(!target) return false;
+  return sourceCapabilityBucket(target)==='active-user';
+}
+async function confirmInstallGlobal(target){
+  if(!isGlobalSkillRoot(target)) return true;
+  return confirm('当前目录是全局技能根「'+(target.rel||target.path||'')+'」,\n装到这里该 agent 的所有项目都会加载,且容易在多个 agent 根产生重复副本。\n\n建议装到项目级目录(如 ~/projects/<项目>/.claude/skills)。\n\n确定装到全局?');
+}
+
 function summarizeCapabilityDirs(dirs){
   const s={
     dirs:(dirs||[]).length,

@@ -118,6 +118,7 @@ async function doSteal(){
   const sourceEl=$('steal-source');
   const source=sourceEl?sourceEl.value.trim():(window.__stealSource||'');
   if(!source){toast('请输入来源','error');return}
+  if(!(await confirmInstallGlobal(targets.find(t=>t.is_current)||targets[0])))return;
   const btn=$('steal-btn');
   const result=$('steal-result');
   if(btn){btn.disabled=true;btn.textContent='安装中...';}
@@ -182,6 +183,7 @@ function stealPickerToggle(on){
 async function doStealInstall(){
   const picked=Array.from(document.querySelectorAll('.steal-pick-cb:checked')).map(function(cb){return cb.value;});
   if(picked.length===0){toast('请至少勾选一个','error');return}
+  if(!(await confirmInstallGlobal(targets.find(t=>t.is_current)||targets[0])))return;
   const source=window.__stealSource||'';
   const btn=$('steal-install-btn');
   const result=$('steal-result');
@@ -302,6 +304,7 @@ function npxPickerToggle(on){
 async function doNpxInstall(){
   const picked=Array.from(document.querySelectorAll('.npx-pick-cb:checked')).map(function(cb){return cb.value;});
   if(picked.length===0){toast('请至少勾选一个','error');return}
+  if(!(await confirmInstallGlobal(targets.find(t=>t.is_current)||targets[0])))return;
   const package=window.__npxPackage||'';
   const btn=$('npx-install-btn');
   const result=$('npx-result');

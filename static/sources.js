@@ -1052,7 +1052,8 @@ async function batchSyncSrcSkills(){
   const curTarget=targets.find(t=>t.is_current);
   if(!curTarget)return toast('未选择目标目录','error');
   const modeLabel=copyMode==='symlink'?'链接':'复制';
-  if(!confirm(`确认以「${modeLabel}」方式将 ${sel.length} 个 skill 同步到当前目录？\n目标: ${curTarget.name}\n\n${sel.map(s=>s.name).join(', ')}`))return;
+  const globalWarn=isGlobalSkillRoot(curTarget)?'\n\n⚠ 目标是全局技能根,会广播到该 agent 所有项目,易产生跨 agent 重复副本。建议装到项目级目录。':'';
+  if(!confirm(`确认以「${modeLabel}」方式将 ${sel.length} 个 skill 同步到当前目录？\n目标: ${curTarget.name}${globalWarn}\n\n${sel.map(s=>s.name).join(', ')}`))return;
   let ok=0,fail=0;
   for(const{name,path}of sel){
     try{
@@ -1071,6 +1072,7 @@ async function stealFromSource(srcPath,skillName){
   const srcDir=srcPath+'/'+skillName;
   const curTarget=targets.find(t=>t.is_current);
   if(!curTarget)return toast('未选择目标库','error');
+  if(!(await confirmInstallGlobal(curTarget)))return;
   try{
     const r=await fetch('/api/copy-skill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({src:srcDir,target:curTarget.path,name:skillName,mode:copyMode})});
     const d=await r.json();
