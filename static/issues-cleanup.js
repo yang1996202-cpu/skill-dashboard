@@ -781,10 +781,10 @@ function renderIssues(){
   const brokenLinks=issues.filter(i=>i.kind==='broken_symlink'||i.kind==='broken_skill_link');
 
   const issueTabs=[
-    {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length},
-    {key:'identical',emoji:'♻️',label:'同内容副本',count:identicalGroups.length,title:'SKILL.md 内容 hash 完全相同的跨目录副本(如被广播装到多个 agent 根的 skill)'},
-    {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length},
-    {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length},
+    {key:'same-name',emoji:'📛',label:'同名',count:sameNameGroups.length,title:'同名 skill,但内容可能不同(不同版本/定制),不能盲删;跨 Agent 同名多为正常多端部署,单 Agent 内重复才需核查'},
+    {key:'identical',emoji:'♻️',label:'同内容副本',count:identicalGroups.length,title:'同名 + 内容完全相同(同 hash)的跨目录副本,多是被广播装到多个 agent 根的冗余,可删副本留本体(移入垃圾站可恢复)'},
+    {key:'changes',emoji:'🔄',label:'变更',count:changedSkills.length,title:'SKILL.md 内容与安装时记录的哈希不同(本地改过),可重新记录新哈希'},
+    {key:'broken',emoji:'🔴',label:'损坏',count:brokenLinks.length,title:'symlink 指向的目标已不存在(原目标被删或移动位置),可一键全删(移入垃圾站可恢复)'},
   ];
   const govBuckets=computeGovernBuckets();
   // frozen tab(不动:锁定/观察/缓存)只在 all scope 显示 —— 非 all 时
@@ -866,7 +866,7 @@ function renderIssues(){
 
   // ── Same-name section ──
   if(_issueTypeTab==='same-name'&&visibleSameName.length){
-    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>📛 同名分析</h3><p>同名 ≠ 内容相同 ≠ 可删；跨 Agent 重复多为正常多端部署，单 Agent 内重复才需重点核查。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${visibleSameName.length} 组</span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div></div>
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>📛 同名分析</h3><p>同名 ≠ 内容相同 ≠ 可删。这里只列同名 skill(内容可能不同:不同版本/定制),不能盲删——先「并排对比」看内容差异,确认是冗余再删。跨 Agent 同名多为正常多端部署,单 Agent 内重复才需重点核查。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${visibleSameName.length} 组</span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" title="删除勾选的 skill(移入垃圾站可恢复)。先对比确认是冗余再删" style="font-size:10px;padding:2px 8px">删除选中</button></div></div>
       <div class="issue-card-grid">`;
 
     // Flat: one card per duplicate name. Cross-agent AND within-agent
@@ -877,13 +877,13 @@ function renderIssues(){
       const locs=dup.locations;
       const uid='sn-'+Math.random().toString(36).slice(2,8);
       _compareData[uid]=locs.map(l=>({name:l.name||dup.name,dir:l.dir}));
-      const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px">跨 ${dup.agent_count} Agent</span>`:'';
+      const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="这个 skill 出现在 ${dup.agent_count} 个 Agent 的目录里">跨 ${dup.agent_count} Agent</span>`:'';
       h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
           <span style="font-size:10px;color:var(--text-muted)">▶</span>
           <span style="flex:1;font-size:12px;font-weight:600">${dup.name} · ${locs.length} 个目录</span>
           ${crossAgent}
-          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" style="font-size:9px;padding:2px 8px">并排对比</button>
+          <button class="btn btn-sm btn-primary" onclick="event.stopPropagation();compareSkills(this,'${uid}')" title="并排对比各目录的 SKILL.md 内容,判断是否冗余" style="font-size:9px;padding:2px 8px">并排对比</button>
         </div>
         <div id="${uid}" class="issue-group-body" style="display:none;padding:6px 12px 10px">
           ${locs.map(loc=>{
@@ -895,14 +895,14 @@ function renderIssues(){
             const needSrc=_bucket==='unknown'||_bucket==='review-copy';
             return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
               ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除" style="cursor:pointer">
               <div style="min-width:0">
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 ${renderIssuePath(loc.dir)}
               </div>
               <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}',{autoExpandRecovery:true})" title="按内容搜回上游来源" style="font-size:9px;padding:2px 6px;${needSrc?'color:var(--amber);border-color:var(--amber)':''}">补来源</button>
-              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" title="删除此目录的 skill(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -914,12 +914,12 @@ function renderIssues(){
 
   // ── Identical(同内容副本)section:同 SKILL.md hash 的跨目录副本,手动删副本保留本体 ──
   if(_issueTypeTab==='identical'&&visibleIdentical.length){
-    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>♻️ 同内容副本</h3><p>SKILL.md 内容完全相同(同 hash)的跨目录副本,多是被广播装到多个 agent 根的 skill。手动勾选要删的副本,保留一个本体。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${visibleIdentical.length} 组</span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" style="font-size:10px;padding:2px 8px">删除选中</button></div></div>
+    h+=`<section class="issue-section"><div class="issue-section-head"><div><h3>♻️ 同内容副本</h3><p>SKILL.md 内容完全相同(同 hash)的跨目录副本——多是被 trae/CodeBuddy/gemini 等广播装到多个 agent 根的冗余。可放心删副本,保留一个本体即可(删是移入垃圾站,可恢复)。勾选要删的副本行,点「删除选中」。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${visibleIdentical.length} 组</span><button class="btn btn-sm btn-danger" onclick="deleteSelectedIssues()" title="删除勾选的副本(移入垃圾站可恢复)。保留没勾的那个作本体" style="font-size:10px;padding:2px 8px">删除选中</button></div></div>
       <div class="issue-card-grid">`;
     visibleIdentical.forEach(dup=>{
       const locs=dup.locations;
       const hash=locs[0]?.hash||'';
-      const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px">跨 ${dup.agent_count} Agent</span>`:'';
+      const crossAgent=dup.agent_count>=2?`<span style="font-size:10px;color:var(--amber);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="这个 skill 出现在 ${dup.agent_count} 个 Agent 的目录里(全是同一份内容)">跨 ${dup.agent_count} Agent</span>`:'';
       const hashBadge=hash?`<span style="font-size:10px;color:var(--text-muted);font-family:var(--mono);background:var(--bg-card-alt);padding:1px 6px;border-radius:999px" title="SKILL.md 内容 hash(所有副本相同)">hash ${hash}</span>`:'';
       h+=`<div style="border:1px solid var(--border-subtle);border-radius:8px;overflow:hidden">
         <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--bg-card-alt);cursor:pointer" onclick="var b=this.parentElement.querySelector('.issue-group-body');b.style.display=b.style.display==='none'?'block':'none'">
@@ -934,13 +934,13 @@ function renderIssues(){
             const sKey=sn+'|'+loc.dir;
             return `<div style="display:grid;grid-template-columns:auto auto minmax(0,1fr) auto auto;gap:6px;padding:5px 0;border-bottom:1px solid var(--border-subtle);align-items:center">
               ${issueDirBadge(loc.dir)}
-              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" style="cursor:pointer">
+              <input type="checkbox" class="issue-check" data-skey="${esc(sKey)}" data-sname="${esc(sn)}" data-sdir="${esc(loc.dir)}" ${_issueSelected.has(sKey)?'checked':''} onchange="toggleIssueSelect(this)" title="勾选加入批量删除(保留没勾的作本体)" style="cursor:pointer">
               <div style="min-width:0">
                 <span style="font-size:12px;font-weight:500;color:var(--indigo);cursor:pointer" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')">${sn}</span>
                 ${renderIssuePath(loc.dir)}
               </div>
-              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">查看</button>
-              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" style="font-size:9px;padding:2px 6px">删</button>
+              <button class="btn btn-sm" onclick="showSkill('${esc(sn)}','${esc(loc.dir)}')" title="查看 skill 详情" style="font-size:9px;padding:2px 6px">查看</button>
+              <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(sn)}',this,'${esc(loc.dir)}')" title="删除此目录的副本(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button>
             </div>`;
           }).join('')}
         </div>
@@ -951,14 +951,14 @@ function renderIssues(){
 
   // ── Broken symlinks section ──
   if (_issueTypeTab==='broken' && brokenLinks.length) {
-    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 指向的目标已不存在(原目标被删或移动位置)。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${brokenLinks.length} 个</span><button class="btn btn-sm btn-danger" onclick="deleteAllBroken()" style="font-size:10px;padding:2px 8px">全部删除</button></div></div>
+    h += `<section class="issue-section"><div class="issue-section-head"><div><h3>🔴 损坏链接</h3><p>这些 symlink 指向的目标已不存在(原目标被删或移动位置)。删是移入垃圾站,可恢复。</p></div><div style="display:flex;align-items:center;gap:8px"><span>${brokenLinks.length} 个</span><button class="btn btn-sm btn-danger" onclick="deleteAllBroken()" title="一键删除全部 ${brokenLinks.length} 个损坏链接(symlink 断链),移入垃圾站可恢复" style="font-size:10px;padding:2px 8px">全部删除</button></div></div>
       <div class="card issue-list-card">`;
     brokenLinks.forEach(issue => {
       const kindLabel=issue.kind==='broken_skill_link'?'目录壳':'断链';
       h += `<div class="issue-row">
         <div style="flex:1"><div style="font-size:13px;font-weight:500">${issue.name}</div>
           <div style="font-size:11px;color:var(--text-muted)">${kindLabel} · ${issue.dir ? issue.dir.replace(/^\/Users\/[^/]+/, '~') : ''}</div></div>
-        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this,'${esc(issue.dir||'')}')" style="font-size:9px;padding:2px 6px">删</button></div>`;
+        <button class="btn btn-sm btn-danger" onclick="deleteSkill('${esc(issue.name)}',this,'${esc(issue.dir||'')}')" title="删除此断链(移入垃圾站可恢复)" style="font-size:9px;padding:2px 6px">删</button></div>`;
     });
     h += `</div></section>`;
   }
