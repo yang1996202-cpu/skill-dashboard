@@ -19,13 +19,8 @@ from skilldash.cleanup import (
     build_cleanup_execution_plan,
     build_cleanup_plan,
 )
-from skilldash.decisions import (
-    _duplicate_decision_key,
-    _load_duplicate_decisions,
-    _save_duplicate_decisions,
-)
 from skilldash.discovery import _is_skill_entry
-from skilldash.paths import DUPLICATE_DECISIONS_FILE, STATE_DIR
+from skilldash.paths import STATE_DIR
 
 
 class CleanupRoutes:
@@ -57,86 +52,6 @@ class CleanupRoutes:
             strategy = "conservative"
         restrict_dirs = [d for d in query.get("dir", []) if d]
         self._json_response(build_cleanup_execution_plan(self._current_target(), scope, strategy, restrict_dirs=restrict_dirs or None))
-
-    def _list_duplicate_decisions(self):
-        """Return local exact-duplicate handling decisions."""
-        data = _load_duplicate_decisions()
-        entries = []
-        for key, entry in data.get("multi_agent_deployment", {}).items():
-            if not isinstance(entry, dict):
-                continue
-            item = dict(entry)
-            item["key"] = key
-            entries.append(item)
-        entries.sort(key=lambda x: x.get("decided_at", ""), reverse=True)
-        self._json_response({
-            "schema": 1,
-            "state_file": str(DUPLICATE_DECISIONS_FILE),
-            "ignored_by_git": True,
-            "decisions": entries,
-            "count": len(entries),
-        })
-
-    def _duplicate_decision(self):
-        """Persist a local decision for exact duplicate handling."""
-        body = self._read_json() or {}
-        decision = body.get("decision", "")
-        skill_name = self._validate_skill_name(body.get("skill_name", ""))
-        content_hash = body.get("content_hash", "")
-        if decision != "multi_agent_deployment":
-            self._json_response({"error": "unsupported decision"}, status=400)
-            return
-        if not skill_name:
-            self._json_response({"error": "invalid skill name"}, status=400)
-            return
-        if not re.match(r'^[a-fA-F0-9]{8,64}$', content_hash or ""):
-            self._json_response({"error": "invalid content hash"}, status=400)
-            return
-
-        data = _load_duplicate_decisions()
-        key = _duplicate_decision_key(skill_name, content_hash)
-        entry = {
-            "decision": decision,
-            "skill_name": skill_name,
-            "content_hash": content_hash,
-            "path": body.get("path", ""),
-            "duplicate_of": body.get("duplicate_of", ""),
-            "decided_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
-        data.setdefault("multi_agent_deployment", {})[key] = entry
-        _save_duplicate_decisions(data)
-        self._json_response({"ok": True, "key": key, "entry": entry})
-        self._log_history(
-            "mark_duplicate_decision",
-            paths=[body.get("path", "")],
-            count=1,
-            source="duplicate_decision",
-            status="ok",
-            detail={"skill_name": skill_name, "content_hash": content_hash, "decision": decision},
-        )
-
-    def _remove_duplicate_decision(self):
-        """Remove one local exact-duplicate handling decision."""
-        query = parse_qs(urlparse(self.path).query)
-        key = query.get("key", [""])[0]
-        if not re.match(r'^[a-fA-F0-9]{20}$', key or ""):
-            self._json_response({"error": "invalid decision key"}, status=400)
-            return
-        data = _load_duplicate_decisions()
-        bucket = data.setdefault("multi_agent_deployment", {})
-        existed = key in bucket
-        if existed:
-            del bucket[key]
-            _save_duplicate_decisions(data)
-        self._json_response({"ok": True, "removed": existed, "key": key})
-        self._log_history(
-            "remove_duplicate_decision",
-            paths=[],
-            count=1 if existed else 0,
-            source="duplicate_decision",
-            status="ok" if existed else "blocked",
-            detail={"key": key, "existed": existed},
-        )
 
     def _cleanup_execute(self):
         """Execute selected cleanup candidate actions. Skills collected from the

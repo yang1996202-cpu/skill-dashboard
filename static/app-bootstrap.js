@@ -371,8 +371,6 @@ const HISTORY_OP_LABELS={
   copy:'复制 skill',
   update:'更新 skill',
   fix:'修复 skill',
-  mark_duplicate_decision:'标记多端部署',
-  remove_duplicate_decision:'撤销多端部署标记',
   add_source:'添加路径',
   remove_source:'移除路径',
   rehash:'确认内容变更'

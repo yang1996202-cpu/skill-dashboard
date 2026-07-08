@@ -93,7 +93,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/source-aggregations"):    ("_source_aggregations", None),
         ("GET", "/api/cleanup-plan"):           ("_cleanup_plan", None),
         ("GET", "/api/cleanup-execution-plan"): ("_cleanup_execution_plan", None),
-        ("GET", "/api/duplicate-decisions"):    ("_list_duplicate_decisions", None),
         ("GET", "/api/fast-scan"):              ("_fast_scan", None),
         ("GET", "/api/operation-stats"):        ("_serve_operation_stats", None),
         ("GET", "/api/governance-stats"):       ("_serve_governance_stats", None),
@@ -113,7 +112,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/scan-run"):              ("_run_scan", None),
         ("POST", "/api/upstream-cache/clear"):  ("_clear_upstream_cache", None),
         ("POST", "/api/cleanup-execute"):       ("_cleanup_execute", None),
-        ("POST", "/api/duplicate-decision"):    ("_duplicate_decision", None),
         ("POST", "/api/steal"):                 ("_steal_skill", None),
         ("POST", "/api/steal-npx"):             ("_steal_npx", None),
         ("POST", "/api/code-search"):           ("_code_search", None),
@@ -123,7 +121,6 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/copy-skill"):            ("_copy_skill", None),
         ("POST", "/api/custom-sources"):        ("_add_custom_source", None),
         ("DELETE", "/api/custom-sources"):      ("_remove_custom_source", None),
-        ("DELETE", "/api/duplicate-decision"):  ("_remove_duplicate_decision", None),
         ("DELETE", "/api/trash"):               ("_empty_trash", None),
     }
 

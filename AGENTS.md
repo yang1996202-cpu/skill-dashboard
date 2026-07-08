@@ -30,7 +30,6 @@ skilldash/discovery.py      — skill 目录发现、Agent 推断、目录治理
 skilldash/overlap.py        — 跨目录同名、完全重复扫描
 skilldash/cleanup.py        — 清理计划、执行预案、重复 skill 处理准则
 skilldash/content_hash.py   — SKILL.md 内容 hash 追踪
-skilldash/decisions.py      — 本地运行态决策（多端部署）
 skilldash/understanding.py  — 离线理解层
 skilldash/skill_parser.py   — SKILL.md frontmatter/markdown 解析（零依赖，避免 PyYAML）
 skilldash/taxonomy.py       — 离线理解层的关键词规则 taxonomy
@@ -110,8 +109,6 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 | `/api/cleanup-plan` | GET | 生成目录治理计划（dry-run） |
 | `/api/cleanup-execution-plan` | GET | 生成可执行形态的清理预案（仍是 dry-run） |
 | `/api/cleanup-execute` | POST | 将选中的清理候选移入项目垃圾站 |
-| `/api/duplicate-decisions` | GET | 列出本地多端部署决策 |
-| `/api/duplicate-decision` | POST/DELETE | 记录 / 撤销多端部署决策（DELETE 带 `?key=` 查询参数） |
 | `/api/trash` | GET/DELETE | 列出垃圾站 / 清空 |
 | `/api/trash/stats` | GET | 累计删除/清空统计(读全量 history.jsonl 聚合,不受 /api/history 50 条限制) |
 | `/api/operation-stats` | GET | 操作统计(`{totals,recent,since}`,读全量 history.jsonl 聚合 op 计数;`recent` 近 7 天) |
@@ -208,7 +205,7 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 - `SKILL.md` 内容 hash 完全一致
 - 保留副本仍存在，且执行前 hash 没有变化
 
-其他 Agent 根目录里的完全重复 skill 不进垃圾站候选，归入 `deploy` 阶段，表示“多端部署副本”。用户点击“标记多端部署”后，写入 `.data/state/duplicate-decisions.json`，按 `skill_name + content_hash` 隐藏同一提醒；如果内容变化，hash 变化，提醒会重新出现。前端“本地决策”入口用于查看和撤销这些本机运行状态，帮助开源用户理解哪些信息不会随 Git 提交。
+其他 Agent active 根目录里的完全重复 skill 不进 trash 候选，由检测 tab「同内容副本」手动勾选删。
 
 **前端 issues 页另有两条不依赖 cleanup plan 的清理入口**（因为 active-root 间副本被 `_duplicate_action_kind` 标 multi_agent 不进 trash 候选，得靠用户手动）：
 - 「同内容副本」「同名」tab：展示 `duplicates_identical`/`duplicates_same_name`(`overlap.py::_find_same_name_duplicates`),**按 Agent 折叠**渲染(`renderLocsByAgent`,N 副本 → N Agent 折叠项,展开勾选删)。**排 vendor/marketplace/cache 桶**(宿主管,删不动/不该删,docs/source-recovery §8)——只留用户自管桶(active-user/-plugin/-connector/project-local)的副本。
@@ -310,7 +307,6 @@ Claude plugin cache 目录(`~/.claude/plugins/cache/<marketplace>/<plugin>/<vers
 ## 数据目录
 
 - 状态与缓存：`.data/`（state/ 存 current-target.json，cache/ 存全域分类）
-- 完全重复处理决策：`.data/state/duplicate-decisions.json`（本地运行态，不提交）
 - Skill 快照：`<target>/.snapshots/`（安装/更新时自动备份）
 
 ## 注意事项

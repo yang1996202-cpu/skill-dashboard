@@ -331,7 +331,7 @@ function renderCleanupLoading(step=1){
 
 function setCleanupLoading(active,step=1){
   const startBtn=$('cleanup-start-btn');
-  if(startBtn){startBtn.disabled=active;startBtn.textContent=active?'整理中...':'开始整理'}
+  if(startBtn){startBtn.disabled=active;startBtn.textContent=active?'检测中...':'开始检测'}
   document.querySelectorAll('#scan-config input[type=checkbox]').forEach(cb=>cb.disabled=active);
   document.querySelectorAll('#scan-config button').forEach(b=>{if(b.id!=='cleanup-start-btn')b.disabled=active;});
   const list=$('issues-list');
@@ -529,15 +529,14 @@ function renderCleanupPlan(){
   </div>`;
 }
 
-// 治理分桶：从 executionPlan.phases 按 operation 归成 3 组（供治理 tab 用）
-// trash=可移垃圾站(勾选删除) / review=待你看(展示+多端部署标记) / frozen=不动(锁定/观察)
+// 治理分桶：从 executionPlan.phases 按 operation 归成 2 组（供治理 tab 用）
+// trash=可移垃圾站(勾选删除) / frozen=不动(锁定/观察)。review 桶已删(manual_review/多端部署标记)。
 function computeGovernBuckets(){
-  const buckets={trash:[],review:[],frozen:[]};
+  const buckets={trash:[],frozen:[]};
   if(!executionPlan)return buckets;
   const trashOps=['move_skills_to_trash','move_skill_to_trash'];
   (executionPlan.phases||[]).forEach(p=>(p.actions||[]).forEach(a=>{
     if(trashOps.includes(a.operation))buckets.trash.push(a);
-    else if(a.operation==='manual_review'||a.operation==='mark_multi_agent_deploy')buckets.review.push(a);
     else buckets.frozen.push(a);
   }));
   return buckets;
@@ -553,20 +552,13 @@ function renderGovernActionCard(a){
   const bTone=boundaryTone(boundary);
   const layerText=a.layer_label||a.from_state||'未知层级';
   const isMove=/move_.*_trash/.test(a.operation);
-  const isReview=a.operation==='manual_review';
-  const isMultiDeploy=a.operation==='mark_multi_agent_deploy';
   const subj=a.skill_name||a.agent||'';
   // move 类主标突出 skill/目录名 + "可删"
-  const title=isMove?(a.skill_name?`${a.skill_name} · 重复副本可删`:`${subj} · 整个目录可删`)
-    :isReview?`${subj} · 需要你看一眼`
-    :isMultiDeploy?`${a.skill_name||subj} · 多端部署副本`
-    :subj;
+  const title=isMove?(a.skill_name?`${a.skill_name} · 重复副本可删`:`${subj} · 整个目录可删`):subj;
   const evidenceHtml=(a.evidence&&a.evidence.length)?`<details style="margin-top:6px"><summary style="font-size:10px;color:var(--text-dim);cursor:pointer;list-style:none">▸ 为什么这么判断（${a.evidence.length} 条）</summary><div style="font-size:10px;color:var(--text-dim);line-height:1.6;padding-top:4px">${a.evidence.map(e=>`<div>· ${escapeHtml(_evText(e))}</div>`).join('')}</div></details>`:'';
-  // move 类:主提示条(为什么可删 + 进垃圾站可恢复);review 类:主提示(为什么不能自动删 + 你要看什么)
+  // move 类:主提示条(为什么可删 + 进垃圾站可恢复);其余走默认灰条
   const promptBar=isMove
     ?`<div style="font-size:11px;color:var(--text);line-height:1.6;padding:6px 10px;margin:6px 0;background:var(--red)10;border-left:3px solid var(--red);border-radius:0 6px 6px 0">${escapeHtml(a.why||'')}<br><span style="color:var(--text-muted)">点上方勾选 → 右上「移入垃圾站」执行。只进可恢复垃圾站，不会永久删除。</span></div>`
-    :isReview
-    ?`<div style="font-size:11px;color:var(--text);line-height:1.6;padding:6px 10px;margin:6px 0;background:var(--amber)10;border-left:3px solid var(--amber);border-radius:0 6px 6px 0">${escapeHtml(a.why||'')}<br><span style="color:var(--text-muted)">建议：点 skill 名看内容，确认不用了再走「同名」或「损坏」tab 单独删。</span></div>`
     :`<div style="font-size:11px;color:var(--text-muted);line-height:1.5;margin-top:4px">${escapeHtml(a.why||'')}</div>`;
   return `<div style="border:1px solid var(--border-subtle);border-radius:10px;padding:0;background:var(--bg-card-alt);overflow:hidden">
     <div style="padding:8px 10px;background:${bTone}22;border-bottom:1px solid ${bTone}66;display:flex;gap:8px;align-items:center">
@@ -575,8 +567,7 @@ function renderGovernActionCard(a){
     <div style="padding:8px 10px">
       ${executable?`<label style="display:flex;align-items:center;gap:8px;padding:8px 10px;margin-bottom:8px;border-radius:8px;cursor:pointer;background:${cleanupExcludedActions.has(a.id)?'var(--bg-card)':'var(--red)'}14;border:1px solid ${cleanupExcludedActions.has(a.id)?'var(--border-subtle)':'var(--red)'}55"><input type="checkbox" ${cleanupExcludedActions.has(a.id)?'':'checked'} onchange="toggleCleanupExclude('${esc(a.id)}')" style="width:16px;height:16px;cursor:pointer;accent-color:var(--red)"><span style="font-size:12px;font-weight:700;color:${cleanupExcludedActions.has(a.id)?'var(--text-muted)':'var(--red)'}">${cleanupExcludedActions.has(a.id)?'已排除（这个不会被处理）':`☑ 纳入清理 · 移入垃圾站 · ${a.count||0} skills`}</span></label>`:''}
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
-        ${isMultiDeploy?`<button class="btn btn-sm" onclick="markMultiAgentDeployment('${esc(a.skill_name||'')}','${esc(a.content_hash||'')}','${esc(a.path||'')}','${esc(a.duplicate_of||'')}')" style="font-size:9px;padding:1px 6px">标记多端部署</button>`:''}
-        ${isMultiDeploy?'<span class="skill-tag">不进垃圾站</span>':a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
+        ${a.skill_name?'<span class="skill-tag">单个重复 skill</span>':'<span class="skill-tag">目录候选</span>'}
         <span style="flex:1"></span>
         <span style="font-size:11px;color:var(--text-muted)">${a.count||0} skills</span>
       </div>
@@ -590,7 +581,7 @@ function renderGovernActionCard(a){
     </div>
   </div>`;
 }
-// 处理建议顶部操作条（精简一行：移入垃圾站 + 本地决策 + 收起）。常驻 tab 上方。
+// 处理建议顶部操作条（精简一行：移入垃圾站 + 收起）。常驻 tab 上方。
 function renderExecHeader(){
   if(!executionPlan)return '';
   const candidateActions=cleanupCandidateActions();
@@ -602,7 +593,6 @@ function renderExecHeader(){
     <span style="font-size:11px;color:var(--text-muted)">点「🗑️ 可移垃圾站」勾选候选 → 点右侧按钮批量移入；只进可恢复垃圾站 · 预案 ${fmtScanTime(executionPlan.generated_at)}</span>
     <span style="flex:1"></span>
     ${excludedCount?`<button class="btn btn-sm" onclick="restoreAllCleanupCandidates()" title="恢复被排除的候选">恢复${excludedCount}项</button>`:''}
-    <button class="btn btn-sm" onclick="showDuplicateDecisions()" title="本机运行状态，不随 Git 提交">本地决策</button>
     <button class="btn btn-sm" onclick="executionPlan=null;_issueTypeTab='same-name';renderIssues()">收起</button>
     <button class="btn btn-sm btn-danger" id="cleanup-execute-btn" onclick="executeRecommendedCleanupActions()" ${executableActions.length?'':'disabled'}>移入垃圾站 ${executableActions.length} 项 / ${executableSkillCount} skills</button>
   </div>`;
@@ -610,73 +600,6 @@ function renderExecHeader(){
 
 function cleanupIsCandidateAction(a){
   return a&&['move_skills_to_trash','move_skill_to_trash'].includes(a.operation);
-}
-
-async function markMultiAgentDeployment(skillName,contentHash,path,duplicateOf){
-  if(!skillName||!contentHash)return;
-  try{
-    const r=await fetch('/api/duplicate-decision',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({
-        decision:'multi_agent_deployment',
-        skill_name:skillName,
-        content_hash:contentHash,
-        path,
-        duplicate_of:duplicateOf,
-      })
-    });
-    const d=await r.json();
-    if(!d.ok){toast(d.error||'标记失败','error');return}
-    toast('已标记为多端部署：同一内容不再重复提醒');
-    await runExecutionPlan(executionPlan?.strategy||'declutter',{silent:true});
-  }catch(e){toast('标记失败: '+e.message,'error')}
-}
-
-async function showDuplicateDecisions(){
-  $('modal-title').textContent='本地决策';
-  $('modal-body').innerHTML='<div style="padding:12px;color:var(--text-muted)">加载中...</div>';
-  $('modal').classList.remove('hidden');
-  try{
-    const d=await fetch('/api/duplicate-decisions').then(r=>r.json());
-    const rows=d.decisions||[];
-    const intro=`<div style="font-family:-apple-system,sans-serif;font-size:12px;color:var(--text-muted);line-height:1.6;margin-bottom:10px">
-      这些记录只保存在本机 <code>.data/state/duplicate-decisions.json</code>，用于隐藏已确认的多端部署重复提醒；不会提交到 Git。内容 hash 变化后会重新出现。
-    </div>`;
-    if(!rows.length){
-      $('modal-body').innerHTML=intro+'<div class="empty" style="font-family:-apple-system,sans-serif">暂无本地决策。你在“多端部署”里点击标记后，这里会出现可撤销记录。</div>';
-      return;
-    }
-    $('modal-body').innerHTML=intro+`<div style="display:grid;gap:8px;font-family:-apple-system,sans-serif">
-      ${rows.map(row=>`<div style="border:1px solid var(--border-subtle);border-radius:8px;padding:10px;background:var(--bg-card-alt)">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-          <b style="font-size:13px;color:var(--text)">${escapeHtml(row.skill_name||'')}</b>
-          <span class="skill-tag">多端部署</span>
-          <span style="font-size:11px;color:var(--text-muted)">${escapeHtml(row.decided_at||'')}</span>
-          <span style="flex:1"></span>
-          <button class="btn btn-sm" onclick="removeDuplicateDecision('${esc(row.key||'')}')" style="font-size:10px;padding:2px 8px">撤销</button>
-        </div>
-        <div style="font-family:'SF Mono','Fira Code',monospace;font-size:10px;color:var(--text-dim);line-height:1.5;margin-top:6px">
-          hash: ${escapeHtml(row.content_hash||'')}<br>
-          path: ${escapeHtml(row.path||'')}<br>
-          kept: ${escapeHtml(row.duplicate_of||'')}
-        </div>
-      </div>`).join('')}
-    </div>`;
-  }catch(e){
-    $('modal-body').innerHTML='<div style="color:var(--red)">加载失败：'+escapeHtml(e.message)+'</div>';
-  }
-}
-
-async function removeDuplicateDecision(key){
-  if(!key)return;
-  try{
-    const d=await fetch('/api/duplicate-decision?key='+encodeURIComponent(key),{method:'DELETE'}).then(r=>r.json());
-    if(!d.ok){toast(d.error||'撤销失败','error');return}
-    toast('已撤销本地决策');
-    await showDuplicateDecisions();
-    if(executionPlan)await runExecutionPlan(executionPlan.strategy||'declutter',{silent:true});
-  }catch(e){toast('撤销失败: '+e.message,'error')}
 }
 
 function cleanupCandidateActions(){
@@ -767,7 +690,7 @@ function renderIssues(){
 
   // No scan yet
   if(!scanResult&&(!health||(!upstreams.length&&!issues.length))){
-    $('issues-list').innerHTML=execHeaderHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始整理」扫描目录并生成处理建议。</div>';
+    $('issues-list').innerHTML=execHeaderHtml+planHtml+'<div class="empty" style="padding:30px 0">点击「开始检测」扫描目录并生成处理建议。</div>';
     return;
   }
 
@@ -826,7 +749,7 @@ function renderIssues(){
   const lastScan=scanResult?.scanned_at;
   const planTime=executionPlan?.generated_at||'';
   const scanStale=lastScan&&planTime&&lastScan.slice(0,10)!==planTime.slice(0,10);
-  const freshnessHtml=lastScan?`<div class="notice-line"><span>⏱ 扫描数据时间 ${fmtScanTime(lastScan)}${scanStale?' · ⚠️ 与本次预案不同日，扫描可能失败、用了旧缓存':''}（点「开始整理」刷新）</span></div>`:'';
+  const freshnessHtml=lastScan?`<div class="notice-line"><span>⏱ 扫描数据时间 ${fmtScanTime(lastScan)}${scanStale?' · ⚠️ 与本次预案不同日，扫描可能失败、用了旧缓存':''}（点「开始检测」刷新）</span></div>`:'';
   let h=freshnessHtml+execHeaderHtml+tabHtml;
 
   const curTab=allTabs.find(t=>t.key===_issueTypeTab);
@@ -836,10 +759,9 @@ function renderIssues(){
   if(curTab&&governTabs.some(t=>t.key===curTab.key)){
     const actions=govBuckets[curTab.key]||[];
     if(!actions.length){
-      const reviewCnt=(govBuckets.review||[]).length;
       const isTrash=curTab.key==='trash';
-      h+=`<div class="empty" style="padding:26px 0;line-height:1.7">${isTrash&&reviewCnt
-        ?`✅ 当前范围没有可自动移垃圾站的候选（保守策略：只推荐备份/导入/下载层里 SKILL.md 完全一致的重复，且可恢复）。<br><span style="color:var(--text-muted)">有 ${reviewCnt} 个目录在「🔎 待你看」等你判断要不要清理 → </span><button class="btn btn-sm btn-primary" onclick="_issueTypeTab='review';_issueShowAll=false;renderIssues()">去看待你看</button>`
+      h+=`<div class="empty" style="padding:26px 0;line-height:1.7">${isTrash
+        ?`✅ 当前范围没有可自动移垃圾站的候选（保守策略：只推荐备份/导入/下载层里 SKILL.md 完全一致的重复，且可恢复）`
         :`✅ 这组没有目录`}</div>`;
     }else{
       const GLIMIT=12;

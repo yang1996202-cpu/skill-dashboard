@@ -8,7 +8,6 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from .decisions import _is_marked_multi_agent_deployment
 from .discovery import (
     _agent_from_path,
     _classify_skill_dir_detail,
@@ -285,18 +284,9 @@ def _execution_action_for_item(item, strategy="conservative"):
             "requires_confirmation": True,
         }
 
-    return {
-        **base,
-        "phase": "review",
-        "operation": "manual_review",
-        "label": "进入人工复核",
-        "to_state": "待定：保留、迁移、合并或移入垃圾站",
-        "why": "这个目录看起来有清理潜力，但工具没法判断它现在还用不用——可能是项目级、跨 Agent 副本或未知运行态。建议先点开看看里面的 skill，再决定保留、移走还是删。",
-        "rollback": "无文件变更；复核后再生成具体删除动作。",
-        "ready": True,
-        "destructive": False,
-        "requires_confirmation": False,
-    }
+    # 不产出 manual_review：review 桶已删，这些目录级"待复核"项不再展示。
+    # 它们是 active 项目库目录，整目录不该删；里面的冗余 skill 走检测 tab 同名/同内容副本手动删。
+    return None
 
 def _duplicate_keeper_sort_key(loc, current_target):
     """Prefer the copy most likely to be actively used."""
@@ -415,41 +405,10 @@ def _build_exact_duplicate_skill_actions(dirs, current_target, excluded_dirs=Non
             seen.add(key)
             seed = f"{loc_resolved}|{name}|exact-duplicate|{keeper_dir}|{loc.get('hash', '')}"
             if kind == "multi_agent":
-                content_hash = loc.get("hash", "")
-                if _is_marked_multi_agent_deployment(name, content_hash):
-                    continue
-                actions.append({
-                    "id": hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
-                    "path": loc_resolved,
-                    "rel": str(Path(loc_resolved)).replace(str(Path.home()), "~"),
-                    "agent": loc.get("agent") or _agent_from_path(loc_resolved),
-                    "count": 1,
-                    "skill_name": name,
-                    "duplicate_of": keeper_dir,
-                    "content_hash": content_hash,
-                    "sample_skills": [name],
-                    "from_state": governance.get("layer_label") or governance.get("layer", ""),
-                    "layer": governance.get("layer", ""),
-                    "policy": governance.get("policy", ""),
-                    "policy_label": governance.get("policy_label", ""),
-                    "layer_label": governance.get("layer_label", "") or governance.get("layer", ""),
-                    "evidence": list({e["text"]: e for e in [
-                        {"type": "dup", "text": f"{name} 的 SKILL.md 内容跟当前目录里那份完全一致（hash 匹配）"},
-                        {"type": "keeper", "text": f"保留的副本在：{str(Path(keeper_dir).expanduser()).replace(str(Path.home()), '~') if keeper_dir else '当前目录'}"},
-                        {"type": "policy", "text": "它在另一个 Agent 的根目录，更像多端部署副本，不是重复垃圾"},
-                    ]}.values())[:5],
-                    "risk": "low",
-                    "phase": "deploy",
-                    "operation": "mark_multi_agent_deploy",
-                    "label": "多端部署副本",
-                    "to_state": "保留在对应 Agent 根目录",
-                    "why": f"{name} 的内容跟当前目录那份完全一样，但它装在另一个 Agent 的根目录里——更像是为了在多个 Agent 里都能用而部署的副本，不是垃圾。可以标记为「多端部署」，标记后同一内容的提醒不再出现。",
-                    "rollback": "无文件变更；标记后仅隐藏同一内容 hash 的重复提醒。",
-                    "ready": True,
-                    "destructive": False,
-                    "requires_confirmation": False,
-                })
+                # mark_multi_agent_deploy 已删（review 桶移除）：active 根副本不进 trash、
+                # 不再产出软标记 action。这些副本仍由检测 tab「同内容副本」(duplicates_identical) 展示+手动删。
                 continue
+
 
             actions.append({
                 "id": hashlib.sha1(seed.encode("utf-8", errors="ignore")).hexdigest()[:16],
@@ -491,7 +450,9 @@ def build_cleanup_execution_plan(current_target, scope="daily", strategy="conser
     for group in cleanup_plan.get("groups", []):
         for item in group.get("items", []):
             plan_dirs.append(Path(item.get("path", "")))
-            actions.append(_execution_action_for_item(item, strategy))
+            action = _execution_action_for_item(item, strategy)
+            if action is not None:
+                actions.append(action)
 
     if strategy == "declutter":
         directory_candidate_paths = {
@@ -510,17 +471,9 @@ def build_cleanup_execution_plan(current_target, scope="daily", strategy="conser
             "label": "先锁定",
             "intent": "明确哪些目录永远不进入目录级删除。",
         },
-        "review": {
-            "label": "再复核",
-            "intent": "把不确定目录变成可人工处理的核查任务。",
-        },
         "organize": {
             "label": "再收纳",
             "intent": "把市场、内置包、缓存从日常管理里移开，但保留证据。",
-        },
-        "deploy": {
-            "label": "多端部署",
-            "intent": "同一个 skill 被放进多个 Agent 根目录。默认保留，可标记后不再重复提醒。",
         },
         "candidate": {
             "label": "推荐移入垃圾站",
@@ -528,7 +481,7 @@ def build_cleanup_execution_plan(current_target, scope="daily", strategy="conser
         },
     }
     phases = []
-    for key in ("protect", "review", "organize", "deploy", "candidate"):
+    for key in ("protect", "organize", "candidate"):
         phase_actions = [a for a in actions if a["phase"] == key]
         if not phase_actions:
             continue
