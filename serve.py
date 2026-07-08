@@ -107,6 +107,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("GET", "/api/scan-result"):            ("_scan_result", None),
         ("GET", "/api/trash"):                  ("_list_trash", None),
         ("GET", "/api/trash/stats"):            ("_trash_stats", None),
+        ("GET", "/api/open"):                   ("_open_in_finder", None),
         ("GET", "/api/preview"):                ("_preview_route", None),
         ("POST", "/api/target"):                ("_set_target", None),
         ("POST", "/api/scan-run"):              ("_run_scan", None),

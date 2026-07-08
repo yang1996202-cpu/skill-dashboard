@@ -418,6 +418,7 @@ function renderSourceDirRow(t,safeId,padLeft){
       </div>
       <span class="to-count">${t.count}</span>
       ${!t.is_current&&!isCommands?`<button class="btn btn-sm btn-primary" onclick="event.stopPropagation();switchTarget('${esc(t.path)}')" style="font-size:9px;padding:2px 6px;margin-left:4px;flex-shrink:0">切换为当前目录</button>`:''}
+      <button class="btn btn-sm" onclick="event.stopPropagation();openInFinder('${esc(t.path)}')" title="在访达中打开" style="font-size:9px;padding:2px 5px;margin-left:3px;flex-shrink:0">📂</button>
       <span class="src-arrow" style="font-size:8px;color:var(--text-muted);margin-left:4px">▶</span>
     </div>
     <div id="${safeId}" style="display:none;padding:4px 14px 8px ${padLeft+20}px;font-size:11px;color:var(--text-muted)">加载中...</div>
@@ -1251,7 +1252,14 @@ async function syncSelected(){
   $('modal').classList.add('hidden');
 }
 
-/* ── Custom Sources ── */
+/* ── Open in Finder ── */
+async function openInFinder(path){
+  try{
+    const r=await fetch(`/api/open?path=${encodeURIComponent(path)}`);
+    const d=await r.json();
+    if(!d.ok) toast(d.error||'打开失败','error');
+  }catch(e){toast('打开失败','error')}
+}
 function showAddSourceDialog(){
   $('modal-title').textContent='添加技能库来源';
   $('modal-body').innerHTML=`<div style="font-family:-apple-system,sans-serif;font-size:13px;color:var(--text)">

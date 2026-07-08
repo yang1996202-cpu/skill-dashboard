@@ -167,3 +167,38 @@ class SystemRoutes:
                 {"method": "PATCH", "path": "/api/skill/{name}/update", "desc": "Update skill from upstream"},
             ],
         })
+
+    def _open_in_finder(self):
+        """Open a directory in macOS Finder. GET /api/open?path=..."""
+        import platform
+        import subprocess
+        from pathlib import Path
+
+        qs = parse_qs(urlparse(self.path).query)
+        path = qs.get("path", [""])[0]
+        if not path:
+            self._json_response({"error": "missing path"}, status=400)
+            return
+
+        resolved = Path(path).expanduser().resolve()
+        if not resolved.is_relative_to(Path.home()):
+            self._json_response({"error": "path must be under home directory"}, status=403)
+            return
+
+        if not resolved.exists():
+            self._json_response({"error": f"path does not exist: {resolved}"}, status=404)
+            return
+
+        try:
+            if platform.system() == "Darwin":
+                subprocess.run(["open", str(resolved)], check=True, timeout=5)
+            elif platform.system() == "Linux":
+                subprocess.run(["xdg-open", str(resolved)], check=True, timeout=5)
+            elif platform.system() == "Windows":
+                subprocess.run(["explorer", str(resolved)], check=True, timeout=5)
+            else:
+                self._json_response({"error": "unsupported platform"}, status=400)
+                return
+            self._json_response({"ok": True, "path": str(resolved)})
+        except Exception as e:
+            self._json_response({"error": str(e)}, status=500)
