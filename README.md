@@ -27,14 +27,20 @@
 ### 仪表盘
 ![仪表盘](./screenshots/dashboard.png)
 
-### 技能库来源浏览
-![技能库](./screenshots/sources.png)
+### 当前目录技能（卡片网格 + 分类筛选）
+![当前目录技能](./screenshots/skills.png)
 
-### 上游追踪
-![上游追踪](./screenshots/upstream.png)
+### 技能安装（GitHub / npx / zip 导入）
+![技能安装](./screenshots/install.png)
 
-### 问题与整理
-![问题与整理](./screenshots/issues.png)
+### 能力来源地图
+![能力来源](./screenshots/sources.png)
+
+### 上游检测
+![上游检测](./screenshots/upstream.png)
+
+### 健康检测
+![健康检测](./screenshots/issues.png)
 
 ---
 
@@ -44,25 +50,20 @@
 
 | 功能 | 说明 |
 |---|---|
-| 📦 **列出 Skills** | 即时扫描任意技能库目录，毫秒级 |
-| 🧠 **理解层** | 离线规则解析 SKILL.md，生成中文用途、场景、能力标签、风险提示和证据片段 |
-| 🧭 **清理计划** | dry-run 生成目录治理方案：保护区、复核区、观察区、隐藏区，先给证据不直接删除 |
-| 🧩 **推荐清理** | 将目录治理和完全重复 skill 转成可恢复的垃圾站候选；推荐候选可一键移入垃圾站 |
-| 🔍 **扫描检查项** | 「问题与整理」页可勾选同名重复、损坏链接，按需扫描，避免全量跑 |
-| 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / Hermes / WorkBuddy / CodeBuddy 等 20+ 个技能库 |
-| 📚 **技能库来源浏览** | 扫描多宿主来源库，支持穿透查看、批量同步到目标库 |
-| ⌨️ **Commands 浏览** | 识别 Claude/通用 commands 目录，和 skills 一起分层展示；只展示，不参与扫描检测 |
-| 🧩 **宿主轮廓/插件状态** | 通用扫描先找 SKILL.md/MCP 证据，再由 Claude/Codex/Buddy family inspector 解释已启用插件、连接器包、市场货架和仅缓存目录差异 |
-| 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + 支持 frontmatter `category` 覆盖 |
-| 📖 **查看内容** | 点击 skill 名称查看 SKILL.md 全文 |
-| 🏥 **健康评分** | Python 自主计算，不依赖 bash |
-| ⚠️ **结构问题** | broken symlink、缺 frontmatter、oversized 检测 |
-| 🔗 **上游追踪** | 自动检测 `.git` 来源 + `.skill-source.env` 安装记录 |
-| 🔄 **上游更新检测** | urllib 调 GitHub API，对比 installed vs latest commit |
-| ⬇️ **安装 Skill** | 粘贴 GitHub URL → Python 自动 git clone + 子目录选择 + 快照备份 |
-| ⬆️ **更新 Skill** | 一键从上游重新安装，自动快照 |
-| 💾 **清理候选** | 基于规则自动推荐无用/低质量 skill |
-| 📜 **操作日志** | 记录切换、删除、清空垃圾站、安装、更新等本地操作 |
+| 📊 **仪表盘** | 资产规模 + 治理成果总览，当前目录能力摘要 |
+| 📦 **当前目录技能** | 卡片网格展示，分类标签可点击筛选，搜索即时过滤 |
+| ⬇️ **技能安装** | GitHub URL / npx CLI / zip 拖拽导入，三种方式装 skill |
+| ⬇️ **导出/导入** | 单 skill / 批量 / 全部导出为 zip；支持拖拽 zip 导入安装 |
+| 📚 **能力来源地图** | 扫描多宿主来源库，按 Agent 或作者仓库分组，穿透浏览 |
+| 🏷️ **自动分类** | JS 关键词引擎，14 个分类 + frontmatter `category` 覆盖 |
+| 🔗 **上游检测** | GitHub API 对比 installed vs latest commit，24h 智能缓存 |
+| 🧭 **健康检测** | 同名/同内容副本、断链扫描，按 Agent 折叠，可勾选移垃圾站 |
+| 🧹 **清理计划** | dry-run 目录治理方案，推荐候选一键移入垃圾站（可恢复） |
+| 🔄 **切换目标库** | 支持 20+ Agent（Claude Code / Codex / Cursor / Hermes / WorkBuddy / CodeBuddy …） |
+| 🧩 **插件状态** | Claude/Codex/Buddy family inspector 解释已启用、市场货架、缓存差异 |
+| ⌨️ **Commands 浏览** | 识别 commands 目录，和 skills 分层展示 |
+| 🧠 **理解层** | 离线规则解析 SKILL.md，生成中文用途、场景、能力标签 |
+| 📜 **操作日志** | 记录删除、安装、更新、切换等本地操作 |
 
 ---
 
@@ -102,13 +103,11 @@ python3 serve.py
 **并发**：后端使用 `ThreadingHTTPServer`，浏览器多个初始化请求并行处理，避免单线程队头阻塞导致穿透浏览超时。
 
 **设计原则**：
-- Layer 0（自主）：列出、分类、切换、查看、结构检查、健康评分、上游追踪、同名/完全重复线索、清理候选、安装、更新
+- Layer 0（自主）：列出、分类筛选、卡片浏览、安装、导出/导入、上游追踪、健康检测、清理
 - 理解层默认离线可用，不要求 API key；未来可接可选 AI 增强，但 UI 只依赖统一理解 schema
-- 清理计划默认 dry-run，目录级动作先解释来源、状态、去向和证据，不做直接删除
-- 推荐清理只允许候选移入垃圾站，可恢复；不会直接永久删除，不做当前目录级删除
-- 完全重复 skill 只由「问题与整理」页的「同内容副本」tab 手动勾选删，不进自动化 trash 候选。备份、导入、下载、本地库副本可移入垃圾站；其他 Agent 根目录副本按「同内容副本」手动勾选。
+- 清理 dry-run 先行，候选移入垃圾站（可恢复），不直接永久删除
+- 完全重复 skill 由「健康检测」→「同内容副本」tab 手动勾选删，不进自动化 trash 候选
 - 所有写操作（安装、删除、更新）都有自动快照备份
-- Broken symlink 和目录壳里的 broken `SKILL.md` 会作为可清理残留展示，可移入项目垃圾站
 
 ---
 
@@ -137,7 +136,8 @@ python3 serve.py
 - `static/issues-cleanup.js`：问题与整理、清理计划、垃圾站
 - `static/sources.js`：能力来源、来源浏览、批量同步/删除
 - `static/skill-detail.js`：详情、对比、分类编辑
-- `static/app-bootstrap.js`：刷新、目标切换、安装入口、启动加载
+- `static/app-bootstrap.js`：刷新、目标切换、启动加载
+- `static/install.js`：技能安装页（steal / npx / zip 导入）
 
 ---
 
