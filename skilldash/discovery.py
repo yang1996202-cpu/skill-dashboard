@@ -584,6 +584,16 @@ def _classify_skill_dir_detail(dir_path):
     }
     if plugin_context:
         detail.update(plugin_context)
+    # 软链接农场:目录里非隐藏条目全是 symlink(指向别的 agent 根的镜像),无独立能力。
+    # ~/.bob/skills 等 21 条全软链 → 农场;~/.claude/skills 69 真实目录 → 不农场。
+    # 严格口径(全软链且≥2),不误伤含真实目录的根。前端标镜像徽章+灰显,不剔除出计数。
+    try:
+        _fp = Path(dir_path)
+        _entries = [e for e in os.listdir(_fp) if not e.startswith(".")]
+        if len(_entries) >= 2 and all(os.path.islink(os.path.join(str(_fp), e)) for e in _entries):
+            detail["is_symlink_farm"] = True
+    except OSError:
+        pass
     return detail
 
 def _target_is_active(detail):
@@ -616,7 +626,7 @@ def _sample_skill_names(skills_dir, limit=6):
         pass
     return names
 
-def _discover_skill_dirs():
+def _discover_skill_dirs(force=False):
     """Discover all skill directories on the system.
     Returns a list of Path objects pointing to directories that contain SKILL.md entries.
 
@@ -626,10 +636,13 @@ def _discover_skill_dirs():
     3. ~/projects/*//skills/ — project-level skill directories
     4. .skill-dashboard.json config files (home-level + project-level)
     5. custom-sources.json (user-defined paths)
+
+    force=True 时跳过 60s 进程缓存,强制重扫文件系统(/api/targets?refresh=1 透传到此,
+    实现"一键重新扫描"穿透三层缓存:前端 + 后端 _targets_cache + discovery 60s)。
     """
     global _DISCOVER_SKILL_DIRS_CACHE, _DISCOVER_SKILL_DIRS_CACHE_TS
     now = time.time()
-    if _DISCOVER_SKILL_DIRS_CACHE is not None and (now - _DISCOVER_SKILL_DIRS_CACHE_TS) < _DISCOVER_SKILL_DIRS_TTL:
+    if not force and _DISCOVER_SKILL_DIRS_CACHE is not None and (now - _DISCOVER_SKILL_DIRS_CACHE_TS) < _DISCOVER_SKILL_DIRS_TTL:
         return list(_DISCOVER_SKILL_DIRS_CACHE)
 
     home = Path.home()

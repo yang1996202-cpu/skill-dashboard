@@ -333,6 +333,13 @@ function sourceFamilyBadge(g){
   if(!family)return '';
   return `<span class="src-family-badge" title="profile family">${esc(family)}</span>`;
 }
+// 软链接农场徽章:group 内所有目录都是 is_symlink_farm(非隐藏条目全软链,指向别的
+// agent 根的镜像,无独立能力)。前端标「镜像」徽章 + 灰显,不剔除出计数。
+function sourceFarmBadge(g){
+  const dirs=g?.dirs||[];
+  if(!dirs.length||!dirs.every(t=>t?.is_symlink_farm))return '';
+  return `<span class="src-farm-badge" title="目录里全是软链接指向别的 agent 根,无独立能力,只是镜像">镜像</span>`;
+}
 
 // 构成行:优先用后端 extension_breakdown,否则前端从 dirs 聚合
 // 注意:commands 目录(type==='commands')没有 extension_type 概念,不纳入构成统计
@@ -517,6 +524,22 @@ function showViewPreview(mode,btn){
 }
 function hideViewPreview(){const c=document.getElementById('view-preview');if(c)c.classList.remove('show');}
 
+// 一键重新扫描:force=true 穿透三层缓存(前端 fetchTargets + 后端 _targets_cache + discovery 60s),
+// 强制重扫文件系统。数据流同 loadData(app-core.js):targets=td.targets / targetGroups=td.groups。
+async function rescanSources(btn){
+  if(btn){btn.disabled=true;const old=btn.textContent;btn.textContent='扫描中…';btn.dataset.old=old;}
+  try{
+    const td=await fetchTargets(true);
+    targets=td.targets||td;
+    targetGroups=td.groups||[];
+    _sourcesShowAll=false;
+    invalidateTargetsCache();
+    renderSources();
+    updateTargetSelector(false,'full');
+    renderStats();
+  }catch(e){console.error('rescan failed',e);}
+  finally{ if(btn){btn.disabled=false;btn.textContent=btn.dataset.old||'🔄 重新扫描';delete btn.dataset.old;} }
+}
 function renderSources(){
   if(_sourceAxisMode==='by-author'){renderSourcesByAuthor();return}
   if(!targets.length){$('sources-list').innerHTML='';return}
@@ -528,6 +551,7 @@ function renderSources(){
       <h3 style="font-size:15px;font-weight:600">📚 能力来源地图</h3>
       <span style="font-size:11px;color:var(--text-muted)">${targetGroups.length||'?'} 个应用 · ${visibleTargets.length}/${targets.length} 个目录</span>
       <span style="flex:1"></span>
+      <button class="btn btn-sm" onclick="rescanSources(this)" title="强制重新扫描文件系统,穿透所有缓存(前端 3min + 后端 180s + discovery 60s)">🔄 重新扫描</button>
       <button class="btn btn-sm btn-primary" onclick="showAddSourceDialog()">＋ 添加路径</button>
       <a class="btn btn-sm" href="https://www.skills.sh/" target="_blank" rel="noopener" title="去 skills.sh 浏览技能市场 → 复制 skill 的 GitHub 仓库 URL → 回顶部点「＋ 安装」装入">技能市场 ↗</a>
     </div>
@@ -579,6 +603,7 @@ function renderSources(){
     }
     groupsToRender.forEach(g=>{
       const isCurGroup=g.dirs.some(t=>t.is_current);
+      const isFarmGroup=g.dirs.length>0&&g.dirs.every(t=>t.is_symlink_farm);
       const isExpanded=_expandedSourceAgent===g.agent;
       const gCap=summarizeCapabilityDirs(g.dirs);
       const gBits=[];
@@ -591,8 +616,9 @@ function renderSources(){
       const gSub=`${g.dirs.length} 个目录 · ${formatSourceCounts(g.dirs)}${gBits.length?` · ${gBits.join(' · ')}`:''}${profileHint?` · ${profileHint}`:''}`;
       const formBadge=sourceFormBadge(g);
       const familyBadge=sourceFamilyBadge(g);
+      const farmBadge=sourceFarmBadge(g);
       const composition=sourceCompositionLine(g);
-      h+=`<div class="src-card" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden">
+      h+=`<div class="src-card${isFarmGroup?' src-card-farm':''}" data-agent="${esc(g.agent)}" style="border:1px solid ${isCurGroup?'var(--accent)':isFarmGroup?'var(--border-subtle)':'var(--border)'};border-radius:10px;margin-bottom:10px;background:var(--bg-card);overflow:hidden${isFarmGroup?';opacity:.72':''}">
         <div style="display:flex;align-items:center;gap:8px;padding:12px 14px;transition:background .12s;${isCurGroup?'background:var(--accent-bg)':''}">
           <span class="src-arrow" style="font-size:10px;color:var(--text-muted);transition:transform .15s;cursor:pointer;${isExpanded?'transform:rotate(90deg)':''}" onclick="toggleSrcCard(this.closest('.src-card'))">▶</span>
           <div style="flex:1;min-width:0;cursor:pointer" onclick="toggleSrcCard(this.closest('.src-card'))">
@@ -602,6 +628,7 @@ function renderSources(){
               <span class="src-identity-badges">
                 ${formBadge}
                 ${familyBadge}
+                ${farmBadge}
                 ${sourceReadinessBadge(g)}
               </span>
             </div>

@@ -83,5 +83,61 @@ class TestGovernanceLayer(unittest.TestCase):
         self.assertEqual(d["policy"], "manage")
 
 
+import os
+import tempfile
+
+
+class TestSymlinkFarm(unittest.TestCase):
+    """is_symlink_farm:目录非隐藏条目全软链且≥2 → True(镜像农场,无独立能力)。
+    严格口径,不误伤含真实目录的根(如 ~/.claude/skills)。"""
+
+    def setUp(self):
+        # plugin_context 可能读宿主配置;隔离掉,农场判定只依赖目录内容。
+        patcher = mock.patch(
+            "skilldash.discovery.plugin_context_for_dir", return_value=None
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.tmp = tempfile.mkdtemp(prefix="sd-farm-test-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.tmp, ignore_errors=True))
+
+    def _dir(self, name):
+        p = os.path.join(self.tmp, name)
+        os.makedirs(p, exist_ok=True)
+        return p
+
+    def test_all_symlinks_is_farm(self):
+        # ~/.bob/skills 模式:21 条全软链 → 农场
+        d = self._dir("farm")
+        for i in range(3):
+            os.symlink("/nonexistent/target" + str(i), os.path.join(d, f"skill{i}"))
+        detail = _classify_skill_dir_detail(d)
+        self.assertTrue(detail.get("is_symlink_farm"), "全软链目录应判农场")
+
+    def test_real_dirs_not_farm(self):
+        # ~/.claude/skills 模式:含真实目录 → 不农场
+        d = self._dir("real")
+        os.makedirs(os.path.join(d, "realskill"))
+        os.symlink("/nonexistent/x", os.path.join(d, "linkskill"))
+        detail = _classify_skill_dir_detail(d)
+        self.assertFalse(detail.get("is_symlink_farm"), "含真实目录不判农场")
+
+    def test_too_few_entries_not_farm(self):
+        # 单软链不判农场(≥2 阈值,防误伤)
+        d = self._dir("single")
+        os.symlink("/nonexistent/x", os.path.join(d, "onlylink"))
+        detail = _classify_skill_dir_detail(d)
+        self.assertFalse(detail.get("is_symlink_farm"), "单条目不判农场")
+
+    def test_hidden_entries_ignored(self):
+        # .snapshots 等隐藏条目不计;非隐藏全软链仍判农场
+        d = self._dir("hidden")
+        os.makedirs(os.path.join(d, ".snapshots"))
+        os.symlink("/nonexistent/a", os.path.join(d, "a"))
+        os.symlink("/nonexistent/b", os.path.join(d, "b"))
+        detail = _classify_skill_dir_detail(d)
+        self.assertTrue(detail.get("is_symlink_farm"), "隐藏条目忽略,非隐藏全软链判农场")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -247,6 +247,8 @@ tbody tr:hover{background:var(--bg-hover)}
 .src-form-badge.is-cli{background:color-mix(in srgb,var(--accent) 8%,var(--bg-card-alt));color:var(--accent);border-color:color-mix(in srgb,var(--accent) 22%,var(--border))}
 .src-form-badge.is-app{background:var(--cyan-bg);color:var(--cyan);border-color:color-mix(in srgb,var(--cyan) 18%,var(--border))}
 .src-form-badge.is-ide{background:var(--indigo-bg);color:var(--indigo);border-color:color-mix(in srgb,var(--indigo) 18%,var(--border))}
+.src-farm-badge{display:inline-flex;align-items:center;border:1px solid color-mix(in srgb,var(--amber) 22%,var(--border));border-radius:999px;padding:1px 6px;font-size:9px;line-height:1.45;white-space:nowrap;font-weight:500;background:var(--amber-bg);color:var(--amber)}
+.src-card-farm .src-arrow{color:var(--text-dim)}
 .src-composition{font-size:10px;color:var(--text-dim);display:inline-flex;align-items:center;gap:4px;flex-wrap:wrap;margin-top:2px}
 .src-composition .comp-chip{color:var(--text-muted)}
 .src-composition .comp-sep{color:var(--border);font-size:9px}

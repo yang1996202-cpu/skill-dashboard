@@ -453,7 +453,7 @@ class SourceRoutes:
         current = self._current_target()
 
         # Reuse shared discovery
-        skill_dirs = _discover_skill_dirs()
+        skill_dirs = _discover_skill_dirs(force=force_refresh)
         command_dirs = _discover_command_dirs()
 
         targets = []
