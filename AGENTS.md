@@ -153,6 +153,12 @@ screenshots/       — 截图（dashboard / sources / upstream / issues）
 
 `_agent_from_path()` 从路径推断 Agent 名称。保留已知映射（`.codex` → `Codex`），但未知 `.xxx` 直接用目录名。**不在其他地方重复这个映射**——`_list_targets()` 等调用 `_agent_from_path()` 而不是自己维护 if/elif 列表。
 
+**伪 agent 收紧(2026-07-08)**：
+- `_agent_from_path` 末段 fallback:路径末段是 `skills` 且上级非 dot → 取上级目录名(`~/hyperframes/skills` → `hyperframes`,不再推成 agent 名"skills")。dot 目录下的 skills 仍走 dot 分支(`.bob`→bob),不受影响。测试 `test_discovery_classify::test_non_dot_skills_subdir_takes_parent`。
+- `_discover_skill_dirs::add_dir` 排除包缓存/Python 包目录(路径含 `/install/cache/`、`/site-packages/`、`/.local/share/uv/tools/`)——这些是包内部文件(bun/npm 缓存、uv 工具、site-packages),包可能自带 SKILL.md 被误识别成 skill 目录。实测 `~/.bun/install/cache/fallow@.../skills`(伪 agent "bun")、`~/.local/share/uv/tools/graphifyy/.../site-packages`(伪 agent "local")排除出 targets,总应用数 50→48。
+- vscode 扩展 skills(`~/.antigravity[-ide]/extensions/.../skills`)暂不动:已是 `layer=vendor-bundled/policy=observe`,进"来源库存"不充数"当前可用"。
+- 镜像农场(`~/.bob/skills` 等 24 个软链农场)根因是用户装的 `claude-skill-hub`/`skill-guardian` 等同步工具的广播功能,非 skill-dashboard 建的;已标 `is_symlink_farm`(见「能力来源页 UX」),是否清理由用户决定。
+
 ### Host Inspectors：文件库存 ≠ 运行时暴露
 
 通用扫描器只回答“哪里有 `SKILL.md`”。这不足以解释 Codex/Claude/WorkBuddy/CodeBuddy 这类宿主，因为插件缓存、marketplace 目录、App 内置包和 connector 包里也可能带 skills，但不一定进入当前上下文。

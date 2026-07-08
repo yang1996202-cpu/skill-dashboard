@@ -144,7 +144,12 @@ def _agent_from_path(dir_path):
             if part == ".config" and i + 1 < len(parts):
                 return parts[i + 1]
             return part.lstrip(".")
-    return Path(p).name
+    # ~/非隐藏/skills 末段 fallback:取上级目录名(hyperframes/skills → hyperframes),
+    # 不把"skills"当 agent 名。dot 目录下的 skills 已在上面 dot 分支返回。
+    name = Path(p).name
+    if name == "skills" and len(parts) >= 2 and not parts[-2].startswith("."):
+        return parts[-2]
+    return name
 
 def _is_in_git_repo(dir_path):
     """Check if directory is inside a Git repository (not at agent root)."""
@@ -667,6 +672,15 @@ def _discover_skill_dirs(force=False):
                 return
         except ValueError:
             pass
+        # 包缓存/Python 包目录不是 agent skill 库,是包内部文件(bun/npm install cache、
+        # uv 工具、site-packages)。包可能自带 SKILL.md 被误识别成 skill 目录,排除出 targets。
+        # 2026-07-08:实测 ~/.bun/install/cache/fallow@.../skills、~/.local/share/uv/tools/
+        # graphifyy/.../site-packages 被推成伪 agent "bun"/"local",收紧。
+        _s = str(d)
+        if any(sig in _s for sig in ("/install/cache/", "/site-packages/",
+                                     "/.local/share/uv/tools/",
+                                     "\\install\\cache\\", "\\site-packages\\")):
+            return
         # Dedup by inode — catches macOS case-insensitive aliases (projects/ vs Projects/)
         try:
             st = d.stat()

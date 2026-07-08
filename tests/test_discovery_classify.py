@@ -51,6 +51,16 @@ class TestAgentFromPath(unittest.TestCase):
     def test_no_dot_segment_falls_back_to_basename(self):
         self.assertEqual(_agent_from_path("/some/random/path"), "path")
 
+    def test_non_dot_skills_subdir_takes_parent(self):
+        # ~/非隐藏/skills 末段是"skills"且上级非 dot → 取上级(hyperframes/skills → hyperframes),
+        # 不把"skills"当 agent 名(2026-07-08 收紧)。
+        self.assertEqual(_agent_from_path(f"{HOME}/hyperframes/skills"), "hyperframes")
+        self.assertEqual(_agent_from_path(f"{HOME}/someproject/skills"), "someproject")
+
+    def test_dot_dir_skills_still_uses_dot_dir_name(self):
+        # dot 目录下的 skills 走 dot 分支,不受末段 fallback 影响。
+        self.assertEqual(_agent_from_path(f"{HOME}/.bob/skills"), "bob")
+
 
 class TestUserLevelSkill(unittest.TestCase):
     def test_agent_skills_under_home(self):
