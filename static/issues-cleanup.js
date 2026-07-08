@@ -203,9 +203,11 @@ function filterGroupsByView(groups,viewMode){
     'all':()=>true,
   }[viewMode]||sourceIsActive;
   const filtered=groups.map(g=>{
-    // 当前目录始终保留:切换进来的 target 即便不在当前视图桶(如 project-local
+    // 当前目录穿透保留:切换进来的 target 即便不在当前视图桶(如 project-local
     // 不在 active 视图)也可见,避免"切了却在能力来源页消失"的反直觉。
-    const dirs=g.dirs.filter(t=>predicate(t)||t?.is_current);
+    // 但 agent 用户根(active-user)只属"当前可用",不穿透到库存/待核查——否则
+    // 根目录裸露在这些视图里与视图语义冲突(2026-07-08 修正)。
+    const dirs=g.dirs.filter(t=>predicate(t)||(t?.is_current && sourceCapabilityBucket(t)!=='active-user'));
     return {...g,dirs,total_skills:dirs.reduce((s,d)=>s+(d.count||0),0)};
   }).filter(g=>g.dirs.length);
   return filtered;
