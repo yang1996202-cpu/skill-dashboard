@@ -398,3 +398,158 @@ class SkillRoutes:
             )
             return
         self._json_response({"error": f"unknown action: {action}"}, status=400)
+
+    # ── export / import ──
+
+    def _export_skill(self, name):
+        """Zip a skill directory and return as download."""
+        import io
+        import zipfile
+
+        skill_dir = self._resolve_skill_dir(name)
+        if not skill_dir or not skill_dir.is_dir():
+            self._json_response({"error": f"Skill '{name}' not found"}, status=404)
+            return
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for f in sorted(skill_dir.rglob('*')):
+                if f.is_file() and '.snapshots' not in f.parts and '.trash' not in f.parts:
+                    arcname = str(f.relative_to(skill_dir.parent))
+                    zf.write(f, arcname)
+
+        buf.seek(0)
+        data = buf.read()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/zip')
+        self.send_header('Content-Disposition', f'attachment; filename="{name}.zip"')
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _export_batch(self):
+        """Zip multiple skills and return as single download."""
+        import io
+        import zipfile
+
+        body = self._read_json()
+        if not body:
+            self._json_response({"ok": False, "error": "无效请求"}, 400)
+            return
+
+        names = body.get("names", [])
+        if not names:
+            self._json_response({"ok": False, "error": "缺少 names"}, 400)
+            return
+
+        target = self._current_target()
+        target_path = Path(target)
+        found = []
+        for name in names:
+            d = target_path / name
+            if d.is_dir() and _is_skill_entry(d):
+                found.append((name, d))
+
+        if not found:
+            self._json_response({"ok": False, "error": "没找到可导出的 skill"}, 400)
+            return
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for name, d in found:
+                for f in sorted(d.rglob('*')):
+                    if f.is_file() and '.snapshots' not in f.parts and '.trash' not in f.parts:
+                        arcname = str(f.relative_to(target_path))
+                        zf.write(f, arcname)
+
+        buf.seek(0)
+        data = buf.read()
+        name_label = f"skills-{len(found)}.zip"
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/zip')
+        self.send_header('Content-Disposition', f'attachment; filename="{name_label}"')
+        self.send_header('Content-Length', str(len(data)))
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        self.wfile.write(data)
+
+    def _import_skill_zip(self):
+        """Accept a base64-encoded zip and extract skill directories to current target."""
+        import base64
+        import io
+        import zipfile
+        import tempfile
+
+        body = self._read_json()
+        if not body:
+            self._json_response({"ok": False, "error": "无效请求"}, 400)
+            return
+
+        b64 = body.get("data", "")
+        if not b64:
+            self._json_response({"ok": False, "error": "缺少 data (base64 zip)"}, 400)
+            return
+
+        try:
+            raw = base64.b64decode(b64)
+        except Exception:
+            self._json_response({"ok": False, "error": "base64 解码失败"}, 400)
+            return
+
+        target = self._current_target()
+        target_path = Path(target).expanduser().resolve()
+        if not target_path.is_relative_to(Path.home()):
+            self._json_response({"ok": False, "error": "目标目录必须在 home 下"}, 400)
+            return
+
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+                # Detect top-level structure: single dir or multiple?
+                entries = zf.namelist()
+                top_dirs = set()
+                for e in entries:
+                    parts = e.split('/')
+                    if parts[0]:
+                        top_dirs.add(parts[0])
+
+                installed = []
+                skipped = []
+                errors = []
+
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    # Extract to target, preserving structure
+                    dest = target_path / member.filename
+                    # Security: ensure dest is under target
+                    if not dest.resolve().is_relative_to(target_path):
+                        errors.append(f"路径越界拒绝: {member.filename}")
+                        continue
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    with zf.open(member) as src:
+                        dest.write_bytes(src.read())
+
+                # Verify which have valid SKILL.md
+                for td in top_dirs:
+                    d = target_path / td
+                    if _is_skill_entry(d):
+                        installed.append(td)
+
+                self._json_response({
+                    "ok": True,
+                    "installed": installed,
+                    "top_dirs": list(top_dirs),
+                    "skipped": skipped,
+                    "errors": errors,
+                })
+                self._log_history(
+                    "install",
+                    paths=[str(target_path / d) for d in installed],
+                    count=len(installed),
+                    source="import_zip",
+                    status="ok",
+                )
+        except zipfile.BadZipFile:
+            self._json_response({"ok": False, "error": "无效的 zip 文件"}, 400)
+            return

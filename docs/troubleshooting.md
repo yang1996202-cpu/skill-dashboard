@@ -256,6 +256,20 @@ if(!scan?.sources?.length){
 - **只读目录**：`/api/copy-skill` 写入目标目录时权限不足 → 需要在后端捕获 `PermissionError` 返回友好错误
 - **symlink 指向不存在的目标**：`broken_symlink` / `broken_skill_link` 在 `_fast_scan` 和 `/api/scan-run` 都检测——后者把断链产进 `structure_issues` 字段，前端「问题与整理」→「🔴 损坏」tab 消费。某些 agent（如 CC-Switch 备份目录）可能有循环链接
 
+### 软链接农场/镜像 Agent
+
+**现象**：能力来源页某些 Agent 卡片显示「镜像」徽章 + 灰显，位于「用户自建」桶。skill 数可能 20+，但实际全是软链指向 `~/.claude/skills`。
+
+**根因**：claude-skill-hub 等第三方 skill 管理工具的同步/广播功能，把 `~/.claude/skills` 的 skill 用软链接镜像到 `~/.bob/skills`、`~/.augment/skills` 等 20+ 个 agent 根目录——目的是"让所有 agent 共享同一套 skill"。副作用：这些 agent 根变成空壳镜像，没有独立能力，在 Dashboard 里充数成独立"应用"。
+
+**处理**：
+1. 停掉同步工具（如 `crontab -e` 删 skill-guardian 定时任务、`npm uninstall -g claude-skill-hub`）
+2. 农场目录可移入备份（`mv ~/.bob/skills ~/backup/bob.skills`），不丢能力——真 skill 在 `~/.claude/skills`
+3. Dashboard 自动标 `is_symlink_farm`（非隐藏条目全软链且≥2），前端标「镜像」徽章 + 灰显
+4. 点「🔄 重新扫描」按钮清除缓存中的农场 group
+
+**识别口径**：`discovery.py::_classify_skill_dir_detail` 在函数末尾判断——目录非隐藏条目≥2 且全软链 → `is_symlink_farm=True`。严格口径，不误伤 `~/.claude/skills`（含真实目录）。2026-07-08 加入。
+
 ### GitHub API 限流
 
 - **未认证 60 次/小时**：频繁安装/更新 skill 时容易触发。后端有 5 分钟 TTL 缓存 + 熔断

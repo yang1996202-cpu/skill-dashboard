@@ -33,6 +33,10 @@
       <div class="nav-item" onclick="switchView('skills',this)"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.3 7L12 12l8.7-5"/><path d="M12 22V12"/></svg></span> 当前目录技能 <span class="badge" id="badge-skills">-</span></div>
     </div>
     <div class="nav-group">
+      <div class="nav-group-label">安装</div>
+      <div class="nav-item" onclick="switchView('install',this)"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg></span> 技能安装</div>
+    </div>
+    <div class="nav-group">
       <div class="nav-group-label">检测</div>
       <div class="nav-item" onclick="switchView('upstream',this); renderUpstreamView()"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg></span> 上游检测 <span class="badge" id="badge-upstream">-</span></div>
       <div class="nav-item" onclick="switchView('issues',this)"><span class="nav-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg></span> 健康检测 <span class="badge" id="badge-issues">-</span></div>
@@ -72,24 +76,17 @@
       <!-- Skills -->
       <div class="view" id="view-skills">
         <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;align-items:center">
-          <div class="search-wrap" style="flex:1;min-width:200px"><input class="search" id="search" placeholder="搜索 skill..." oninput="filterSkills()"></div>
-          <button class="btn btn-primary" onclick="showStealDialog()">＋ 安装</button>
-          <button class="btn" onclick="showNpxDialog()" title="走 npx skills CLI 安装">npx 安装</button>
-          <button class="btn" onclick="exportSkills()">⬇ 导出</button>
-          <button class="btn" onclick="showImportDialog()">⬆ 导入</button>
-        </div>
-        <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center">
-          <label style="font-size:12px;color:var(--text-dim);display:flex;align-items:center;gap:4px;cursor:pointer">
-            <input type="checkbox" id="select-all" onchange="toggleSelectAll()" style="cursor:pointer">
-            全选
-          </label>
-          <button class="btn btn-sm btn-danger" id="batch-delete-btn" onclick="batchDelete()" disabled>批量删除</button>
-          <span id="batch-count" style="font-size:11px;color:var(--text-muted)">已选 0 个</span>
+          <div class="search-wrap" style="flex:1;min-width:200px"><input class="search" id="search" placeholder="搜索 skill..." oninput="renderSkillsList()"></div>
+          <button class="btn btn-primary" onclick="goView('install')" title="去「技能安装」页安装新 skill">＋ 安装</button>
+          <button class="btn" onclick="exportAllSkills()">⬇ 导出</button>
+          <button class="btn" onclick="goView('install')">⬆ 导入</button>
         </div>
         <div id="skills-list"></div>
       </div>
 
 
+      <!-- Install -->
+      <div class="view" id="view-install"><div id="install-list"></div></div>
       <!-- Issues (scan config + analysis results) -->
       <div class="view" id="view-issues">
         <div id="scan-config"></div>
@@ -144,6 +141,7 @@
 </footer>
 
 <script src="/static/app-core.js"></script>
+<script src="/static/install.js"></script>
 <script src="/static/issues-cleanup.js"></script>
 <script src="/static/sources.js"></script>
 <script src="/static/upstream.js"></script>

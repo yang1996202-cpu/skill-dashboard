@@ -48,9 +48,8 @@
 | 🧠 **理解层** | 离线规则解析 SKILL.md，生成中文用途、场景、能力标签、风险提示和证据片段 |
 | 🧭 **清理计划** | dry-run 生成目录治理方案：保护区、复核区、观察区、隐藏区，先给证据不直接删除 |
 | 🧩 **推荐清理** | 将目录治理和完全重复 skill 转成可恢复的垃圾站候选；推荐候选可一键移入垃圾站 |
-| 🔍 **扫描检查项** | 「问题与整理」页可勾选同名重复、上游状态、内容变更，按需扫描，避免全量跑 |
-| 🔁 **多端部署识别** | 同一 skill 同内容出现在多个 Agent 根目录时默认保留，可标记为已知部署副本，并可在“本地决策”里撤销 |
-| 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / CC-Switch / Hermes / WorkBuddy / CodeBuddy 等 10+ 个技能库 |
+| 🔍 **扫描检查项** | 「问题与整理」页可勾选同名重复、损坏链接，按需扫描，避免全量跑 |
+| 🔄 **切换目标库** | 支持 Claude Code / Codex / Agents / Alice / Hermes / WorkBuddy / CodeBuddy 等 20+ 个技能库 |
 | 📚 **技能库来源浏览** | 扫描多宿主来源库，支持穿透查看、批量同步到目标库 |
 | ⌨️ **Commands 浏览** | 识别 Claude/通用 commands 目录，和 skills 一起分层展示；只展示，不参与扫描检测 |
 | 🧩 **宿主轮廓/插件状态** | 通用扫描先找 SKILL.md/MCP 证据，再由 Claude/Codex/Buddy family inspector 解释已启用插件、连接器包、市场货架和仅缓存目录差异 |
@@ -89,9 +88,9 @@ python3 serve.py
                 ↓
           understanding cache → 中文用途 + 场景/能力/风险标签（详情页按需加载）
                 ↓
-          点「开始整理」→ cleanup-execution-plan → 推荐移入垃圾站 / 复核 / 多端部署
+          点「开始整理」→ cleanup-execution-plan → 推荐移入垃圾站 / 保护 / 候选
                 ↓
-          展开高级线索 → scan-run（勾选同名/上游/内容变更） → 证据展示
+          展开高级线索 → scan-run（勾选同名/损坏链接） → 证据展示
 ```
 
 **视图分层**：
@@ -107,9 +106,7 @@ python3 serve.py
 - 理解层默认离线可用，不要求 API key；未来可接可选 AI 增强，但 UI 只依赖统一理解 schema
 - 清理计划默认 dry-run，目录级动作先解释来源、状态、去向和证据，不做直接删除
 - 推荐清理只允许候选移入垃圾站，可恢复；不会直接永久删除，不做当前目录级删除
-- 完全重复 skill 只有在 `SKILL.md` 内容一致且保留副本明确时才可能进入候选；备份、导入、下载、本地库副本可移入垃圾站，其他 Agent 根目录副本按多端部署默认保留
-- 多端部署标记记录在本地状态里，按 `skill + content hash` 生效；内容变更后会重新出现，避免长期误藏；“本地决策”入口可查看和撤销这些运行状态
-- “标记多端部署”属于本机运行状态，记录在 `.data/state/`，用于减少重复提醒，不随 Git 提交
+- 完全重复 skill 只由「问题与整理」页的「同内容副本」tab 手动勾选删，不进自动化 trash 候选。备份、导入、下载、本地库副本可移入垃圾站；其他 Agent 根目录副本按「同内容副本」手动勾选。
 - 所有写操作（安装、删除、更新）都有自动快照备份
 - Broken symlink 和目录壳里的 broken `SKILL.md` 会作为可清理残留展示，可移入项目垃圾站
 
@@ -130,7 +127,7 @@ python3 serve.py
 - `skilldash/host_inspectors.py`：宿主专属解释器，将 Codex/Claude/WorkBuddy/CodeBuddy 的私有目录和非敏感 MCP 摘要转成统一 runtime metadata
 - `skilldash/cleanup.py`：清理计划和可执行 dry-run 预案
 - `skilldash/overlap.py`：跨目录同名和完全重复扫描
-- `skilldash/decisions.py` / `skilldash/content_hash.py`：本地运行态决策和内容 hash 追踪
+- `skilldash/content_hash.py`：内容 hash 追踪
 
 前端模块边界：
 

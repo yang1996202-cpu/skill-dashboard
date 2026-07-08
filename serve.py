@@ -119,6 +119,8 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         ("POST", "/api/probe-source"):          ("_probe_source", None),
         ("POST", "/api/attach-source"):         ("_attach_source", None),
         ("POST", "/api/copy-skill"):            ("_copy_skill", None),
+        ("POST", "/api/skill/export-batch"):    ("_export_batch", None),
+        ("POST", "/api/install/import"):        ("_import_skill_zip", None),
         ("POST", "/api/custom-sources"):        ("_add_custom_source", None),
         ("DELETE", "/api/custom-sources"):      ("_remove_custom_source", None),
         ("DELETE", "/api/trash"):               ("_empty_trash", None),
@@ -128,6 +130,7 @@ class DashboardHandler(SkillRoutes, SourceRoutes, CleanupRoutes, ScanRoutes, Sys
         # (method, prefix, suffix, handler, param)  suffix="" 表示纯前缀
         ("GET", "/static/", "", "_serve_static", "path"),
         ("GET", "/api/skill/", "/content", "_serve_skill_content", "name"),
+        ("GET", "/api/skill/", "/export", "_export_skill", "name"),
         ("GET", "/api/skill/", "/upstream", "_check_skill_upstream", "name"),
         ("POST", "/api/trash/", "/restore", "_restore_trash", "path"),
         ("POST", "/api/skill/", "/rehash", "_rehash_skill", "name"),

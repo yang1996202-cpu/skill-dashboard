@@ -369,3 +369,24 @@ tbody tr:hover{background:var(--bg-hover)}
 .cleanup-step.active .cleanup-step-num{background:var(--accent);color:#fff}
 .cleanup-step.done .cleanup-step-num{background:var(--green);color:#fff}
 .cleanup-loading-note{font-size:11px;color:var(--text-muted);line-height:1.5}
+
+/* ── Skill card grid (当前目录技能) ── */
+.skill-card-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}
+.skill-card{border:1px solid var(--border);border-radius:8px;padding:10px 12px;cursor:pointer;transition:border-color .15s,box-shadow .15s;background:var(--bg-card)}
+.skill-card:hover{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent-bg)}
+.skill-card-top{display:flex;align-items:center;gap:8px;margin-bottom:4px}
+.skill-card-top .skill-check{flex-shrink:0;accent-color:var(--indigo)}
+.skill-card-name{font-size:13px;font-weight:600;color:var(--accent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.skill-card-desc{font-size:11px;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-bottom:6px;padding-left:22px}
+.skill-card-foot{display:flex;align-items:center;gap:6px;padding-left:22px}
+.skill-cat-chip{display:inline-flex;align-items:center;gap:3px;font-size:11px;font-weight:600;padding:1px 7px;border-radius:3px;color:var(--cat-c);background:color-mix(in srgb,var(--cat-c) 12%,transparent);border:1px solid color-mix(in srgb,var(--cat-c) 25%,transparent))}
+.skill-cat-chip::before{content:'';display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--cat-c)}
+
+@media(max-width:700px){.skill-card-grid{grid-template-columns:1fr}}
+
+/* ── Install page: drop zone ── */
+.install-drop-zone{border:2px dashed var(--border);border-radius:10px;padding:32px 20px;cursor:pointer;transition:border-color .2s,background .2s;background:var(--bg-card-alt)}
+.install-drop-zone:hover,.install-drop-zone.drag-over{border-color:var(--accent);background:var(--accent-bg)}
+.skill-card-export{background:none;border:1px solid var(--border-subtle);border-radius:4px;cursor:pointer;font-size:11px;padding:1px 5px;color:var(--text-muted);transition:color .15s,border-color .15s;line-height:1.4}
+.skill-card-export:hover{color:var(--accent);border-color:var(--accent)}
+.skill-cat-chip.active{box-shadow:0 0 0 1.5px var(--cat-c);font-weight:700}

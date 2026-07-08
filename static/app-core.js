@@ -39,12 +39,15 @@ function switchView(v,el){
   $('view-'+v).classList.add('active');
   document.querySelectorAll('.nav-item').forEach(e=>e.classList.remove('active'));
   if(el)el.classList.add('active');
-  const titles={dashboard:'仪表盘',skills:'当前目录技能',sources:'能力来源',upstream:'上游检测',issues:'健康检测',trash:'垃圾站',history:'操作日志'};
+  const titles={dashboard:'仪表盘',skills:'当前目录技能',install:'技能安装',sources:'能力来源',upstream:'上游检测',issues:'健康检测',trash:'垃圾站',history:'操作日志'};
   $('view-title').textContent=titles[v]||v;
   $('sidebar').classList.remove('open');
   if(v==='sources'){
     renderSources();
     updateTargetSelector(false,'full');
+  }
+  if(v==='install' && typeof renderInstallPage==='function'){
+    renderInstallPage();
   }
   if(v==='upstream' && typeof renderUpstreamView==='function'){
     renderUpstreamView();
@@ -640,65 +643,143 @@ function renderIssuePath(path){
   </div>`;
 }
 
-/* ── Skills list with category groups (horizontal bar + expandable) ── */
+/* ── Skills list: card grid layout ── */
+let _skillCatFilter=null; // null=all, or Set of categories to show
 function renderSkillsList(){
   const q=($('search').value||'').toLowerCase();
-  const filtered=skills.filter(s=>!q||skillUnderstandingText(s).includes(q));
-  // Group by category
-  const groups={};filtered.forEach(s=>{const c=s.category||'other';if(!groups[c])groups[c]=[];groups[c].push(s)});
-  const sortedCats=Object.entries(groups).sort((a,b)=>b[1].length-a[1].length);
-  const mx=sortedCats[0]?.[1].length||1;
-  const total=filtered.length||1;
-  let html='';
-  if(sortedCats.length===0){html='<div class="empty">无匹配结果</div>'}
-  else{sortedCats.forEach(([cat,sk])=>{
-    const pct=(sk.length/total*100).toFixed(1);
-    const barW=(sk.length/mx*100).toFixed(0);
-    const icon=catAbbr(cat);
-    const label=catLabel(cat);
-    html+=`<div class="skill-group">
-      <div class="skill-group-head" onclick="toggleGroup(this)" style="display:flex;align-items:center;gap:8px;padding:7px 10px;border-radius:6px;cursor:pointer;transition:background .1s ease">
-        <span class="arrow" style="font-size:9px;color:var(--text-muted);transition:transform .15s">▶</span>
-        <div class="cat-icon" style="--cat-c:${CAT_COLORS[cat]||'var(--indigo)'}">${icon}</div>
-        <div class="cat-name" style="min-width:70px">${label}</div>
-        <div class="cat-bar-wrap"><div class="cat-bar" style="width:${barW}%;background:${CAT_COLORS[cat]||'var(--indigo)'}"></div></div>
-        <div class="cat-num">${sk.length} <span class="cat-pct">${pct}%</span></div>
+  let filtered=skills.filter(s=>!q||skillUnderstandingText(s).includes(q));
+  // Category filter (OR logic: show skill if any of its categories match)
+  if(_skillCatFilter&&_skillCatFilter.size>0){
+    filtered=filtered.filter(s=>_skillCatFilter.has(s.category||'other'));
+  }
+  const total=filtered.length;
+  const all=skills.length;
+  const activeFilterLabel=_skillCatFilter&&_skillCatFilter.size>0
+    ? [..._skillCatFilter].map(c=>catLabel(c)).join('、')
+    : '';
+
+  // ── Stats + batch bar ──
+  const catCounts={};
+  skills.forEach(s=>{const c=s.category||'other';catCounts[c]=(catCounts[c]||0)+1});
+  const catChips=Object.entries(catCounts).sort((a,b)=>b[1]-a[1]).slice(0,8).map(([c,n])=>{
+    const active=_skillCatFilter&&_skillCatFilter.has(c);
+    return `<span class="skill-cat-chip${active?' active':''}" style="--cat-c:${CAT_COLORS[c]||'var(--indigo)'};cursor:pointer" onclick="event.stopPropagation();toggleCatFilter('${esc(c)}')" title="点击筛选${active?' (已选中，点击取消)':''}">${catLabel(c)} ${n}</span>`;
+  }).join('');
+
+  const selCount=selectedSkills.size;
+  // Select-all state: checked if all visible selected, indeterminate if partial
+  const visibleNames=filtered.map(s=>s.name);
+  const allChecked=visibleNames.length>0&&visibleNames.every(n=>selectedSkills.has(n));
+  const someChecked=visibleNames.some(n=>selectedSkills.has(n));
+  const selectAllAttr=allChecked?'checked':'';
+
+  let html=`<div style="margin-bottom:12px">
+    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+      <span style="font-size:13px;font-weight:600">${total} 个 skill</span>
+      ${activeFilterLabel?`<span style="font-size:11px;color:var(--accent);font-weight:500">筛选: ${esc(activeFilterLabel)}</span>`:''}
+      ${q?`<span style="font-size:11px;color:var(--text-muted)">匹配 "${esc(q)}" · 共 ${all} 个</span>`:''}
+      <span style="flex:1"></span>
+      <span style="font-size:12px;color:var(--text-muted);display:flex;gap:5px;flex-wrap:wrap;align-items:center">${catChips||'无分类'}</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <label style="font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:4px;cursor:pointer;user-select:none">
+        <input type="checkbox" id="select-all" onchange="toggleSelectAll()" ${selectAllAttr} style="cursor:pointer"> 全选
+      </label>
+      ${selCount>0?`
+        <button class="btn btn-sm btn-danger" onclick="batchDelete()">删除 (${selCount})</button>
+        <button class="btn btn-sm" onclick="batchExport()">⬇ 导出 (${selCount})</button>
+      `:''}
+      ${(_skillCatFilter||q)?`<button class="btn btn-sm" onclick="clearFilters()">清除筛选</button>`:''}
+    </div>
+  </div>`;
+
+  if(!filtered.length){
+    html+='<div class="empty">'+(q||_skillCatFilter?'无匹配结果':'此目录下暂无 skill，点「＋ 安装」添加')+'</div>';
+    $('skills-list').innerHTML=html;
+    if(someChecked&&!allChecked){const cb=$('select-all');if(cb)cb.indeterminate=true;}
+    return;
+  }
+
+  // ── Card grid ──
+  html+=`<div class="skill-card-grid">`;
+  filtered.forEach(s=>{
+    const cat=s.category||'other';
+    const catColor=CAT_COLORS[cat]||'var(--indigo)';
+    const issues=getSkillIssueTags(s.name);
+    const kindLabel=s.kind==='symlink'?'链接':s.kind==='broken_symlink'?'损坏':'';
+    const kindCls=s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'';
+    const desc=s.description||'';
+    const checked=selectedSkills.has(s.name)?'checked':'';
+    html+=`<div class="skill-card" onclick="if(event.target.type!=='checkbox'&&!event.target.closest('.skill-card-export'))showSkill('${esc(s.name)}')">
+      <div class="skill-card-top">
+        <input type="checkbox" class="skill-check" ${checked} onclick="event.stopPropagation()" onchange="toggleSkillSelect('${esc(s.name)}')">
+        <span class="skill-card-name">${esc(s.name)}</span>
+        <span style="flex:1"></span>
+        <button class="skill-card-export" onclick="event.stopPropagation();exportOneSkill('${esc(s.name)}')" title="导出为 zip">⬇</button>
+        ${kindLabel?`<span class="kind ${kindCls}">${kindLabel}</span>`:''}
       </div>
-      <div class="skill-group-body">${sk.map(s=>{
-        const issues=getSkillIssueTags(s.name);
-        const issueHtml=issues.length?`<span style="display:inline-flex;gap:3px;margin-left:4px">${issues.map(t=>`<span style="font-size:10px;color:${t.color};cursor:help" title="${t.title}">${t.icon}</span>`).join('')}</span>`:'';
-        return `<div class="skill-row" onclick="if(event.target.type!=='checkbox')showSkill('${esc(s.name)}')">
-        <input type="checkbox" class="skill-check" ${selectedSkills.has(s.name)?'checked':''} onchange="toggleSkillSelect('${esc(s.name)}')">
-        <div class="name">
-          <div style="display:flex;align-items:center;min-width:0"><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${s.name}</span>${issueHtml}</div>
-          ${renderSkillMiniUnderstanding(s)}
-        </div>
-        <div class="agent">${s.categorySource==='frontmatter'?'📋':s.categorySource==='user'?'🏷️':''} ${s.agent||''}</div>
-        <div><span class="kind ${s.kind==='symlink'?'k-symlink':s.kind==='broken_symlink'?'k-broken':'k-entity'}">${s.kind||'entity'}</span></div>
-      </div>`;
-      }).join('')}</div>
+      ${desc?`<div class="skill-card-desc">${esc(desc)}</div>`:''}
+      <div class="skill-card-foot">
+        <span class="skill-cat-chip" style="--cat-c:${catColor};cursor:pointer" onclick="event.stopPropagation();toggleCatFilter('${esc(cat)}')" title="点击只显示此类">${catLabel(cat)}</span>
+        ${issues.map(t=>`<span style="font-size:10px;color:${t.color}" title="${esc(t.title)}">${t.icon}</span>`).join('')}
+      </div>
     </div>`;
-  })}
+  });
+  html+=`</div>`;
+
   $('skills-list').innerHTML=html;
-  updateBatchUI();
+  // Restore indeterminate state after DOM re-render
+  if(someChecked&&!allChecked){const cb=$('select-all');if(cb)cb.indeterminate=true;}
+}
+
+// ── Category filter ──
+function toggleCatFilter(cat){
+  if(!_skillCatFilter)_skillCatFilter=new Set();
+  if(_skillCatFilter.has(cat))_skillCatFilter.delete(cat);
+  else _skillCatFilter.add(cat);
+  if(_skillCatFilter.size===0)_skillCatFilter=null;
+  renderSkillsList();
+}
+function clearFilters(){
+  _skillCatFilter=null;
+  $('search').value='';
+  renderSkillsList();
+}
+
+// ── Export ──
+function exportOneSkill(name){
+  const a=document.createElement('a');
+  a.href=`/api/skill/${encodeURIComponent(name)}/export`;
+  a.download=`${name}.zip`;
+  a.click();
+  toast(`正在导出 ${name}.zip`);
+}
+function batchExport(){
+  const names=[...selectedSkills];
+  if(!names.length)return toast('请先勾选 skill','error');
+  fetch('/api/skill/export-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})})
+    .then(r=>{if(!r.ok)throw new Error('导出失败');return r.blob()})
+    .then(blob=>{
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download=`skills-${names.length}.zip`;a.click();
+      URL.revokeObjectURL(url);
+      toast(`已导出 ${names.length} 个 skill`);
+    }).catch(e=>toast(e.message,'error'));
 }
 
 function toggleSkillSelect(name){
   if(selectedSkills.has(name))selectedSkills.delete(name);else selectedSkills.add(name);
-  updateBatchUI();
+  renderSkillsList();
 }
 function toggleSelectAll(){
-  const checked=$('select-all').checked;
+  const checked=$('select-all')?.checked;
   const q=($('search').value||'').toLowerCase();
   const visible=skills.filter(s=>!q||skillUnderstandingText(s).includes(q)).map(s=>s.name);
   if(checked){visible.forEach(n=>selectedSkills.add(n))}else{visible.forEach(n=>selectedSkills.delete(n))}
   renderSkillsList();
 }
 function updateBatchUI(){
-  const count=selectedSkills.size;
-  $('batch-count').textContent=`已选 ${count} 个`;
-  $('batch-delete-btn').disabled=count===0;
-  $('select-all').checked=count>0&&count===skills.length;
+  // No-op: batch bar is now rendered inline in renderSkillsList
 }
 async function batchDelete(){
   const names=[...selectedSkills];
@@ -714,6 +795,20 @@ async function batchDelete(){
   invalidateTargetsCache();
   clearGlobalSearchCache();
   await loadData();
+}
+
+function exportAllSkills(){
+  if(!skills.length)return toast('无 skill 可导出','error');
+  if(!confirm(`确认导出当前目录全部 ${skills.length} 个 skill？\n\n这会把每个 skill 的整个目录打包成一个 zip 文件。\n\n如果只想导出部分 skill，请先勾选再点批量导出。`))return;
+  const names=skills.map(s=>s.name);
+  fetch('/api/skill/export-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({names})})
+    .then(r=>{if(!r.ok)throw new Error('导出失败');return r.blob()})
+    .then(blob=>{
+      const url=URL.createObjectURL(blob);
+      const a=document.createElement('a');a.href=url;a.download=`skills-${names.length}.zip`;a.click();
+      URL.revokeObjectURL(url);
+      toast(`已导出 ${names.length} 个 skill`);
+    }).catch(e=>toast(e.message,'error'));
 }
 
 /* ── Export / Import ── */
